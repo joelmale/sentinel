@@ -1,0 +1,203 @@
+name: sentinel
+
+services:
+
+  # ── Reverse proxy ────────────────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    container_name: sentinel-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - frontend
+    restart: unless-stopped
+
+  # ── Frontend (served as static by Caddy) ────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      target: builder          # multi-stage: stops at built static files
+    container_name: sentinel-frontend
+    environment:
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-/api}
+      - VITE_WS_URL=${VITE_WS_URL:-/ws}
+    restart: unless-stopped
+
+  # ── Backend API ──────────────────────────────────────────────────
+  api:
+    build: ./api
+    container_name: sentinel-api
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sentinel}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-sentinel-api}
+      - SECRET_KEY=${SECRET_KEY}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Database ─────────────────────────────────────────────────────
+  timescaledb:
+    image: timescale/timescaledb-ha:pg16-latest
+    container_name: sentinel-db
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-sentinel}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-sentinel}
+    volumes:
+      - timescale_data:/home/postgres/pgdata/data
+      - ./docker/timescaledb/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: sentinel-redis
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Identity provider ────────────────────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: sentinel-keycloak
+    command: ["start-dev", "--import-realm"]
+    environment:
+      - KEYCLOAK_ADMIN=${KEYCLOAK_ADMIN:-admin}
+      - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - ./docker/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    restart: unless-stopped
+
+  # ── Collectors ───────────────────────────────────────────────────
+  collector-adsb:
+    build: ./collectors/adsb
+    container_name: sentinel-collector-adsb
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - OPENSKY_USERNAME=${OPENSKY_USERNAME:-}
+      - OPENSKY_PASSWORD=${OPENSKY_PASSWORD:-}
+      - POLL_INTERVAL_SEC=${ADSB_POLL_INTERVAL:-10}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  collector-ais:
+    build: ./collectors/ais
+    container_name: sentinel-collector-ais
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - AISHUB_USERNAME=${AISHUB_USERNAME}
+      - AISHUB_PASSWORD=${AISHUB_PASSWORD}
+      - POLL_INTERVAL_SEC=${AIS_POLL_INTERVAL:-30}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  collector-space:
+    build: ./collectors/space
+    container_name: sentinel-collector-space
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - SPACETRACK_USER=${SPACETRACK_USER}
+      - SPACETRACK_PASS=${SPACETRACK_PASS}
+      - TLE_REFRESH_INTERVAL_SEC=${TLE_REFRESH_INTERVAL:-7200}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  collector-gpsjam:
+    build: ./collectors/gpsjam
+    container_name: sentinel-collector-gpsjam
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - POLL_INTERVAL_SEC=${GPSJAM_POLL_INTERVAL:-3600}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  collector-infra:
+    build: ./collectors/infra
+    container_name: sentinel-collector-infra
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - POLL_INTERVAL_SEC=${INFRA_POLL_INTERVAL:-300}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Monitoring (optional) ────────────────────────────────────────
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: sentinel-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_SERVER_ROOT_URL=/grafana
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - timescaledb
+    restart: unless-stopped
+
+volumes:
+  timescale_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+  keycloak_data:
+  grafana_data:
+
+networks:
+  default:
+    name: sentinel-net

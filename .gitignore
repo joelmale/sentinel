@@ -1,0 +1,48 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+.envrc
+*.env.local
+*.pem
+*.key
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Frontend
+node_modules/
+dist/
+.next/
+frontend/dist/
+frontend/.vite/
+
+# Docker
+docker/timescaledb/pgdata/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+AGENTS.md
+
+# Logs
+*.log
+logs/
+
+# Test artifacts
+.coverage
+htmlcov/

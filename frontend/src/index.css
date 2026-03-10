@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Dark base — matches the SENTINEL design system */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #0a0f1a;
+  color: white;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* MapLibre canvas should fill its container */
+.maplibregl-canvas {
+  outline: none;
+}
+
+/* deck.gl tooltip */
+.deck-tooltip {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+}
