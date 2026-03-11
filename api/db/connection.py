@@ -10,6 +10,7 @@ connections so each request doesn't pay TCP handshake overhead.
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -22,8 +23,8 @@ settings = Settings()
 
 class DatabasePool:
     def __init__(self) -> None:
-        self.engine = None
-        self.session_factory = None
+        self.engine: AsyncEngine | None = None
+        self.session_factory: async_sessionmaker[AsyncSession] | None = None
 
     async def startup(self) -> None:
         self.engine = create_async_engine(
@@ -42,6 +43,8 @@ class DatabasePool:
             await self.engine.dispose()
 
     async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
+        if self.session_factory is None:
+            raise RuntimeError("Database pool has not been started")
         async with self.session_factory() as session:
             yield session
 
