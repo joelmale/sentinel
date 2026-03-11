@@ -6,6 +6,7 @@ point-based track events for the existing map/timeline pipeline.
 """
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -16,7 +17,9 @@ import sys
 sys.path.insert(0, "/app/base")
 from base_collector import BaseCollector, TrackEventDict
 
-ACLED_API = "https://api.acleddata.com/acled/read"
+ACLED_API = "https://acleddata.com/api/acled/read"
+ACLED_TOKEN_URL = "https://acleddata.com/oauth/token"
+logger = logging.getLogger(__name__)
 
 
 class ACLEDCollector(BaseCollector):
@@ -30,24 +33,50 @@ class ACLEDCollector(BaseCollector):
             poll_interval=float(os.environ.get("POLL_INTERVAL_SEC", 1800)),
         )
         self._enabled = os.environ.get("ACLED_ENABLED", "true").lower() != "false"
-        self._email = os.environ.get("ACLED_EMAIL", "").strip()
-        self._access_key = os.environ.get("ACLED_ACCESS_KEY", "").strip()
+        self._api_url = os.environ.get("ACLED_API_URL", ACLED_API).strip() or ACLED_API
+        self._token_url = os.environ.get("ACLED_TOKEN_URL", ACLED_TOKEN_URL).strip() or ACLED_TOKEN_URL
+        self._username = os.environ.get("ACLED_USERNAME", "").strip()
+        self._password = os.environ.get("ACLED_PASSWORD", "").strip()
+        self._client_id = os.environ.get("ACLED_CLIENT_ID", "acled").strip() or "acled"
         self._timeout_sec = float(os.environ.get("ACLED_TIMEOUT_SEC", "45"))
         self._lookback_days = int(os.environ.get("ACLED_LOOKBACK_DAYS", "7"))
         self._limit = int(os.environ.get("ACLED_LIMIT", "500"))
         self._countries = self._split_csv(os.environ.get("ACLED_COUNTRIES", ""))
         self._event_types = self._split_csv(os.environ.get("ACLED_EVENT_TYPES", ""))
+        self._token_refresh_skew_sec = int(os.environ.get("ACLED_TOKEN_REFRESH_SKEW_SEC", "300"))
+        self._access_token: str | None = None
+        self._refresh_token: str | None = None
+        self._access_token_expires_at: datetime | None = None
+        self._disabled_logged = False
+        self._missing_creds_logged = False
+        self._startup_logged = False
 
     async def fetch(self) -> list[dict]:
         if not self._enabled:
+            if not self._disabled_logged:
+                logger.info("[ACLED] Collector disabled via ACLED_ENABLED=false")
+                self._disabled_logged = True
             return []
-        if not self._email or not self._access_key:
+        if not self._username or not self._password:
+            if not self._missing_creds_logged:
+                logger.warning("[ACLED] Missing ACLED_USERNAME or ACLED_PASSWORD; skipping fetches")
+                self._missing_creds_logged = True
             return []
+        if not self._startup_logged:
+            logger.info(
+                "[ACLED] Config api_url=%s token_url=%s client_id=%s lookback_days=%s limit=%s countries=%s event_types=%s",
+                self._api_url,
+                self._token_url,
+                self._client_id,
+                self._lookback_days,
+                self._limit,
+                len(self._countries),
+                len(self._event_types),
+            )
+            self._startup_logged = True
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=self._lookback_days)
         params: list[tuple[str, str]] = [
-            ("email", self._email),
-            ("key", self._access_key),
             ("limit", str(self._limit)),
             ("event_date_where", ">="),
             ("event_date", cutoff.date().isoformat()),
@@ -58,11 +87,25 @@ class ACLEDCollector(BaseCollector):
             params.append(("event_type", event_type))
 
         async with httpx.AsyncClient(timeout=self._timeout_sec, follow_redirects=True) as client:
+            access_token = await self._get_access_token(client)
             response = await client.get(
-                ACLED_API,
+                self._api_url,
                 params=params,
-                headers={"User-Agent": "Sentinel/0.1"},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "User-Agent": "Sentinel/0.1",
+                },
             )
+            if response.status_code == 401:
+                access_token = await self._refresh_or_reissue_token(client, force_password_grant=False)
+                response = await client.get(
+                    self._api_url,
+                    params=params,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "User-Agent": "Sentinel/0.1",
+                    },
+                )
             response.raise_for_status()
 
         payload = response.json()
@@ -136,7 +179,71 @@ class ACLEDCollector(BaseCollector):
                     },
                 },
             ))
+        logger.info("[ACLED] Retrieved %s rows and produced %s events", len(rows), len(events))
         return events
+
+    async def _get_access_token(self, client: httpx.AsyncClient) -> str:
+        now = datetime.now(timezone.utc)
+        if (
+            self._access_token
+            and self._access_token_expires_at
+            and now < self._access_token_expires_at - timedelta(seconds=self._token_refresh_skew_sec)
+        ):
+            return self._access_token
+        return await self._refresh_or_reissue_token(client, force_password_grant=not bool(self._refresh_token))
+
+    async def _refresh_or_reissue_token(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        force_password_grant: bool,
+    ) -> str:
+        if not force_password_grant and self._refresh_token:
+            try:
+                return await self._request_token(
+                    client,
+                    data={
+                        "grant_type": "refresh_token",
+                        "client_id": self._client_id,
+                        "refresh_token": self._refresh_token,
+                    },
+                )
+            except httpx.HTTPError:
+                self._refresh_token = None
+                self._access_token = None
+                self._access_token_expires_at = None
+
+        return await self._request_token(
+            client,
+            data={
+                "grant_type": "password",
+                "client_id": self._client_id,
+                "username": self._username,
+                "password": self._password,
+            },
+        )
+
+    async def _request_token(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        data: dict[str, str],
+    ) -> str:
+        response = await client.post(
+            self._token_url,
+            data=data,
+            headers={"User-Agent": "Sentinel/0.1"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        access_token = str(payload.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("ACLED token response missing access_token")
+        expires_in = int(payload.get("expires_in") or 86400)
+        self._access_token = access_token
+        self._refresh_token = str(payload.get("refresh_token") or "").strip() or None
+        self._access_token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        return access_token
 
     def _split_csv(self, value: str) -> list[str]:
         return [part.strip() for part in value.split(",") if part.strip()]

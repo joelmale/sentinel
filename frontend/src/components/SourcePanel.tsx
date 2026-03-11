@@ -455,7 +455,7 @@ export function SourcePanel() {
 
   // Which domains have their track list expanded
   const [expanded, setExpanded] = useState<Set<SourceDomain>>(
-    () => new Set<SourceDomain>(['Air', 'Maritime'])
+    () => new Set<SourceDomain>()
   )
   // Per-domain "show all" toggle (when count > MAX_VISIBLE_PER_DOMAIN)
   const MAX_VISIBLE = 12

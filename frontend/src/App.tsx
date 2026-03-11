@@ -184,7 +184,10 @@ function SentinelApp() {
     enabled: Boolean(domainDashboardOpen),
     queryFn: async (): Promise<DomainStatusDashboardPayload> => {
       const params = new URLSearchParams({ domain: domainDashboardOpen! })
-      const response = await fetch(`/api/tracks/domain-status?${params.toString()}`)
+      let response = await fetch(`/api/telemetry/dashboard?${params.toString()}`)
+      if (response.status === 404) {
+        response = await fetch(`/api/tracks/domain-status?${params.toString()}`)
+      }
       if (!response.ok) {
         throw new Error(`domain status failed: ${response.status}`)
       }
@@ -198,7 +201,10 @@ function SentinelApp() {
     enabled: Boolean(disruptionDashboardOpen),
     queryFn: async (): Promise<DisruptionDashboardPayload> => {
       const params = new URLSearchParams({ domain: disruptionDashboardOpen!, hours: '72' })
-      const response = await fetch(`/api/disruptions/dashboard?${params.toString()}`)
+      let response = await fetch(`/api/telemetry/dashboard?${params.toString()}`)
+      if (response.status === 404) {
+        response = await fetch(`/api/disruptions/dashboard?${params.toString()}`)
+      }
       if (!response.ok) {
         throw new Error(`disruption dashboard failed: ${response.status}`)
       }

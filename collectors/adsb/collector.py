@@ -59,7 +59,7 @@ Set ADSBEXCHANGE_BASE_URL if using a different endpoint (e.g. RapidAPI proxy):
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -286,6 +286,7 @@ class AdsbCollector(BaseCollector):
     FEED_NAME = "ADS-B"   # overridden per-run based on active sources
 
     OPENSKY_URL  = "https://opensky-network.org/api/states/all"
+    OPENSKY_TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
     ADSBX_URL    = "https://adsbexchange.com/api/aircraft/v2/all/"
 
     def __init__(self):
@@ -294,10 +295,13 @@ class AdsbCollector(BaseCollector):
             redis_url=os.environ["REDIS_URL"],
             poll_interval=float(os.environ.get("POLL_INTERVAL_SEC", 10)),
         )
-        # OpenSky credentials
-        self._opensky_user = os.environ.get("OPENSKY_USERNAME") or None
-        self._opensky_pass = os.environ.get("OPENSKY_PASSWORD") or None
+        # OpenSky OAuth client credentials
+        self._opensky_client_id = os.environ.get("OPENSKY_CLIENT_ID", "").strip()
+        self._opensky_client_secret = os.environ.get("OPENSKY_CLIENT_SECRET", "").strip()
+        self._opensky_token_url = os.environ.get("OPENSKY_TOKEN_URL", self.OPENSKY_TOKEN_URL).strip() or self.OPENSKY_TOKEN_URL
         self._opensky_enabled = True  # always attempt; gracefully degrades
+        self._opensky_access_token: str | None = None
+        self._opensky_access_token_expires_at: datetime | None = None
 
         # ADSBexchange credentials
         self._adsbx_key     = os.environ.get("ADSBEXCHANGE_API_KEY", "").strip()
@@ -307,6 +311,12 @@ class AdsbCollector(BaseCollector):
         # Some deployments use a RapidAPI proxy with a different key header
         self._adsbx_rapid   = os.environ.get("ADSBEXCHANGE_RAPID_KEY", "").strip()
         self._adsbx_enabled = bool(self._adsbx_key or self._adsbx_rapid)
+        self._opensky_auth_disabled_until: datetime | None = None
+        self._opensky_rate_limited_until: datetime | None = None
+        self._adsbx_disabled_until: datetime | None = None
+        self._opensky_rate_limit_cooldown_sec = int(os.environ.get("OPENSKY_RATE_LIMIT_COOLDOWN_SEC", "300"))
+        self._opensky_auth_failure_cooldown_sec = int(os.environ.get("OPENSKY_AUTH_FAILURE_COOLDOWN_SEC", "3600"))
+        self._adsbx_error_cooldown_sec = int(os.environ.get("ADSBX_ERROR_COOLDOWN_SEC", "1800"))
 
         sources = []
         if self._opensky_enabled:
@@ -316,9 +326,42 @@ class AdsbCollector(BaseCollector):
         self.FEED_NAME = "+".join(sources) if sources else "ADS-B"
 
         logger.info(
-            "[AdsbCollector] Active sources: %s  |  dedup: by ICAO hex",
+            "[AdsbCollector] Active sources: %s  |  OpenSky auth=%s  |  dedup: by ICAO hex",
             ", ".join(sources) if sources else "none",
+            "oauth-client" if self._opensky_client_id and self._opensky_client_secret else "unauthenticated",
         )
+
+    async def _get_opensky_access_token(self, client: httpx.AsyncClient) -> str | None:
+        now = datetime.now(timezone.utc)
+        if (
+            self._opensky_access_token
+            and self._opensky_access_token_expires_at
+            and now < self._opensky_access_token_expires_at - timedelta(seconds=60)
+        ):
+            return self._opensky_access_token
+
+        if not self._opensky_client_id or not self._opensky_client_secret:
+            return None
+
+        response = await client.post(
+            self._opensky_token_url,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self._opensky_client_id,
+                "client_secret": self._opensky_client_secret,
+            },
+            timeout=15.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        access_token = str(payload.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("OpenSky token response missing access_token")
+        expires_in = int(payload.get("expires_in") or 300)
+        self._opensky_access_token = access_token
+        self._opensky_access_token_expires_at = now + timedelta(seconds=expires_in)
+        return access_token
 
     # ── OpenSky fetch ─────────────────────────────────────────────
     async def _fetch_opensky(self, client: httpx.AsyncClient) -> dict[str, dict]:
@@ -326,15 +369,45 @@ class AdsbCollector(BaseCollector):
         Fetch all state vectors from OpenSky.
         Returns empty dict on any error (the other source can cover).
         """
-        auth = (self._opensky_user, self._opensky_pass) if self._opensky_user else None
+        now = datetime.now(timezone.utc)
+        if self._opensky_rate_limited_until and now < self._opensky_rate_limited_until:
+            remaining = round((self._opensky_rate_limited_until - now).total_seconds())
+            logger.info("[OpenSky] Cooling down after rate limit for %ss", remaining)
+            return {}
+
+        use_auth = self._opensky_auth_disabled_until is None or now >= self._opensky_auth_disabled_until
+        headers: dict[str, str] = {}
         try:
-            resp = await client.get(self.OPENSKY_URL, auth=auth, timeout=15.0)
-            if resp.status_code == 401 and auth:
-                logger.warning("[OpenSky] 401 with credentials — retrying unauthenticated")
+            if use_auth:
+                token = await self._get_opensky_access_token(client)
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+
+            resp = await client.get(self.OPENSKY_URL, headers=headers, timeout=15.0)
+            if resp.status_code == 401 and headers.get("Authorization"):
+                self._opensky_access_token = None
+                self._opensky_access_token_expires_at = None
+                self._opensky_auth_disabled_until = now + timedelta(seconds=self._opensky_auth_failure_cooldown_sec)
+                logger.warning(
+                    "[OpenSky] 401 with OAuth credentials — disabling authenticated requests for %ss and retrying unauthenticated",
+                    self._opensky_auth_failure_cooldown_sec,
+                )
                 resp = await client.get(self.OPENSKY_URL, timeout=15.0)
             if resp.status_code == 429:
-                logger.warning("[OpenSky] Rate limited (429) — skipping this poll cycle")
+                retry_after = (
+                    resp.headers.get("X-Rate-Limit-Retry-After-Seconds")
+                    or resp.headers.get("Retry-After")
+                )
+                cooldown_sec = self._opensky_rate_limit_cooldown_sec
+                if retry_after and retry_after.isdigit():
+                    cooldown_sec = max(cooldown_sec, int(retry_after))
+                self._opensky_rate_limited_until = now + timedelta(seconds=cooldown_sec)
+                logger.warning(
+                    "[OpenSky] Rate limited (429) — cooling down for %ss",
+                    cooldown_sec,
+                )
                 return {}
+            self._opensky_rate_limited_until = None
             resp.raise_for_status()
             data   = resp.json()
             states = data.get("states") or []
@@ -360,6 +433,12 @@ class AdsbCollector(BaseCollector):
           RapidAPI:    x-rapidapi-key: <ADSBEXCHANGE_RAPID_KEY>
                        x-rapidapi-host: adsbexchange-com1.p.rapidapi.com
         """
+        now = datetime.now(timezone.utc)
+        if self._adsbx_disabled_until and now < self._adsbx_disabled_until:
+            remaining = round((self._adsbx_disabled_until - now).total_seconds())
+            logger.info("[ADSBx] Cooling down after previous HTTP failure for %ss", remaining)
+            return {}
+
         headers = {}
         if self._adsbx_rapid:
             # RapidAPI uses lowercase header names (case-insensitive per HTTP spec,
@@ -373,10 +452,20 @@ class AdsbCollector(BaseCollector):
             resp = await client.get(self._adsbx_url, headers=headers, timeout=20.0)
             if resp.status_code == 403:
                 logger.warning("[ADSBx] 403 Forbidden — check ADSBEXCHANGE_API_KEY")
+                self._adsbx_disabled_until = now + timedelta(seconds=self._adsbx_error_cooldown_sec)
+                return {}
+            if resp.status_code == 404:
+                logger.warning(
+                    "[ADSBx] 404 Not Found — disabling ADSBx polls for %ss; check ADSBX endpoint/key type",
+                    self._adsbx_error_cooldown_sec,
+                )
+                self._adsbx_disabled_until = now + timedelta(seconds=self._adsbx_error_cooldown_sec)
                 return {}
             if resp.status_code == 429:
-                logger.warning("[ADSBx] Rate limited (429) — skipping this poll cycle")
+                logger.warning("[ADSBx] Rate limited (429) — cooling down for %ss", self._adsbx_error_cooldown_sec)
+                self._adsbx_disabled_until = now + timedelta(seconds=self._adsbx_error_cooldown_sec)
                 return {}
+            self._adsbx_disabled_until = None
             resp.raise_for_status()
             data = resp.json()
             ac_list = data.get("ac") or []

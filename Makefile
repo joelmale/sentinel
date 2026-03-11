@@ -16,7 +16,7 @@ help:
 	@echo "  build           Rebuild all images"
 	@echo "  ── Development workflow ─────────────────────"
 	@echo "  dev-backend     Start backend services with API on localhost:8000"
-	@echo "                  (no Caddy, no frontend container; includes space collector)"
+	@echo "                  (rebuilds changed images; no Caddy, no frontend container)"
 	@echo "  dev-frontend    Run Vite dev server on localhost:5173 (hot-reload)"
 	@echo "  dev             dev-backend + dev-frontend in one shot"
 	@echo "  logs-api        Tail API logs"
@@ -101,7 +101,7 @@ test-api:
 # In dev you talk directly to the kitchen (FastAPI on :8000).
 
 dev-backend:
-	$(DC_DEV) up -d timescaledb redis api collector-adsb collector-ais collector-space collector-gpsjam collector-infra collector-acled
+	$(DC_DEV) up -d --build timescaledb redis api collector-adsb collector-ais collector-space collector-gpsjam collector-infra collector-acled
 	@echo ""
 	@echo "  Backend ready — API available at http://localhost:8000"
 	@echo "  Run 'make dev-frontend' in another terminal to start Vite."
@@ -114,5 +114,5 @@ dev-frontend:
 # Use this if you prefer a single terminal — Ctrl-C stops Vite but
 # leaves Docker running; use 'make down' to stop everything.
 dev:
-	$(DC_DEV) up -d timescaledb redis api collector-adsb collector-ais collector-space collector-gpsjam collector-infra collector-acled
+	$(DC_DEV) up -d --build timescaledb redis api collector-adsb collector-ais collector-space collector-gpsjam collector-infra collector-acled
 	cd frontend && npm install && npm run dev

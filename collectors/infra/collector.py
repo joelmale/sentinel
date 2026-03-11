@@ -9,6 +9,7 @@ Implemented sources:
 """
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -19,9 +20,10 @@ import sys
 sys.path.insert(0, "/app/base")
 from base_collector import BaseCollector, TrackEventDict
 
-IODA_API = "https://api.ioda.caida.org/v2/outages/alerts"
+IODA_API = "https://api.ioda.inetintel.cc.gatech.edu/v2/outages/alerts"
 POWEROUTAGE_API = "https://api.poweroutage.us/api/v1/states"
 CLOUDFLARE_RADAR_API = "https://api.cloudflare.com/client/v4/radar/annotations/outages"
+logger = logging.getLogger(__name__)
 
 US_STATE_CENTROIDS: dict[str, tuple[float, float]] = {
     "AL": (32.806671, -86.79113), "AK": (61.370716, -152.404419), "AZ": (33.729759, -111.431221),
@@ -56,48 +58,69 @@ class InfraCollector(BaseCollector):
         )
         self._timeout_sec = float(os.environ.get("INFRA_TIMEOUT_SEC", "30"))
         self._ioda_enabled = os.environ.get("IODA_ENABLED", "true").lower() != "false"
+        self._ioda_api_url = os.environ.get("IODA_API_URL", IODA_API).strip() or IODA_API
         self._powerout_enabled = os.environ.get("POWEROUTAGE_ENABLED", "true").lower() != "false"
-        self._powerout_api_key = os.environ.get("POWEROUTAGE_API_KEY", "")
+        self._powerout_api_key = os.environ.get("POWEROUTAGE_API_KEY", "").strip()
         self._ioda_lookback_minutes = int(os.environ.get("IODA_LOOKBACK_MINUTES", "30"))
         self._powerout_threshold_pct = float(os.environ.get("POWEROUTAGE_MIN_PERCENT", "1.0"))
         self._cloudflare_enabled = os.environ.get("CLOUDFLARE_RADAR_ENABLED", "false").lower() == "true"
-        self._cloudflare_token = os.environ.get("CLOUDFLARE_RADAR_API_TOKEN", "")
+        self._cloudflare_token = os.environ.get("CLOUDFLARE_RADAR_API_TOKEN", "").strip()
         self._cloudflare_date_range = os.environ.get("CLOUDFLARE_RADAR_DATE_RANGE", "1d")
         self._cloudflare_limit = int(os.environ.get("CLOUDFLARE_RADAR_LIMIT", "100"))
         self._eia_enabled = os.environ.get("EIA_ENABLED", "false").lower() == "true"
-        self._eia_api_key = os.environ.get("EIA_API_KEY", "")
+        self._eia_api_key = os.environ.get("EIA_API_KEY", "").strip()
         self._eia_url = os.environ.get(
             "EIA_RTO_URL",
             "https://api.eia.gov/v2/electricity/rto/region-data/data/",
-        )
+        ).strip()
         self._eia_limit = int(os.environ.get("EIA_LIMIT", "500"))
         self._eia_stress_delta_pct = float(os.environ.get("EIA_STRESS_DELTA_PCT", "10"))
+        self._startup_logged = False
 
     async def fetch(self) -> list[dict]:
+        if not self._startup_logged:
+            logger.info(
+                "[Infra] Config ioda=%s poweroutage=%s cloudflare=%s eia=%s",
+                self._ioda_enabled,
+                self._powerout_enabled,
+                self._cloudflare_enabled and bool(self._cloudflare_token),
+                self._eia_enabled and bool(self._eia_api_key),
+            )
+            self._startup_logged = True
         async with httpx.AsyncClient(timeout=self._timeout_sec, follow_redirects=True) as client:
-            tasks = []
+            tasks: list[tuple[str, asyncio.Future | Any]] = []
             if self._ioda_enabled:
-                tasks.append(self._fetch_ioda(client))
+                tasks.append(("IODA", self._fetch_ioda(client)))
             if self._powerout_enabled:
-                tasks.append(self._fetch_poweroutage(client))
+                tasks.append(("PowerOutage.us", self._fetch_poweroutage(client)))
             if self._cloudflare_enabled and self._cloudflare_token:
-                tasks.append(self._fetch_cloudflare_radar(client))
+                tasks.append(("Cloudflare Radar", self._fetch_cloudflare_radar(client)))
             if self._eia_enabled and self._eia_api_key:
-                tasks.append(self._fetch_eia_grid(client))
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+                tasks.append(("EIA", self._fetch_eia_grid(client)))
+            if not tasks:
+                logger.warning("[Infra] No source tasks enabled. Check IODA/CLOUDFLARE/EIA/POWEROUTAGE env vars")
+                return []
+            results = await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
 
         events: list[dict] = []
-        for result in results:
+        for (source_name, _), result in zip(tasks, results, strict=False):
             if isinstance(result, Exception):
-                raise result
+                logger.error(
+                    "[Infra] %s fetch failed: %r",
+                    source_name,
+                    result,
+                    exc_info=(type(result), result, result.__traceback__),
+                )
+                continue
             events.extend(result)
+        logger.info("[Infra] Produced %s events across enabled sources", len(events))
         return events
 
     async def _fetch_ioda(self, client: httpx.AsyncClient) -> list[dict]:
         now = datetime.now(timezone.utc)
         start = now - timedelta(minutes=self._ioda_lookback_minutes)
         response = await client.get(
-            IODA_API,
+            self._ioda_api_url,
             params={"from": int(start.timestamp()), "until": int(now.timestamp())},
             headers={"User-Agent": "Sentinel/0.1"},
         )

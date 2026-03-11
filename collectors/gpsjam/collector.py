@@ -8,8 +8,9 @@ This collector ingests GPSJam H3 cell measurements and writes them as:
 
 import asyncio
 import json
+import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -20,6 +21,7 @@ sys.path.insert(0, "/app/base")
 from base_collector import BaseCollector, TrackEventDict
 
 GPSJAM_BASE = "https://gpsjam.org"
+logger = logging.getLogger(__name__)
 
 
 class GPSJamCollector(BaseCollector):
@@ -43,27 +45,130 @@ class GPSJamCollector(BaseCollector):
         self._date_offset_days = int(os.environ.get("GPSJAM_DATE_OFFSET_DAYS", "0"))
         self._timeout_sec = float(os.environ.get("GPSJAM_TIMEOUT_SEC", "30"))
         self._min_score = float(os.environ.get("GPSJAM_MIN_SCORE", "0.05"))
+        self._max_days_back = int(os.environ.get("GPSJAM_MAX_DAYS_BACK", "2"))
+        self._backfill_days = int(os.environ.get("GPSJAM_BACKFILL_DAYS", "180"))
+        self._backfill_batch_days = int(os.environ.get("GPSJAM_BACKFILL_BATCH_DAYS", "7"))
+        self._startup_logged = False
+        self._disabled_logged = False
 
     async def fetch(self) -> list[dict]:
         if not self._enabled:
+            if not self._disabled_logged:
+                logger.info("[GPSJam] Collector disabled via GPSJAM_ENABLED=false")
+                self._disabled_logged = True
             return []
+        if not self._startup_logged:
+            logger.info(
+                "[GPSJam] Config url_template=%s date_format=%s date_offset_days=%s max_days_back=%s min_score=%s",
+                self._url_template,
+                self._date_format,
+                self._date_offset_days,
+                self._max_days_back,
+                self._backfill_days,
+                self._backfill_batch_days,
+                self._min_score,
+            )
+            self._startup_logged = True
         observed_at = datetime.now(timezone.utc)
-        target_date = (observed_at + timedelta(days=self._date_offset_days)).strftime(self._date_format)
-        url = self._url_template.format(date=target_date)
+        target_days = await self._target_dates(observed_at.date())
+        all_events: list[dict] = []
+        latest_snapshot: dict[str, float] | None = None
+        latest_url: str | None = None
 
         async with httpx.AsyncClient(timeout=self._timeout_sec, follow_redirects=True) as client:
-            response = await client.get(url, headers={"User-Agent": "Sentinel/0.1"})
+            for target_day in target_days:
+                snapshot, source_url = await self._fetch_snapshot_for_date(client, target_day)
+                if not snapshot or not source_url:
+                    continue
+                event_time = datetime.combine(target_day, datetime.min.time(), tzinfo=timezone.utc)
+                events = self._build_events(snapshot, event_time, source_url)
+                all_events.extend(events)
+                latest_snapshot = snapshot
+                latest_url = source_url
+
+        if latest_snapshot is None or latest_url is None:
+            raise RuntimeError("GPSJam could not find a usable daily dataset in the configured backfill window")
+
+        await self._enrich_with_adsb_thinning(all_events)
+        self._previous_snapshot = latest_snapshot
+        logger.info(
+            "[GPSJam] Processed %s day(s); latest snapshot had %s active cells and total produced %s events",
+            len(target_days),
+            len(latest_snapshot),
+            len(all_events),
+        )
+        return all_events
+
+    async def _target_dates(self, latest_day: date) -> list[date]:
+        target_days: list[date] = [latest_day]
+        if not self._db or self._backfill_days <= 0 or self._backfill_batch_days <= 0:
+            return target_days
+
+        range_start = latest_day - timedelta(days=self._backfill_days - 1)
+        existing_days = await self._existing_days(range_start, latest_day)
+        missing_days = [
+            candidate
+            for candidate in self._date_range(range_start, latest_day)
+            if candidate not in existing_days and candidate != latest_day
+        ]
+        if missing_days:
+            target_days.extend(missing_days[: self._backfill_batch_days])
+            logger.info(
+                "[GPSJam] Backfilling %s missing day(s) out of %s over the last %s days",
+                min(len(missing_days), self._backfill_batch_days),
+                len(missing_days),
+                self._backfill_days,
+            )
+        return sorted(set(target_days))
+
+    async def _existing_days(self, start_day: date, end_day: date) -> set[date]:
+        if not self._db:
+            return set()
+        async with self._db.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT DATE(timezone('UTC', timestamp)) AS day
+                FROM track_events
+                WHERE source_feed = 'GPSJam'
+                  AND timestamp >= $1
+                  AND timestamp < $2
+                """,
+                datetime.combine(start_day, datetime.min.time(), tzinfo=timezone.utc),
+                datetime.combine(end_day + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc),
+            )
+        return {row["day"] for row in rows if row["day"] is not None}
+
+    def _date_range(self, start_day: date, end_day: date) -> list[date]:
+        days: list[date] = []
+        cursor = start_day
+        while cursor <= end_day:
+            days.append(cursor)
+            cursor += timedelta(days=1)
+        return days
+
+    async def _fetch_snapshot_for_date(
+        self,
+        client: httpx.AsyncClient,
+        target_day: date,
+    ) -> tuple[dict[str, float], str | None]:
+        for days_back in range(self._max_days_back + 1):
+            candidate_day = target_day - timedelta(days=days_back)
+            target_date = candidate_day.strftime(self._date_format)
+            candidate_url = self._url_template.format(date=target_date)
+            response = await client.get(candidate_url, headers={"User-Agent": "Sentinel/0.1"})
+            if response.status_code == 404:
+                if days_back == 0:
+                    logger.info("[GPSJam] No dataset at %s", candidate_url)
+                continue
             response.raise_for_status()
-
-        payload = self._decode_payload(response.text)
-        snapshot = self._extract_snapshot(payload)
-        if not snapshot:
-            raise RuntimeError(f"GPSJam payload from {url} did not contain any H3 cells")
-
-        events = self._build_events(snapshot, observed_at, url)
-        await self._enrich_with_adsb_thinning(events)
-        self._previous_snapshot = snapshot
-        return events
+            payload = self._decode_payload(response.text)
+            snapshot = self._extract_snapshot(payload)
+            if snapshot:
+                if candidate_day != target_day:
+                    logger.info("[GPSJam] Using fallback dataset %s for target day %s", candidate_day.isoformat(), target_day.isoformat())
+                return snapshot, candidate_url
+            logger.info("[GPSJam] Dataset at %s contained no usable H3 cells", candidate_url)
+        return {}, None
 
     def _decode_payload(self, body: str) -> Any:
         text = body.strip()
