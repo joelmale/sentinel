@@ -22,9 +22,10 @@ import { AlertNotification } from '@/components/AlertNotification'
 import { AlertQueuePanel } from '@/components/AlertQueuePanel'
 import { SpaceWatchDashboard, type SpaceWatchDashboardPayload } from '@/components/SpaceWatchDashboard'
 import { DomainStatusDashboard, type DomainStatusDashboardPayload } from '@/components/DomainStatusDashboard'
+import { DisruptionDashboard, type DisruptionDashboardPayload } from '@/components/DisruptionDashboard'
 import { useLiveStream } from '@/hooks/useLiveStream'
 import { useMapStore } from '@/store/useMapStore'
-import type { TrackEventProperties, TrackFeatureCollection, WsMessage } from '@/types/track'
+import type { DisruptionEventResponse, TrackEventProperties, TrackFeatureCollection, WsMessage } from '@/types/track'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -45,12 +46,14 @@ function SentinelApp() {
     spaceTrackDuration,
     setSelectedOrbitPoints,
     clearSelectedOrbitPoints,
+    layers,
   } = useMapStore()
   const [annotationPos, setAnnotationPos] = useState<{ lon: number; lat: number } | null>(null)
   const [now, setNow] = useState(new Date())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [spaceDashboardOpen, setSpaceDashboardOpen] = useState(false)
   const [domainDashboardOpen, setDomainDashboardOpen] = useState<'Air' | 'Maritime' | null>(null)
+  const [disruptionDashboardOpen, setDisruptionDashboardOpen] = useState<'GPS' | 'Infra' | null>(null)
   const settingsRef = useRef<HTMLDivElement | null>(null)
   const { simpleMap, toggleSimpleMap, showTrails, toggleShowTrails, globeView, toggleGlobeView } = useMapStore()
 
@@ -190,6 +193,55 @@ function SentinelApp() {
     refetchOnWindowFocus: false,
     staleTime: 30_000,
   })
+  const disruptionDashboardQuery = useQuery({
+    queryKey: ['disruption-dashboard', disruptionDashboardOpen],
+    enabled: Boolean(disruptionDashboardOpen),
+    queryFn: async (): Promise<DisruptionDashboardPayload> => {
+      const params = new URLSearchParams({ domain: disruptionDashboardOpen!, hours: '72' })
+      const response = await fetch(`/api/disruptions/dashboard?${params.toString()}`)
+      if (!response.ok) {
+        throw new Error(`disruption dashboard failed: ${response.status}`)
+      }
+      return response.json()
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
+  })
+
+  const disruptionLayersVisible = layers.GPS.visibility !== 'hidden' || layers.Infra.visibility !== 'hidden'
+  const disruptionWindowStart = playback.mode === 'live'
+    ? new Date(Date.now() - 72 * 60 * 60 * 1000)
+    : playback.timeWindow.start
+  const disruptionWindowEnd = playback.mode === 'live'
+    ? new Date()
+    : playback.timeWindow.end
+
+  const disruptionEventsQuery = useQuery({
+    queryKey: [
+      'disruptions',
+      playback.mode,
+      disruptionWindowStart.toISOString(),
+      disruptionWindowEnd.toISOString(),
+      layers.GPS.visibility,
+      layers.Infra.visibility,
+    ],
+    enabled: disruptionLayersVisible,
+    queryFn: async (): Promise<DisruptionEventResponse> => {
+      const params = new URLSearchParams({
+        t_start: disruptionWindowStart.toISOString(),
+        t_end: disruptionWindowEnd.toISOString(),
+        limit: '5000',
+      })
+      const response = await fetch(`/api/disruptions/events?${params.toString()}`)
+      if (!response.ok) {
+        throw new Error(`disruption events failed: ${response.status}`)
+      }
+      return response.json()
+    },
+    refetchOnWindowFocus: false,
+    refetchInterval: playback.mode === 'live' ? 60_000 : false,
+    staleTime: 30_000,
+  })
 
   useEffect(() => {
     if (!selectedTrackId || selectedDomain !== 'Space') {
@@ -297,21 +349,24 @@ function SentinelApp() {
             {statItems.map(({ icon, key, color }) => (
               <div
                 key={key}
-                style={key === 'Space' || key === 'Air' || key === 'Maritime' ? clickableHeaderCardStyle : headerCardStyle}
+                style={key === 'Space' || key === 'Air' || key === 'Maritime' || key === 'GPS' || key === 'Infra' ? clickableHeaderCardStyle : headerCardStyle}
                 onClick={
                   key === 'Space'
                     ? () => setSpaceDashboardOpen(true)
                     : key === 'Air' || key === 'Maritime'
                       ? () => setDomainDashboardOpen(key)
+                      : key === 'GPS' || key === 'Infra'
+                        ? () => setDisruptionDashboardOpen(key)
                       : undefined
                 }
-                role={key === 'Space' || key === 'Air' || key === 'Maritime' ? 'button' : undefined}
-                tabIndex={key === 'Space' || key === 'Air' || key === 'Maritime' ? 0 : undefined}
-                onKeyDown={key === 'Space' || key === 'Air' || key === 'Maritime' ? (event) => {
+                role={key === 'Space' || key === 'Air' || key === 'Maritime' || key === 'GPS' || key === 'Infra' ? 'button' : undefined}
+                tabIndex={key === 'Space' || key === 'Air' || key === 'Maritime' || key === 'GPS' || key === 'Infra' ? 0 : undefined}
+                onKeyDown={key === 'Space' || key === 'Air' || key === 'Maritime' || key === 'GPS' || key === 'Infra' ? (event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault()
                     if (key === 'Space') setSpaceDashboardOpen(true)
                     if (key === 'Air' || key === 'Maritime') setDomainDashboardOpen(key)
+                    if (key === 'GPS' || key === 'Infra') setDisruptionDashboardOpen(key)
                   }
                 } : undefined}
                 title={
@@ -319,6 +374,8 @@ function SentinelApp() {
                     ? 'Open curated space watch dashboard'
                     : key === 'Air' || key === 'Maritime'
                       ? `Open ${key.toLowerCase()} source status dashboard`
+                      : key === 'GPS' || key === 'Infra'
+                        ? `Open ${key.toLowerCase()} disruption dashboard`
                       : undefined
                 }
               >
@@ -400,7 +457,11 @@ function SentinelApp() {
       {/* zIndex: 1 creates a stacking context so DeckGL's internal z-index:0
           canvas stays contained within this layer, below the panels at z-20 */}
       <div className="fixed inset-0" style={{ zIndex: 1, paddingTop: 72 }}>
-        <MapCanvas liveAssets={assetsArray} onMapClick={(lon, lat) => setAnnotationPos({ lon, lat })} />
+        <MapCanvas
+          liveAssets={assetsArray}
+          disruptions={disruptionEventsQuery.data?.items ?? []}
+          onMapClick={(lon, lat) => setAnnotationPos({ lon, lat })}
+        />
       </div>
 
       {/* ── Left panel ─────────────────────────────────────────── */}
@@ -441,6 +502,14 @@ function SentinelApp() {
         domain={domainDashboardOpen ?? 'Air'}
         data={domainStatusQuery.data}
         onClose={() => setDomainDashboardOpen(null)}
+      />
+      <DisruptionDashboard
+        open={Boolean(disruptionDashboardOpen)}
+        loading={disruptionDashboardQuery.isLoading}
+        error={disruptionDashboardQuery.error instanceof Error ? disruptionDashboardQuery.error.message : null}
+        domain={disruptionDashboardOpen ?? 'GPS'}
+        data={disruptionDashboardQuery.data}
+        onClose={() => setDisruptionDashboardOpen(null)}
       />
     </div>
   )

@@ -206,11 +206,16 @@ services:
       context: ./collectors
       dockerfile: gpsjam/Dockerfile
     container_name: ${COLLECTOR_GPSJAM_CONTAINER_NAME:-sentinel-collector-gpsjam}
-    profiles: ["planned"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379
       - POLL_INTERVAL_SEC=${GPSJAM_POLL_INTERVAL:-3600}
+      - GPSJAM_ENABLED=${GPSJAM_ENABLED:-true}
+      - GPSJAM_DATA_URL_TEMPLATE=${GPSJAM_DATA_URL_TEMPLATE:-https://gpsjam.org/data/{date}.json}
+      - GPSJAM_DATE_FORMAT=${GPSJAM_DATE_FORMAT:-%Y-%m-%d}
+      - GPSJAM_DATE_OFFSET_DAYS=${GPSJAM_DATE_OFFSET_DAYS:-0}
+      - GPSJAM_TIMEOUT_SEC=${GPSJAM_TIMEOUT_SEC:-30}
+      - GPSJAM_MIN_SCORE=${GPSJAM_MIN_SCORE:-0.05}
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -223,11 +228,49 @@ services:
       context: ./collectors
       dockerfile: infra/Dockerfile
     container_name: ${COLLECTOR_INFRA_CONTAINER_NAME:-sentinel-collector-infra}
-    profiles: ["planned"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379
       - POLL_INTERVAL_SEC=${INFRA_POLL_INTERVAL:-300}
+      - INFRA_TIMEOUT_SEC=${INFRA_TIMEOUT_SEC:-30}
+      - IODA_ENABLED=${IODA_ENABLED:-true}
+      - IODA_LOOKBACK_MINUTES=${IODA_LOOKBACK_MINUTES:-30}
+      - POWEROUTAGE_ENABLED=${POWEROUTAGE_ENABLED:-true}
+      - POWEROUTAGE_API_KEY=${POWEROUTAGE_API_KEY:-}
+      - POWEROUTAGE_MIN_PERCENT=${POWEROUTAGE_MIN_PERCENT:-1.0}
+      - CLOUDFLARE_RADAR_ENABLED=${CLOUDFLARE_RADAR_ENABLED:-false}
+      - CLOUDFLARE_RADAR_API_TOKEN=${CLOUDFLARE_RADAR_API_TOKEN:-}
+      - CLOUDFLARE_RADAR_DATE_RANGE=${CLOUDFLARE_RADAR_DATE_RANGE:-1d}
+      - CLOUDFLARE_RADAR_LIMIT=${CLOUDFLARE_RADAR_LIMIT:-100}
+      - EIA_ENABLED=${EIA_ENABLED:-false}
+      - EIA_API_KEY=${EIA_API_KEY:-}
+      - EIA_RTO_URL=${EIA_RTO_URL:-https://api.eia.gov/v2/electricity/rto/region-data/data/}
+      - EIA_LIMIT=${EIA_LIMIT:-500}
+      - EIA_STRESS_DELTA_PCT=${EIA_STRESS_DELTA_PCT:-10}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  collector-acled:
+    build:
+      context: ./collectors
+      dockerfile: acled/Dockerfile
+    container_name: ${ACLED_COLLECTOR_CONTAINER_NAME:-sentinel-collector-acled}
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - POLL_INTERVAL_SEC=${ACLED_POLL_INTERVAL:-1800}
+      - ACLED_ENABLED=${ACLED_ENABLED:-true}
+      - ACLED_EMAIL=${ACLED_EMAIL:-}
+      - ACLED_ACCESS_KEY=${ACLED_ACCESS_KEY:-}
+      - ACLED_TIMEOUT_SEC=${ACLED_TIMEOUT_SEC:-45}
+      - ACLED_LOOKBACK_DAYS=${ACLED_LOOKBACK_DAYS:-7}
+      - ACLED_LIMIT=${ACLED_LIMIT:-500}
+      - ACLED_COUNTRIES=${ACLED_COUNTRIES:-}
+      - ACLED_EVENT_TYPES=${ACLED_EVENT_TYPES:-}
     depends_on:
       timescaledb:
         condition: service_healthy

@@ -23,6 +23,44 @@ export interface TrackEventProperties {
   [key: string]: unknown
 }
 
+export interface DisruptionEvent {
+  id: string
+  source_domain: SourceDomain
+  source_feed: string
+  external_event_id: string
+  track_id?: string
+  callsign?: string
+  event_type: string
+  category: string
+  title?: string
+  status: string
+  severity?: number
+  confidence?: number
+  source_trust_score?: number
+  first_seen: string
+  last_seen: string
+  start_time?: string | null
+  end_time?: string | null
+  h3_cell?: string | null
+  measurement_value?: number | null
+  measurement_unit?: string | null
+  affected_assets_count?: number
+  correlation_id?: string | null
+  classification?: string | null
+  metadata?: Record<string, unknown>
+  geometry?: GeoJSON.Geometry | null
+  centroid?: GeoJSON.Point | null
+}
+
+export interface DisruptionEventResponse {
+  count: number
+  items: DisruptionEvent[]
+  window: {
+    t_start: string
+    t_end: string
+  }
+}
+
 export interface TrackEventFeature {
   type: 'Feature'
   geometry: {

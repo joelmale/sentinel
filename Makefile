@@ -89,7 +89,7 @@ test-api:
 #
 # The dev workflow splits the stack into two parts:
 #
-#   Terminal 1:  make dev-backend   (Docker — DB + API on :8000 + ADS-B/AIS/space collectors)
+#   Terminal 1:  make dev-backend   (Docker — DB + API on :8000 + all collectors)
 #   Terminal 2:  make dev-frontend  (Vite on :5173, proxies /api + /ws → :8000)
 #   Browser:     http://localhost:5173
 #
@@ -101,7 +101,7 @@ test-api:
 # In dev you talk directly to the kitchen (FastAPI on :8000).
 
 dev-backend:
-	$(DC_DEV) up -d timescaledb redis api collector-adsb collector-ais collector-space
+	$(DC_DEV) up -d timescaledb redis api collector-adsb collector-ais collector-space collector-gpsjam collector-infra collector-acled
 	@echo ""
 	@echo "  Backend ready — API available at http://localhost:8000"
 	@echo "  Run 'make dev-frontend' in another terminal to start Vite."
@@ -114,5 +114,5 @@ dev-frontend:
 # Use this if you prefer a single terminal — Ctrl-C stops Vite but
 # leaves Docker running; use 'make down' to stop everything.
 dev:
-	$(DC_DEV) up -d timescaledb redis api collector-adsb collector-ais collector-space
+	$(DC_DEV) up -d timescaledb redis api collector-adsb collector-ais collector-space collector-gpsjam collector-infra collector-acled
 	cd frontend && npm install && npm run dev

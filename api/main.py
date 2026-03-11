@@ -17,7 +17,7 @@ from fastapi.responses import ORJSONResponse
 from alert_evaluator import alert_evaluator_loop
 from db.connection import db_pool
 from redis_client import redis_pool
-from routers import alerts, annotations, health, satellites, tracks, ws
+from routers import alerts, annotations, disruptions, health, satellites, tracks, ws
 from settings import Settings
 
 settings = Settings()
@@ -64,6 +64,7 @@ app.include_router(tracks.router, prefix="/api")
 app.include_router(annotations.router, prefix="/api")
 app.include_router(alerts.router, prefix="/api")
 app.include_router(satellites.router, prefix="/api")
+app.include_router(disruptions.router, prefix="/api")
 app.include_router(ws.router)  # /ws prefix set inside router
 
 

@@ -41,7 +41,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 
 import { useMapStore } from '@/store/useMapStore'
 import { COCOM_GEOJSON_URL, COCOM_LABELS, getCocomColors } from '@/data/cocom'
-import type { TrackEventProperties } from '@/types/track'
+import type { DisruptionEvent, TrackEventProperties } from '@/types/track'
 import { getAirlineGroup, getConstellation, getMmsiCountry, normalizeObjectType, normalizeOrbitClass } from '@/data/grouping'
 
 const CLASSIFICATION_COLORS: Record<string, [number, number, number]> = {
@@ -85,10 +85,15 @@ const GLOBE_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
 
 interface MapCanvasProps {
   liveAssets: TrackEventProperties[]
+  disruptions: DisruptionEvent[]
   onMapClick?: (lon: number, lat: number) => void
 }
 
-export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
+type HoverObject =
+  | { kind: 'track'; item: TrackEventProperties }
+  | { kind: 'disruption'; item: DisruptionEvent }
+
+export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProps) {
   const {
     viewport,
     setViewport,
@@ -108,7 +113,7 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
     selectedTrackHistory,
     selectedOrbitPoints,
   } = useMapStore()
-  const [hoverInfo, setHoverInfo] = useState<{ x: number; y: number; object: TrackEventProperties } | null>(null)
+  const [hoverInfo, setHoverInfo] = useState<{ x: number; y: number; object: HoverObject } | null>(null)
   const [renderWarning, setRenderWarning] = useState<string | null>(null)
   const [rendererDisabled, setRendererDisabled] = useState(false)
   const faultHandledRef = useRef(false)
@@ -159,6 +164,10 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
       return true
     })
   }, [liveAssets, layers, classFilter, hiddenGroupFilters])
+
+  const visibleDisruptions = useMemo(() => (
+    disruptions.filter((event) => layers[event.source_domain]?.visibility !== 'hidden')
+  ), [disruptions, layers])
 
   // Workspace search match set — drives declutter opacity on map.
   // Like a spotlight: when declutter mode is on, non-matching tracks dim to ~10%.
@@ -284,7 +293,7 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
         fontFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", "DejaVu Sans", Arial, sans-serif',
         fontSettings: { sdf: true, fontSize: 64 },
         onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
-          setHoverInfo(object ? { x, y, object } : null),
+          setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
         onClick: ({ object }) =>
           object && selectAsset(object.track_id, object.source_domain),
       }))
@@ -374,7 +383,7 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
         fontFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", "DejaVu Sans", Arial, sans-serif',
         fontSettings: { sdf: true, fontSize: 64 },
         onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
-          setHoverInfo(object ? { x, y, object } : null),
+          setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
         onClick: ({ object }) =>
           object && selectAsset(object.track_id, object.source_domain),
       }))
@@ -461,7 +470,7 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
         fontFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", "DejaVu Sans", Arial, sans-serif',
         fontSettings: { sdf: true, fontSize: 64 },
         onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
-          setHoverInfo(object ? { x, y, object } : null),
+          setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
         onClick: ({ object }) =>
           object && selectAsset(object.track_id, object.source_domain),
       }))
@@ -500,11 +509,120 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
       }
     }
 
+    // ── Disruption overlays (GPS/Infra normalized events) ─────────────────
+    const disruptionFeatures = visibleDisruptions
+      .filter((event) => event.geometry)
+      .map((event) => ({
+        type: 'Feature' as const,
+        geometry: event.geometry!,
+        properties: event,
+      }))
+
+    const disruptionCentroids = visibleDisruptions
+      .filter((event) => event.centroid?.coordinates)
+      .map((event) => ({
+        ...event,
+        lon: event.centroid!.coordinates[0],
+        lat: event.centroid!.coordinates[1],
+      }))
+
+    if (disruptionFeatures.length > 0) {
+      ls.push(new GeoJsonLayer({
+        id: 'disruption-footprints',
+        data: disruptionFeatures,
+        pickable: true,
+        stroked: true,
+        filled: true,
+        lineWidthMinPixels: 1.5,
+        getLineColor: (feature: any) => {
+          const event = feature.properties as DisruptionEvent
+          if (event.category === 'conflict') return [251, 113, 133, 220]
+          if (event.source_domain === 'GPS') return [248, 113, 113, 220]
+          return [245, 158, 11, 220]
+        },
+        getFillColor: (feature: any) => {
+          const event = feature.properties as DisruptionEvent
+          const alpha = Math.max(30, Math.min(170, Math.round((event.severity ?? 25) * 1.4)))
+          if (event.category === 'conflict') return [190, 24, 93, alpha]
+          if (event.source_domain === 'GPS') return [239, 68, 68, alpha]
+          return [245, 158, 11, alpha]
+        },
+        opacity: 0.65,
+        onHover: ({ x, y, object }) => {
+          const event = object?.properties as DisruptionEvent | undefined
+          setHoverInfo(event ? { x, y, object: { kind: 'disruption', item: event } } : null)
+        },
+        onClick: ({ object }) => {
+          const event = object?.properties as DisruptionEvent | undefined
+          if (event?.track_id) {
+            selectAsset(event.track_id, event.source_domain)
+          }
+        },
+      }))
+    }
+
+    if (disruptionCentroids.length > 0) {
+      ls.push(new ScatterplotLayer({
+        id: 'disruption-centroids',
+        data: disruptionCentroids,
+        getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
+        getRadius: (d: DisruptionEvent & { lon: number; lat: number }) => 40000 + ((d.severity ?? 10) * 2200),
+        radiusUnits: 'meters',
+        stroked: true,
+        filled: true,
+        lineWidthMinPixels: 1.5,
+        getLineColor: (d: DisruptionEvent) => d.category === 'conflict'
+          ? [251, 113, 133, 235]
+          : d.source_domain === 'GPS'
+            ? [248, 113, 113, 235]
+            : [245, 158, 11, 235],
+        getFillColor: (d: DisruptionEvent) => d.category === 'conflict'
+          ? [244, 63, 94, 80]
+          : d.source_domain === 'GPS'
+            ? [239, 68, 68, 70]
+            : [245, 158, 11, 70],
+        pickable: true,
+        opacity: 0.95,
+        onHover: ({ x, y, object }) => {
+          const event = object as DisruptionEvent | undefined
+          setHoverInfo(event ? { x, y, object: { kind: 'disruption', item: event } } : null)
+        },
+        onClick: ({ object }) => {
+          const event = object as DisruptionEvent | undefined
+          if (event?.track_id) {
+            selectAsset(event.track_id, event.source_domain)
+          }
+        },
+      }))
+
+      ls.push(new TextLayer({
+        id: 'disruption-labels',
+        data: disruptionCentroids.filter((event) => (event.severity ?? 0) >= 10),
+        getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
+        getText: (d: DisruptionEvent) => {
+          if (d.category === 'conflict') return '✹'
+          if (d.source_domain === 'GPS') return '📡'
+          return '⚠'
+        },
+        getColor: (d: DisruptionEvent) => d.category === 'conflict'
+          ? [255, 241, 242, 255]
+          : d.source_domain === 'GPS'
+            ? [254, 226, 226, 255]
+            : [255, 251, 235, 255],
+        getSize: 16,
+        sizeUnits: 'pixels',
+        characterSet: 'auto',
+        fontFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", "DejaVu Sans", Arial, sans-serif',
+        fontSettings: { sdf: true, fontSize: 64 },
+        pickable: false,
+      }))
+    }
+
     return ls
   }, [
     visibleAssets,
+    visibleDisruptions,
     layers,
-    classFilter,
     domainOpacity,
     getAlpha,
     selectAsset,
@@ -513,7 +631,6 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
     selectedDomain,
     selectedTrackHistory,
     selectedOrbitPoints,
-    simpleMap,
     showTrails,
     showCocom,
     globeView,
@@ -568,18 +685,7 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
               onMapClick(lon, lat)
             }
           }}
-          getTooltip={({ object }: { object?: TrackEventProperties }) =>
-            object
-              ? {
-                  html: `<div class="tooltip">
-                    <strong>${object.callsign ?? object.track_id}</strong><br/>
-                    ${object.source_domain} · ${object.classification ?? 'Unknown'}<br/>
-                    Alt: ${object.altitude_m?.toFixed(0) ?? '—'} m
-                  </div>`,
-                  style: { background: '#1B2A3B', color: 'white', padding: '8px', borderRadius: '4px' },
-                }
-              : null
-          }
+          getTooltip={() => null}
         >
           {/* MapLibre is only active in flat map modes — GlobeView uses TileLayer instead */}
           {!globeView && (
@@ -613,7 +719,9 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
           className="pointer-events-none absolute z-10 rounded bg-slate-900/90 px-2 py-1 text-xs text-white"
           style={{ left: hoverInfo.x + 8, top: hoverInfo.y + 8 }}
         >
-          {hoverInfo.object.callsign ?? hoverInfo.object.track_id}
+          {hoverInfo.object.kind === 'track'
+            ? (hoverInfo.object.item.callsign ?? hoverInfo.object.item.track_id)
+            : (hoverInfo.object.item.title ?? hoverInfo.object.item.external_event_id)}
         </div>
       )}
       {renderWarning && (
