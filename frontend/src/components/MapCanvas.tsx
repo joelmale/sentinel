@@ -510,7 +510,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     }
 
     // ── Disruption overlays (GPS/Infra normalized events) ─────────────────
-    const disruptionFeatures = visibleDisruptions
+    const gpsDisruptions = visibleDisruptions.filter((event) => event.source_domain === 'GPS')
+    const nonGpsDisruptions = visibleDisruptions.filter((event) => event.source_domain !== 'GPS')
+
+    const nonGpsDisruptionFeatures = nonGpsDisruptions
       .filter((event) => event.geometry)
       .map((event) => ({
         type: 'Feature' as const,
@@ -518,7 +521,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         properties: event,
       }))
 
-    const disruptionCentroids = visibleDisruptions
+    const gpsCentroids = gpsDisruptions
       .filter((event) => event.centroid?.coordinates)
       .map((event) => ({
         ...event,
@@ -526,10 +529,108 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         lat: event.centroid!.coordinates[1],
       }))
 
-    if (disruptionFeatures.length > 0) {
+    const nonGpsDisruptionCentroids = nonGpsDisruptions
+      .filter((event) => event.centroid?.coordinates)
+      .map((event) => ({
+        ...event,
+        lon: event.centroid!.coordinates[0],
+        lat: event.centroid!.coordinates[1],
+      }))
+
+    if (gpsCentroids.length > 0) {
+      ls.push(new ScatterplotLayer({
+        id: 'gpsjam-heat-halo',
+        data: gpsCentroids,
+        getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
+        getRadius: (d: DisruptionEvent & { lon: number; lat: number }) => 120000 + ((d.severity ?? 10) * 8000),
+        radiusUnits: 'meters',
+        stroked: false,
+        filled: true,
+        getFillColor: (d: DisruptionEvent) => {
+          const severity = d.severity ?? 0
+          const alpha = Math.max(18, Math.min(88, Math.round(severity * 1.8)))
+          return severity >= 10
+            ? [239, 68, 68, alpha]
+            : severity >= 2
+              ? [245, 158, 11, alpha]
+              : [250, 204, 21, alpha]
+        },
+        pickable: true,
+        opacity: 0.9,
+        onHover: ({ x, y, object }) => {
+          const event = object as DisruptionEvent | undefined
+          setHoverInfo(event ? { x, y, object: { kind: 'disruption', item: event } } : null)
+        },
+        onClick: ({ object }) => {
+          const event = object as DisruptionEvent | undefined
+          if (event?.track_id) {
+            selectAsset(event.track_id, event.source_domain)
+          }
+        },
+      }))
+
+      ls.push(new ScatterplotLayer({
+        id: 'gpsjam-heat-core',
+        data: gpsCentroids,
+        getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
+        getRadius: (d: DisruptionEvent & { lon: number; lat: number }) => 42000 + ((d.severity ?? 10) * 2600),
+        radiusUnits: 'meters',
+        stroked: false,
+        filled: true,
+        getFillColor: (d: DisruptionEvent) => {
+          const severity = d.severity ?? 0
+          const alpha = Math.max(35, Math.min(155, Math.round(severity * 2.2)))
+          return severity >= 10
+            ? [248, 113, 113, alpha]
+            : severity >= 2
+              ? [251, 191, 36, alpha]
+              : [253, 224, 71, alpha]
+        },
+        pickable: false,
+        opacity: 0.95,
+      }))
+    }
+
+    if (viewport.zoom >= 4.5 && gpsDisruptions.length > 0) {
+      const gpsHexFeatures = gpsDisruptions
+        .filter((event) => event.geometry)
+        .map((event) => ({
+          type: 'Feature' as const,
+          geometry: event.geometry!,
+          properties: event,
+        }))
+
+      ls.push(new GeoJsonLayer({
+        id: 'gpsjam-hex-drilldown',
+        data: gpsHexFeatures,
+        pickable: true,
+        stroked: true,
+        filled: true,
+        lineWidthMinPixels: 1,
+        getLineColor: () => [254, 226, 226, 120],
+        getFillColor: (feature: any) => {
+          const event = feature.properties as DisruptionEvent
+          const alpha = Math.max(6, Math.min(42, Math.round((event.severity ?? 0) * 0.5)))
+          return [254, 202, 202, alpha]
+        },
+        opacity: 0.35,
+        onHover: ({ x, y, object }) => {
+          const event = object?.properties as DisruptionEvent | undefined
+          setHoverInfo(event ? { x, y, object: { kind: 'disruption', item: event } } : null)
+        },
+        onClick: ({ object }) => {
+          const event = object?.properties as DisruptionEvent | undefined
+          if (event?.track_id) {
+            selectAsset(event.track_id, event.source_domain)
+          }
+        },
+      }))
+    }
+
+    if (nonGpsDisruptionFeatures.length > 0) {
       ls.push(new GeoJsonLayer({
         id: 'disruption-footprints',
-        data: disruptionFeatures,
+        data: nonGpsDisruptionFeatures,
         pickable: true,
         stroked: true,
         filled: true,
@@ -561,10 +662,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }))
     }
 
-    if (disruptionCentroids.length > 0) {
+    if (nonGpsDisruptionCentroids.length > 0) {
       ls.push(new ScatterplotLayer({
         id: 'disruption-centroids',
-        data: disruptionCentroids,
+        data: nonGpsDisruptionCentroids,
         getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
         getRadius: (d: DisruptionEvent & { lon: number; lat: number }) => 40000 + ((d.severity ?? 10) * 2200),
         radiusUnits: 'meters',
@@ -597,7 +698,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
 
       ls.push(new TextLayer({
         id: 'disruption-labels',
-        data: disruptionCentroids.filter((event) => (event.severity ?? 0) >= 10),
+        data: nonGpsDisruptionCentroids.filter((event) => (event.severity ?? 0) >= 10),
         getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
         getText: (d: DisruptionEvent) => {
           if (d.category === 'conflict') return '✹'
@@ -631,6 +732,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     selectedDomain,
     selectedTrackHistory,
     selectedOrbitPoints,
+    viewport.zoom,
     showTrails,
     showCocom,
     globeView,

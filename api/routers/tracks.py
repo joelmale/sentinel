@@ -13,6 +13,7 @@ rather than O(total_data).
 import asyncio
 import csv
 import io
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -26,6 +27,7 @@ from db.connection import get_db
 from models.track_event import SourceDomain
 
 router = APIRouter(tags=["Tracks"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/tracks/domain-status", summary="Operational status summary for a domain")
@@ -49,7 +51,6 @@ async def get_domain_status(
             altitude_m,
             speed_mps,
             last_seen,
-            metadata,
             classification
         FROM asset_states
         WHERE source_domain = :domain
@@ -67,15 +68,23 @@ async def get_domain_status(
         GROUP BY source_feed
     """)
 
-    asset_result, event_result = await asyncio.gather(
-        db.execute(asset_sql, {"domain": domain.value}),
-        db.execute(
+    assets: list[Any] = []
+    feed_events: dict[str, Any] = {}
+
+    try:
+        asset_result = await db.execute(asset_sql, {"domain": domain.value})
+        assets = asset_result.mappings().all()
+    except Exception:
+        logger.exception("[tracks.domain-status] asset_states query failed for %s", domain.value)
+
+    try:
+        event_result = await db.execute(
             event_sql,
             {"domain": domain.value, "active_cutoff": active_cutoff, "day_cutoff": day_cutoff},
-        ),
-    )
-    assets = asset_result.mappings().all()
-    feed_events = {row["source_feed"]: row for row in event_result.mappings().all()}
+        )
+        feed_events = {row["source_feed"]: row for row in event_result.mappings().all()}
+    except Exception:
+        logger.exception("[tracks.domain-status] track_events query failed for %s", domain.value)
 
     classification_counts: dict[str, int] = {}
     feed_summary: dict[str, dict[str, Any]] = {}
@@ -85,11 +94,26 @@ async def get_domain_status(
     altitudes: list[float] = []
     latest_seen: datetime | None = None
 
+    for feed, event_row in feed_events.items():
+        feed_summary.setdefault(feed, {
+            "feed": feed,
+            "asset_count": 0,
+            "fresh_assets": 0,
+            "stale_assets": 0,
+            "latest_seen": None,
+            "classifications": {},
+            "events_1h": int(event_row["events_1h"] or 0),
+            "events_24h": int(event_row["events_24h"] or 0),
+            "active_tracks_1h": int(event_row["active_tracks_1h"] or 0),
+        })
+
     for row in assets:
         classification = row["classification"] or "Unknown"
         classification_counts[classification] = classification_counts.get(classification, 0) + 1
 
         last_seen = row["last_seen"]
+        if last_seen is None:
+            continue
         latest_seen = last_seen if latest_seen is None or last_seen > latest_seen else latest_seen
         if last_seen >= stale_cutoff:
             fresh_assets += 1
@@ -104,6 +128,9 @@ async def get_domain_status(
             "stale_assets": 0,
             "latest_seen": None,
             "classifications": {},
+            "events_1h": 0,
+            "events_24h": 0,
+            "active_tracks_1h": 0,
         })
         summary["asset_count"] += 1
         if last_seen >= stale_cutoff:
@@ -124,7 +151,6 @@ async def get_domain_status(
     feeds = []
     due_feeds = 0
     for feed, summary in feed_summary.items():
-        events = feed_events.get(feed)
         latest = summary["latest_seen"]
         age_minutes = ((now - latest).total_seconds() / 60) if latest else None
         health = "healthy"
@@ -140,9 +166,9 @@ async def get_domain_status(
             "stale_assets": summary["stale_assets"],
             "latest_seen": latest.isoformat() if latest else None,
             "age_minutes": age_minutes,
-            "events_1h": int(events["events_1h"]) if events else 0,
-            "events_24h": int(events["events_24h"]) if events else 0,
-            "active_tracks_1h": int(events["active_tracks_1h"]) if events else 0,
+            "events_1h": int(summary["events_1h"]),
+            "events_24h": int(summary["events_24h"]),
+            "active_tracks_1h": int(summary["active_tracks_1h"]),
             "health": health,
             "classifications": summary["classifications"],
         })

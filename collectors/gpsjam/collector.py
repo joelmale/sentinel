@@ -7,9 +7,11 @@ This collector ingests GPSJam H3 cell measurements and writes them as:
 """
 
 import asyncio
+import csv
 import json
 import logging
 import os
+from io import StringIO
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -39,8 +41,9 @@ class GPSJamCollector(BaseCollector):
         self._first_seen: dict[str, datetime] = {}
         self._url_template = os.environ.get(
             "GPSJAM_DATA_URL_TEMPLATE",
-            f"{GPSJAM_BASE}/data/{{date}}.json",
+            f"{GPSJAM_BASE}/data/{{date}}-h3_{{resolution}}.csv",
         )
+        self._h3_resolution = int(os.environ.get("GPSJAM_H3_RESOLUTION", "4"))
         self._date_format = os.environ.get("GPSJAM_DATE_FORMAT", "%Y-%m-%d")
         self._date_offset_days = int(os.environ.get("GPSJAM_DATE_OFFSET_DAYS", "0"))
         self._timeout_sec = float(os.environ.get("GPSJAM_TIMEOUT_SEC", "30"))
@@ -59,8 +62,10 @@ class GPSJamCollector(BaseCollector):
             return []
         if not self._startup_logged:
             logger.info(
-                "[GPSJam] Config url_template=%s date_format=%s date_offset_days=%s max_days_back=%s min_score=%s",
+                "[GPSJam] Config url_template=%s h3_resolution=%s date_format=%s date_offset_days=%s "
+                "max_days_back=%s backfill_days=%s backfill_batch_days=%s min_score=%s",
                 self._url_template,
+                self._h3_resolution,
                 self._date_format,
                 self._date_offset_days,
                 self._max_days_back,
@@ -154,104 +159,53 @@ class GPSJamCollector(BaseCollector):
         for days_back in range(self._max_days_back + 1):
             candidate_day = target_day - timedelta(days=days_back)
             target_date = candidate_day.strftime(self._date_format)
-            candidate_url = self._url_template.format(date=target_date)
+            candidate_url = self._url_template.format(
+                date=target_date,
+                resolution=self._h3_resolution,
+            )
             response = await client.get(candidate_url, headers={"User-Agent": "Sentinel/0.1"})
             if response.status_code == 404:
                 if days_back == 0:
                     logger.info("[GPSJam] No dataset at %s", candidate_url)
                 continue
             response.raise_for_status()
-            payload = self._decode_payload(response.text)
-            snapshot = self._extract_snapshot(payload)
+            snapshot = self._extract_snapshot(response.text)
             if snapshot:
                 if candidate_day != target_day:
-                    logger.info("[GPSJam] Using fallback dataset %s for target day %s", candidate_day.isoformat(), target_day.isoformat())
+                    logger.info(
+                        "[GPSJam] Using fallback dataset %s for target day %s",
+                        candidate_day.isoformat(),
+                        target_day.isoformat(),
+                    )
                 return snapshot, candidate_url
             logger.info("[GPSJam] Dataset at %s contained no usable H3 cells", candidate_url)
         return {}, None
 
-    def _decode_payload(self, body: str) -> Any:
-        text = body.strip()
-        if text.startswith("{") or text.startswith("["):
-            return json.loads(text)
-
-        first_json = min(
-            [idx for idx in (text.find("{"), text.find("[")) if idx >= 0],
-            default=-1,
-        )
-        if first_json >= 0:
-            trailing = text[first_json:]
-            if trailing.endswith(";"):
-                trailing = trailing[:-1]
-            return json.loads(trailing)
-        raise ValueError("Unable to locate JSON payload in GPSJam response")
-
-    def _extract_snapshot(self, payload: Any) -> dict[str, float]:
-        entries: list[tuple[str, float]] = []
-
-        if isinstance(payload, dict):
-            if payload and all(isinstance(v, (int, float)) for v in payload.values()):
-                entries.extend((str(cell), float(score)) for cell, score in payload.items())
-            for key in ("cells", "data", "features", "hexes"):
-                nested = payload.get(key)
-                if nested is not None:
-                    entries.extend(self._extract_entries(nested))
-        elif isinstance(payload, list):
-            entries.extend(self._extract_entries(payload))
-
+    def _extract_snapshot(self, payload_text: str) -> dict[str, float]:
         snapshot: dict[str, float] = {}
-        for cell, raw_score in entries:
-            normalized = self._normalize_score(raw_score)
+        reader = csv.DictReader(StringIO(payload_text))
+        for row in reader:
+            cell = str(row.get("hex") or "").strip()
+            if not cell or not h3.is_valid_cell(cell):
+                continue
+            normalized = self._row_score(row)
             if normalized is None or normalized < self._min_score:
                 continue
-            if h3.is_valid_cell(cell):
-                snapshot[cell] = normalized
+            snapshot[cell] = normalized
         return snapshot
 
-    def _extract_entries(self, data: Any) -> list[tuple[str, float]]:
-        entries: list[tuple[str, float]] = []
-        if isinstance(data, dict):
-            for cell_key in ("h3", "cell", "cell_id", "hex", "hex_id", "id"):
-                if cell_key in data:
-                    score = self._first_value(
-                        data,
-                        "score",
-                        "value",
-                        "probability",
-                        "interference",
-                        "jam_score",
-                        "jamming_score",
-                        "percent",
-                    )
-                    if score is not None:
-                        entries.append((str(data[cell_key]), float(score)))
-                    return entries
-            for nested in data.values():
-                entries.extend(self._extract_entries(nested))
-            return entries
-
-        if isinstance(data, list):
-            for item in data:
-                entries.extend(self._extract_entries(item))
-        return entries
-
-    def _first_value(self, mapping: dict[str, Any], *keys: str) -> Any:
-        for key in keys:
-            if key in mapping and mapping[key] not in (None, ""):
-                return mapping[key]
-        properties = mapping.get("properties")
-        if isinstance(properties, dict):
-            for key in keys:
-                if key in properties and properties[key] not in (None, ""):
-                    return properties[key]
-        return None
-
-    def _normalize_score(self, raw_score: float | int | str | None) -> float | None:
-        if raw_score in (None, ""):
+    def _row_score(self, row: dict[str, Any]) -> float | None:
+        bad_raw = row.get("count_bad_aircraft")
+        good_raw = row.get("count_good_aircraft")
+        if bad_raw in (None, "") or good_raw in (None, ""):
             return None
-        score = float(raw_score)
-        if score > 1:
-            score = score / 100.0
+        bad = float(bad_raw)
+        good = float(good_raw)
+        total = bad + good
+        if total <= 0:
+            return None
+        # GPSJam's own client uses (bad - 1) / total to damp single-aircraft noise.
+        score = (bad - 1.0) / total
         return max(0.0, min(score, 1.0))
 
     def _build_events(self, snapshot: dict[str, float], observed_at: datetime, source_url: str) -> list[dict]:
