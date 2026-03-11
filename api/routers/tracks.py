@@ -29,6 +29,151 @@ from models.track_event import SourceDomain
 router = APIRouter(tags=["Tracks"])
 
 
+@router.get("/tracks/domain-status", summary="Operational status summary for a domain")
+async def get_domain_status(
+    domain: SourceDomain = Query(..., description="Domain to summarize"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    if domain.value not in {"Air", "Maritime"}:
+        raise HTTPException(status_code=400, detail="Domain status currently supports Air and Maritime only.")
+
+    now = datetime.now(timezone.utc)
+    stale_cutoff = now - timedelta(minutes=15)
+    active_cutoff = now - timedelta(hours=1)
+    day_cutoff = now - timedelta(hours=24)
+
+    asset_sql = text("""
+        SELECT
+            source_feed,
+            track_id,
+            callsign,
+            altitude_m,
+            speed_mps,
+            last_seen,
+            metadata,
+            classification
+        FROM asset_states
+        WHERE source_domain = :domain
+        ORDER BY last_seen DESC
+    """)
+    event_sql = text("""
+        SELECT
+            source_feed,
+            COUNT(*) FILTER (WHERE timestamp >= :active_cutoff) AS events_1h,
+            COUNT(*) FILTER (WHERE timestamp >= :day_cutoff) AS events_24h,
+            COUNT(DISTINCT track_id) FILTER (WHERE timestamp >= :active_cutoff) AS active_tracks_1h
+        FROM track_events
+        WHERE source_domain = :domain
+          AND timestamp >= :day_cutoff
+        GROUP BY source_feed
+    """)
+
+    asset_result, event_result = await asyncio.gather(
+        db.execute(asset_sql, {"domain": domain.value}),
+        db.execute(
+            event_sql,
+            {"domain": domain.value, "active_cutoff": active_cutoff, "day_cutoff": day_cutoff},
+        ),
+    )
+    assets = asset_result.mappings().all()
+    feed_events = {row["source_feed"]: row for row in event_result.mappings().all()}
+
+    classification_counts: dict[str, int] = {}
+    feed_summary: dict[str, dict[str, Any]] = {}
+    stale_assets = 0
+    fresh_assets = 0
+    speeds: list[float] = []
+    altitudes: list[float] = []
+    latest_seen: datetime | None = None
+
+    for row in assets:
+        classification = row["classification"] or "Unknown"
+        classification_counts[classification] = classification_counts.get(classification, 0) + 1
+
+        last_seen = row["last_seen"]
+        latest_seen = last_seen if latest_seen is None or last_seen > latest_seen else latest_seen
+        if last_seen >= stale_cutoff:
+            fresh_assets += 1
+        else:
+            stale_assets += 1
+
+        feed = row["source_feed"]
+        summary = feed_summary.setdefault(feed, {
+            "feed": feed,
+            "asset_count": 0,
+            "fresh_assets": 0,
+            "stale_assets": 0,
+            "latest_seen": None,
+            "classifications": {},
+        })
+        summary["asset_count"] += 1
+        if last_seen >= stale_cutoff:
+            summary["fresh_assets"] += 1
+        else:
+            summary["stale_assets"] += 1
+        if summary["latest_seen"] is None or last_seen > summary["latest_seen"]:
+            summary["latest_seen"] = last_seen
+        summary["classifications"][classification] = summary["classifications"].get(classification, 0) + 1
+
+        speed = row["speed_mps"]
+        altitude = row["altitude_m"]
+        if speed is not None:
+            speeds.append(float(speed))
+        if altitude is not None:
+            altitudes.append(float(altitude))
+
+    feeds = []
+    due_feeds = 0
+    for feed, summary in feed_summary.items():
+        events = feed_events.get(feed)
+        latest = summary["latest_seen"]
+        age_minutes = ((now - latest).total_seconds() / 60) if latest else None
+        health = "healthy"
+        if latest is None:
+            health = "missing"
+        elif latest < stale_cutoff:
+            health = "stale"
+            due_feeds += 1
+        feeds.append({
+            "feed": feed,
+            "asset_count": summary["asset_count"],
+            "fresh_assets": summary["fresh_assets"],
+            "stale_assets": summary["stale_assets"],
+            "latest_seen": latest.isoformat() if latest else None,
+            "age_minutes": age_minutes,
+            "events_1h": int(events["events_1h"]) if events else 0,
+            "events_24h": int(events["events_24h"]) if events else 0,
+            "active_tracks_1h": int(events["active_tracks_1h"]) if events else 0,
+            "health": health,
+            "classifications": summary["classifications"],
+        })
+
+    feeds.sort(key=lambda feed: (-feed["asset_count"], feed["feed"]))
+    classifications = [
+        {"label": label, "count": count}
+        for label, count in sorted(classification_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+    return {
+        "domain": domain.value,
+        "generated_at": now.isoformat(),
+        "summary": {
+            "tracked": len(assets),
+            "fresh": fresh_assets,
+            "stale": stale_assets,
+            "feeds": len(feeds),
+            "due_feeds": due_feeds,
+            "latest_seen": latest_seen.isoformat() if latest_seen else None,
+            "avg_speed_mps": round(sum(speeds) / len(speeds), 1) if speeds else None,
+            "avg_altitude_m": round(sum(altitudes) / len(altitudes), 1) if altitudes else None,
+            "events_1h": int(sum(feed["events_1h"] for feed in feeds)),
+            "events_24h": int(sum(feed["events_24h"] for feed in feeds)),
+        },
+        "feeds": feeds,
+        "classifications": classifications[:8],
+    }
+
+
 @router.get("/tracks/history", summary="Query historical track events")
 async def get_track_history(
     t_start: datetime = Query(..., description="Start time (ISO8601 UTC)"),
@@ -195,6 +340,55 @@ async def get_live_assets(
         })
 
     return {"type": "FeatureCollection", "features": features}
+
+
+@router.get("/tracks/activity", summary="Bucketed track activity density by domain")
+async def get_track_activity(
+    t_start: datetime = Query(..., description="Start time (ISO8601 UTC)"),
+    t_end: datetime = Query(..., description="End time (ISO8601 UTC)"),
+    bucket_minutes: int = Query(default=5, ge=1, le=120, description="Bucket width in minutes"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Returns per-domain bucketed distinct track counts for a time window.
+    Drives the timeline density strip — analysts see at a glance when each
+    domain was busiest before scrubbing into the data.
+
+    Think of it like a spectrogram: time on the X axis, domains on Y,
+    brightness = how many distinct tracks were active in that bucket.
+    """
+    sql = text("""
+        SELECT
+            source_domain,
+            time_bucket(make_interval(mins => :bucket_minutes), timestamp) AS bucket,
+            COUNT(DISTINCT track_id) AS track_count
+        FROM track_events
+        WHERE timestamp >= :t_start
+          AND timestamp <= :t_end
+        GROUP BY source_domain, bucket
+        ORDER BY source_domain, bucket ASC
+    """)
+    result = await db.execute(sql, {
+        "t_start": t_start,
+        "t_end": t_end,
+        "bucket_minutes": bucket_minutes,
+    })
+    rows = result.mappings().all()
+
+    by_domain: dict[str, list] = {}
+    for row in rows:
+        d = row["source_domain"]
+        by_domain.setdefault(d, []).append({
+            "bucket": row["bucket"].isoformat(),
+            "count": int(row["track_count"]),
+        })
+
+    return {
+        "t_start": t_start.isoformat(),
+        "t_end": t_end.isoformat(),
+        "bucket_minutes": bucket_minutes,
+        "domains": by_domain,
+    }
 
 
 @router.get("/tracks/export", summary="Export track history as GeoJSON or CSV")

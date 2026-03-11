@@ -11,21 +11,55 @@ import { create } from 'zustand'
 import { devtools } from 'zustand/middleware'
 import type { PlaybackMode, SourceDomain, TimeWindow, TrackEventProperties } from '@/types/track'
 
+// ── Alert model ───────────────────────────────────────────────────
+// Triage lifecycle: new → investigating | acknowledged → closed
+// Think of it like a ticket system: alerts start as "new", get assigned
+// to an investigator (investigating), acknowledged as known, or closed.
+export type AlertTriage = 'new' | 'acknowledged' | 'investigating' | 'closed'
+
+export interface AlertItem {
+  alertId: string
+  ruleId: string
+  ruleName?: string
+  trackId: string
+  domain: SourceDomain
+  triggeredAt: string
+  triage: AlertTriage
+}
+
+// Investigation context — set when an operator opens an alert for analysis.
+// Drives the workspace pivot: map flies to track, timeline snaps to ±30 min
+// around the event, asset card opens. Think of it as "locking onto a target."
+export interface InvestigationContext {
+  alertId: string
+  trackId: string
+  domain: SourceDomain
+  triggeredAt: string
+  ruleName?: string
+}
+
 // ── Layer state ───────────────────────────────────────────────────
+// Three-state visibility — think of it like a monitor dimmer switch:
+//   active  = full brightness, in track list, in alerts (was: enabled=true)
+//   muted   = dim context layer — still on map at ~25% opacity, excluded from
+//             active filtering, shown greyed in track list
+//   hidden  = completely off — not on map, not in track list, not in alerts
+export type LayerVisibility = 'active' | 'muted' | 'hidden'
+
 export interface LayerState {
-  enabled: boolean
-  opacity: number   // 0–1
+  visibility: LayerVisibility
+  opacity: number   // 0–1 base opacity (muted applies an additional 0.25× factor)
 }
 
 export type LayerMap = Record<SourceDomain | 'Annotations', LayerState>
 
 const DEFAULT_LAYERS: LayerMap = {
-  Air:         { enabled: true,  opacity: 0.9 },
-  Maritime:    { enabled: true,  opacity: 0.9 },
-  Space:       { enabled: true,  opacity: 0.8 },
-  GPS:         { enabled: true,  opacity: 0.7 },
-  Infra:       { enabled: true,  opacity: 0.6 },
-  Annotations: { enabled: true,  opacity: 1.0 },
+  Air:         { visibility: 'active', opacity: 0.9 },
+  Maritime:    { visibility: 'active', opacity: 0.9 },
+  Space:       { visibility: 'active', opacity: 0.8 },
+  GPS:         { visibility: 'active', opacity: 0.7 },
+  Infra:       { visibility: 'active', opacity: 0.6 },
+  Annotations: { visibility: 'active', opacity: 1.0 },
 }
 
 // ── Viewport ──────────────────────────────────────────────────────
@@ -77,10 +111,21 @@ interface MapStore {
   setSelectedTrackHistory: (points: Array<{ lon: number; lat: number; timestamp: number }>) => void
   clearSelectedTrackHistory: () => void
 
-  // Layer visibility
+  // Layer visibility — tri-state (active / muted / hidden)
   layers: LayerMap
+  // cycleLayerVisibility: active → muted → hidden → active (called by TriStateToggle)
+  cycleLayerVisibility: (domain: keyof LayerMap) => void
+  // setLayerEnabled: compat shim — maps true→active, false→hidden (used by legacy callers)
   setLayerEnabled: (domain: keyof LayerMap, enabled: boolean) => void
   setLayerOpacity: (domain: keyof LayerMap, opacity: number) => void
+
+  // Workspace-wide search — drives MapCanvas declutter + SourcePanel list
+  workspaceSearch: string
+  setWorkspaceSearch: (q: string) => void
+
+  // Declutter mode: when on + search active, non-matching tracks dim to ~10% on map
+  declutterMode: boolean
+  toggleDeclutterMode: () => void
 
   // Viewport
   viewport: Viewport
@@ -101,10 +146,16 @@ interface MapStore {
   selectAsset: (trackId: string, domain: SourceDomain) => void
   clearSelection: () => void
 
-  // Alerts
-  pendingAlerts: Array<{ alertId: string; ruleId: string; trackId: string; domain: SourceDomain; triggeredAt: string }>
-  addAlert: (alert: { alertId: string; ruleId: string; trackId: string; domain: SourceDomain; triggeredAt: string }) => void
+  // Alerts — full triage lifecycle
+  pendingAlerts: AlertItem[]
+  addAlert: (alert: Omit<AlertItem, 'triage'>) => void
   dismissAlert: (alertId: string) => void
+  triageAlert: (alertId: string, triage: AlertTriage) => void
+
+  // Investigation context — set when analyst opens an alert
+  investigationContext: InvestigationContext | null
+  openInvestigation: (alert: AlertItem) => void
+  closeInvestigation: () => void
 
   // Panel open/close
   sourcePanelOpen: boolean
@@ -184,14 +235,26 @@ export const useMapStore = create<MapStore>()(
 
     // ── Layers ──────────────────────────────────────────────────
     layers: DEFAULT_LAYERS,
+    cycleLayerVisibility: (domain) =>
+      set((s) => {
+        const CYCLE: Record<LayerVisibility, LayerVisibility> = { active: 'muted', muted: 'hidden', hidden: 'active' }
+        const next = CYCLE[s.layers[domain].visibility]
+        return { layers: { ...s.layers, [domain]: { ...s.layers[domain], visibility: next } } }
+      }),
     setLayerEnabled: (domain, enabled) =>
       set((s) => ({
-        layers: { ...s.layers, [domain]: { ...s.layers[domain], enabled } },
+        layers: { ...s.layers, [domain]: { ...s.layers[domain], visibility: enabled ? 'active' : 'hidden' } },
       })),
     setLayerOpacity: (domain, opacity) =>
       set((s) => ({
         layers: { ...s.layers, [domain]: { ...s.layers[domain], opacity } },
       })),
+
+    // ── Workspace search & declutter ────────────────────────────
+    workspaceSearch: '',
+    setWorkspaceSearch: (q) => set({ workspaceSearch: q }),
+    declutterMode: false,
+    toggleDeclutterMode: () => set((s) => ({ declutterMode: !s.declutterMode })),
 
     // ── Viewport ────────────────────────────────────────────────
     viewport: DEFAULT_VIEWPORT,
@@ -241,9 +304,54 @@ export const useMapStore = create<MapStore>()(
     // ── Alerts ────────────────────────────────────────────────────
     pendingAlerts: [],
     addAlert: (alert) =>
-      set((s) => ({ pendingAlerts: [...s.pendingAlerts, alert] })),
+      set((s) => ({
+        // Upsert: if alert already exists, keep it; otherwise add as 'new'
+        pendingAlerts: s.pendingAlerts.some((a) => a.alertId === alert.alertId)
+          ? s.pendingAlerts
+          : [...s.pendingAlerts, { ...alert, triage: 'new' as AlertTriage }].slice(-200),
+      })),
     dismissAlert: (alertId) =>
       set((s) => ({ pendingAlerts: s.pendingAlerts.filter((a) => a.alertId !== alertId) })),
+    triageAlert: (alertId, triage) =>
+      set((s) => ({
+        pendingAlerts: s.pendingAlerts.map((a) =>
+          a.alertId === alertId ? { ...a, triage } : a
+        ),
+      })),
+
+    // ── Investigation context ─────────────────────────────────────
+    investigationContext: null,
+    openInvestigation: (alert) => {
+      const { liveAssets, flyTo, selectAsset, setTimeWindow, setCurrentTime, setPlaybackMode, triageAlert } = get()
+      // Fly to the track's last known position
+      const assetKey = `${alert.domain}:${alert.trackId}`
+      const asset = liveAssets.get(assetKey)
+      if (asset && typeof asset.lon === 'number' && typeof asset.lat === 'number') {
+        flyTo(asset.lon, asset.lat, 9)
+      }
+      // Open the asset card for this track
+      selectAsset(alert.trackId, alert.domain)
+      // Snap timeline ±30 min around the alert trigger time
+      const alertTime = new Date(alert.triggeredAt)
+      const windowStart = new Date(alertTime.getTime() - 30 * 60_000)
+      const windowEnd   = new Date(Math.max(alertTime.getTime() + 30 * 60_000, Date.now()))
+      setTimeWindow({ start: windowStart, end: windowEnd })
+      setCurrentTime(alertTime)
+      setPlaybackMode('replay')
+      // Advance triage state
+      triageAlert(alert.alertId, 'investigating')
+      // Record the active investigation
+      set({
+        investigationContext: {
+          alertId:     alert.alertId,
+          trackId:     alert.trackId,
+          domain:      alert.domain,
+          triggeredAt: alert.triggeredAt,
+          ruleName:    alert.ruleName,
+        },
+      })
+    },
+    closeInvestigation: () => set({ investigationContext: null }),
 
     // ── Panels ──────────────────────────────────────────────────
     sourcePanelOpen: true,

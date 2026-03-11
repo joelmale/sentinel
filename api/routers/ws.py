@@ -22,6 +22,7 @@ from redis_client import CONSUMER_GROUP, STREAM_KEY, get_redis
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["WebSocket"])
+WS_BATCH_SIZE = 100
 
 # Track active connections in-process
 # In production with multiple API replicas, move this to Redis pub/sub
@@ -78,7 +79,7 @@ async def websocket_live(websocket: WebSocket):
             try:
                 # Block up to 1 second for new messages
                 messages = await redis.xread(
-                    {STREAM_KEY: last_id}, count=500, block=1000
+                    {STREAM_KEY: last_id}, count=WS_BATCH_SIZE, block=1000
                 )
                 if messages:
                     events = []
@@ -92,11 +93,13 @@ async def websocket_live(websocket: WebSocket):
                                 pass
 
                     if events:
-                        await websocket.send_json({
-                            "type": "track_events",
-                            "events": events,
-                            "count": len(events),
-                        })
+                        for i in range(0, len(events), WS_BATCH_SIZE):
+                            chunk = events[i:i + WS_BATCH_SIZE]
+                            await websocket.send_json({
+                                "type": "track_events",
+                                "events": chunk,
+                                "count": len(chunk),
+                            })
             except asyncio.CancelledError:
                 break
 

@@ -7,6 +7,7 @@
  *   3. SourcePanel          — left floating panel
  *   4. AssetCard            — right floating panel (slides in on selection)
  *   5. TimelinePanel        — bottom floating bar
+ *   6. AlertQueuePanel      — bottom-right investigation workbench (z:25)
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -18,7 +19,9 @@ import { TimelinePanel } from '@/components/TimelinePanel'
 import { AssetCard } from '@/components/AssetCard'
 import { AnnotationModal } from '@/components/AnnotationModal'
 import { AlertNotification } from '@/components/AlertNotification'
+import { AlertQueuePanel } from '@/components/AlertQueuePanel'
 import { SpaceWatchDashboard, type SpaceWatchDashboardPayload } from '@/components/SpaceWatchDashboard'
+import { DomainStatusDashboard, type DomainStatusDashboardPayload } from '@/components/DomainStatusDashboard'
 import { useLiveStream } from '@/hooks/useLiveStream'
 import { useMapStore } from '@/store/useMapStore'
 import type { TrackEventProperties, TrackFeatureCollection, WsMessage } from '@/types/track'
@@ -47,6 +50,7 @@ function SentinelApp() {
   const [now, setNow] = useState(new Date())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [spaceDashboardOpen, setSpaceDashboardOpen] = useState(false)
+  const [domainDashboardOpen, setDomainDashboardOpen] = useState<'Air' | 'Maritime' | null>(null)
   const settingsRef = useRef<HTMLDivElement | null>(null)
   const { simpleMap, toggleSimpleMap, showTrails, toggleShowTrails, globeView, toggleGlobeView } = useMapStore()
 
@@ -172,6 +176,21 @@ function SentinelApp() {
     staleTime: 30_000,
   })
 
+  const domainStatusQuery = useQuery({
+    queryKey: ['domain-status', domainDashboardOpen],
+    enabled: Boolean(domainDashboardOpen),
+    queryFn: async (): Promise<DomainStatusDashboardPayload> => {
+      const params = new URLSearchParams({ domain: domainDashboardOpen! })
+      const response = await fetch(`/api/tracks/domain-status?${params.toString()}`)
+      if (!response.ok) {
+        throw new Error(`domain status failed: ${response.status}`)
+      }
+      return response.json()
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
+  })
+
   useEffect(() => {
     if (!selectedTrackId || selectedDomain !== 'Space') {
       clearSelectedOrbitPoints()
@@ -192,8 +211,9 @@ function SentinelApp() {
       upsertAssets(msg.events)
     } else if (msg.type === 'alert') {
       addAlert({
-        alertId: msg.rule_id + ':' + Date.now(),
+        alertId: msg.rule_id + ':' + msg.track_id,
         ruleId: msg.rule_id,
+        ruleName: msg.rule_name,
         trackId: msg.track_id,
         domain: msg.domain,
         triggeredAt: new Date().toISOString(),
@@ -277,17 +297,30 @@ function SentinelApp() {
             {statItems.map(({ icon, key, color }) => (
               <div
                 key={key}
-                style={key === 'Space' ? clickableHeaderCardStyle : headerCardStyle}
-                onClick={key === 'Space' ? () => setSpaceDashboardOpen(true) : undefined}
-                role={key === 'Space' ? 'button' : undefined}
-                tabIndex={key === 'Space' ? 0 : undefined}
-                onKeyDown={key === 'Space' ? (event) => {
+                style={key === 'Space' || key === 'Air' || key === 'Maritime' ? clickableHeaderCardStyle : headerCardStyle}
+                onClick={
+                  key === 'Space'
+                    ? () => setSpaceDashboardOpen(true)
+                    : key === 'Air' || key === 'Maritime'
+                      ? () => setDomainDashboardOpen(key)
+                      : undefined
+                }
+                role={key === 'Space' || key === 'Air' || key === 'Maritime' ? 'button' : undefined}
+                tabIndex={key === 'Space' || key === 'Air' || key === 'Maritime' ? 0 : undefined}
+                onKeyDown={key === 'Space' || key === 'Air' || key === 'Maritime' ? (event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault()
-                    setSpaceDashboardOpen(true)
+                    if (key === 'Space') setSpaceDashboardOpen(true)
+                    if (key === 'Air' || key === 'Maritime') setDomainDashboardOpen(key)
                   }
                 } : undefined}
-                title={key === 'Space' ? 'Open curated space watch dashboard' : undefined}
+                title={
+                  key === 'Space'
+                    ? 'Open curated space watch dashboard'
+                    : key === 'Air' || key === 'Maritime'
+                      ? `Open ${key.toLowerCase()} source status dashboard`
+                      : undefined
+                }
               >
                 <span style={headerLabelStyle}>{key}</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -388,7 +421,10 @@ function SentinelApp() {
         />
       )}
 
-      {/* ── Alert notifications ────────────────────────────────── */}
+      {/* ── Alert queue panel (bottom-right investigation workbench) ── */}
+      <AlertQueuePanel />
+
+      {/* ── Alert notifications (legacy toast — still shows for quick flash) ── */}
       <AlertNotification />
 
       <SpaceWatchDashboard
@@ -397,6 +433,14 @@ function SentinelApp() {
         error={spaceWatchStatusQuery.error instanceof Error ? spaceWatchStatusQuery.error.message : null}
         data={spaceWatchStatusQuery.data}
         onClose={() => setSpaceDashboardOpen(false)}
+      />
+      <DomainStatusDashboard
+        open={Boolean(domainDashboardOpen)}
+        loading={domainStatusQuery.isLoading}
+        error={domainStatusQuery.error instanceof Error ? domainStatusQuery.error.message : null}
+        domain={domainDashboardOpen ?? 'Air'}
+        data={domainStatusQuery.data}
+        onClose={() => setDomainDashboardOpen(null)}
       />
     </div>
   )

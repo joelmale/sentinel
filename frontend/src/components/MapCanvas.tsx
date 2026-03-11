@@ -29,7 +29,7 @@
  *  12. Annotations (TextLayer + IconLayer)
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import DeckGL from '@deck.gl/react'
 // GlobeView is an experimental API in deck.gl v9 — prefixed with underscore
 import { _GlobeView as GlobeView } from '@deck.gl/core'
@@ -97,6 +97,8 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
     showCocom,
     globeView,
     classFilter,
+    workspaceSearch,
+    declutterMode,
     selectAsset,
     trailBuffer,
     selectedTrackId,
@@ -105,6 +107,10 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
     selectedOrbitPoints,
   } = useMapStore()
   const [hoverInfo, setHoverInfo] = useState<{ x: number; y: number; object: TrackEventProperties } | null>(null)
+  const [renderWarning, setRenderWarning] = useState<string | null>(null)
+  const [rendererDisabled, setRendererDisabled] = useState(false)
+  const faultHandledRef = useRef(false)
+  const resizeFaultSeenRef = useRef(false)
 
   const viewState: MapViewState = {
     longitude: viewport.longitude,
@@ -114,17 +120,51 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
     pitch:     viewport.pitch,
   }
 
-  // Filter assets by enabled layers AND classification filter
+  // Filter assets: hidden layers and filtered classifications are excluded entirely.
+  // Muted layers pass through (rendered dimmed). Think of hidden=off, muted=context.
   const visibleAssets = useMemo(() => {
     return liveAssets.filter((a) => {
       const layerState = layers[a.source_domain as keyof typeof layers]
-      if (!(layerState?.enabled ?? true)) return false
-      // Classification filter — hide domains where classification is in the "hidden" list
+      if (layerState?.visibility === 'hidden') return false
+      // Classification filter — hide assets whose classification is in the "hidden" list
       const hidden = classFilter[a.source_domain] ?? []
       if (hidden.length > 0 && a.classification && hidden.includes(a.classification)) return false
       return true
     })
   }, [liveAssets, layers, classFilter])
+
+  // Workspace search match set — drives declutter opacity on map.
+  // Like a spotlight: when declutter mode is on, non-matching tracks dim to ~10%.
+  const searchMatchSet = useMemo<Set<string> | null>(() => {
+    const q = workspaceSearch.trim().toLowerCase()
+    if (!q) return null
+    const set = new Set<string>()
+    for (const a of visibleAssets) {
+      if (
+        a.track_id.toLowerCase().includes(q) ||
+        (a.callsign ?? '').toLowerCase().includes(q) ||
+        (a.classification ?? '').toLowerCase().includes(q)
+      ) {
+        set.add(`${a.source_domain}:${a.track_id}`)
+      }
+    }
+    return set
+  }, [visibleAssets, workspaceSearch])
+
+  // Per-asset alpha helper: applies search-based declutter dimming
+  const getAlpha = (d: TrackEventProperties, baseAlpha = 255): number => {
+    if (declutterMode && searchMatchSet !== null) {
+      return searchMatchSet.has(`${d.source_domain}:${d.track_id}`) ? baseAlpha : 25
+    }
+    return baseAlpha
+  }
+
+  // Per-domain effective opacity: muted domains render at 25% of their base opacity
+  const domainOpacity = (domain: string): number => {
+    const ls = layers[domain as keyof typeof layers]
+    if (!ls) return 1
+    return ls.visibility === 'muted' ? ls.opacity * 0.25 : ls.opacity
+  }
 
   const deckLayers = useMemo(() => {
     const ls: Layer<object>[] = []
@@ -190,7 +230,7 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
     }
 
     // ── Maritime: live positions ─────────────────────────────────
-    if (layers.Maritime.enabled) {
+    if (layers.Maritime.visibility !== 'hidden') {
       const selectedMaritimeAsset = visibleAssets.find(
         (a) =>
           a.source_domain === 'Maritime' &&
@@ -207,12 +247,13 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
         ),
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
         getText: () => '⚓',
-        // Black anchors — high contrast on both light and dark map tiles.
-        getColor: [10, 10, 10, 255],
+        // Black anchors — high contrast; alpha dims when declutter search is active
+        getColor: (d: TrackEventProperties) => [10, 10, 10, getAlpha(d)],
+        updateTriggers: { getColor: [declutterMode, searchMatchSet] },
         getSize: 18,
         sizeUnits: 'pixels',
         pickable: true,
-        opacity: layers.Maritime.opacity,
+        opacity: domainOpacity('Maritime'),
         getTextAnchor: 'middle',
         getAlignmentBaseline: 'center',
         characterSet: 'auto',
@@ -268,13 +309,13 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
           getWidth: 1.5,
           widthUnits: 'pixels',
           pickable: false,
-          opacity: layers.Maritime.opacity,
+          opacity: domainOpacity('Maritime'),
         }))
       }
     }
 
     // ── Air: live positions ──────────────────────────────────────
-    if (layers.Air.enabled) {
+    if (layers.Air.visibility !== 'hidden') {
       const selectedAirAsset = visibleAssets.find(
         (a) =>
           a.source_domain === 'Air' &&
@@ -291,12 +332,16 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
         ),
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
         getText: () => '✈',
-        getColor: (d) => CLASSIFICATION_COLORS[d.classification ?? 'Unknown'],
+        getColor: (d: TrackEventProperties) => {
+          const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
+          return [base[0], base[1], base[2], getAlpha(d)] as [number, number, number, number]
+        },
+        updateTriggers: { getColor: [declutterMode, searchMatchSet] },
         getSize: 18,
         getAngle: (d) => d.heading_deg ?? 0,
         sizeUnits: 'pixels',
         pickable: true,
-        opacity: layers.Air.opacity,
+        opacity: domainOpacity('Air'),
         getTextAnchor: 'middle',
         getAlignmentBaseline: 'center',
         // deck.gl builds a GPU glyph atlas from a limited ASCII set by default.
@@ -354,13 +399,13 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
           getWidth: 1.5,
           widthUnits: 'pixels',
           pickable: false,
-          opacity: layers.Air.opacity,
+          opacity: domainOpacity('Air'),
         }))
       }
     }
 
     // ── Space / Satellites: live positions ───────────────────────
-    if (layers.Space.enabled) {
+    if (layers.Space.visibility !== 'hidden') {
       const selectedSpaceAsset = visibleAssets.find(
         (a) =>
           a.source_domain === 'Space' &&
@@ -377,11 +422,15 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
         ),
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
         getText: () => '🛰',
-        getColor: (d) => CLASSIFICATION_COLORS[d.classification ?? 'Unknown'],
+        getColor: (d: TrackEventProperties) => {
+          const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
+          return [base[0], base[1], base[2], getAlpha(d)] as [number, number, number, number]
+        },
+        updateTriggers: { getColor: [declutterMode, searchMatchSet] },
         getSize: 18,
         sizeUnits: 'pixels',
         pickable: true,
-        opacity: layers.Space.opacity,
+        opacity: domainOpacity('Space'),
         getTextAnchor: 'middle',
         getAlignmentBaseline: 'center',
         characterSet: 'auto',
@@ -442,62 +491,116 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
     showTrails,
     showCocom,
     globeView,
+    declutterMode,
+    searchMatchSet,
   ])
+
+  useEffect(() => {
+    function handleWindowError(event: ErrorEvent) {
+      const message = String(event.message ?? '')
+      if (!message.includes('maxTextureDimension2D')) return
+      event.preventDefault()
+      if (resizeFaultSeenRef.current) return
+      resizeFaultSeenRef.current = true
+      console.warn('[SENTINEL] DeckGL WebGL resize fault detected')
+      setRenderWarning('Map renderer hit a WebGL resize fault. Overlay recovery is limited until reload.')
+    }
+
+    window.addEventListener('error', handleWindowError)
+    return () => window.removeEventListener('error', handleWindowError)
+  }, [])
+
+  useEffect(() => {
+    if (!renderWarning) return
+    const id = window.setTimeout(() => setRenderWarning(null), 4000)
+    return () => window.clearTimeout(id)
+  }, [renderWarning])
 
   return (
     <div className="relative w-full h-full">
-      <DeckGL
-        views={globeView ? new GlobeView({ id: 'globe' }) : undefined}
-        viewState={viewState}
-        onViewStateChange={({ viewState: vs }) =>
-          setViewport(vs as unknown as typeof viewport)
-        }
-        controller={true}
-        layers={deckLayers}
-        onClick={(info) => {
-          if (!info.object && onMapClick) {
-            const [lon, lat] = info.coordinate as [number, number]
-            onMapClick(lon, lat)
+      {!rendererDisabled ? (
+        <DeckGL
+          views={globeView ? new GlobeView({ id: 'globe' }) : undefined}
+          viewState={viewState}
+          useDevicePixels={1}
+          onViewStateChange={({ viewState: vs }) =>
+            setViewport(vs as unknown as typeof viewport)
           }
-        }}
-        getTooltip={({ object }: { object?: TrackEventProperties }) =>
-          object
-            ? {
-                html: `<div class="tooltip">
-                  <strong>${object.callsign ?? object.track_id}</strong><br/>
-                  ${object.source_domain} · ${object.classification ?? 'Unknown'}<br/>
-                  Alt: ${object.altitude_m?.toFixed(0) ?? '—'} m
-                </div>`,
-                style: { background: '#1B2A3B', color: 'white', padding: '8px', borderRadius: '4px' },
-              }
-            : null
-        }
-      >
-        {/* MapLibre is only active in flat map modes — GlobeView uses TileLayer instead */}
-        {!globeView && (
-          <Map
-            mapStyle={simpleMap ? SIMPLE_MAP_STYLE : MAP_STYLE}
-            onLoad={(evt) => {
-              // Suppress "Image X could not be loaded" warnings for missing sprite
-              // images in the base map style (e.g. road-shield icons).
-              evt.target.on('styleimagemissing', (e: { id: string }) => {
-                if (!evt.target.hasImage(e.id)) {
-                  evt.target.addImage(e.id, {
-                    width: 1, height: 1,
-                    data: new Uint8Array(4), // 1 RGBA pixel, transparent
-                  })
+          controller={true}
+          layers={deckLayers}
+          onError={(error) => {
+            if (faultHandledRef.current) return
+            faultHandledRef.current = true
+            console.error('[SENTINEL] DeckGL render error, disabling renderer', error)
+            setHoverInfo(null)
+            setRendererDisabled(true)
+            setRenderWarning('Map renderer disabled after WebGL fault. Reload to restore overlays.')
+          }}
+          onClick={(info) => {
+            if (!info.object && onMapClick) {
+              const [lon, lat] = info.coordinate as [number, number]
+              onMapClick(lon, lat)
+            }
+          }}
+          getTooltip={({ object }: { object?: TrackEventProperties }) =>
+            object
+              ? {
+                  html: `<div class="tooltip">
+                    <strong>${object.callsign ?? object.track_id}</strong><br/>
+                    ${object.source_domain} · ${object.classification ?? 'Unknown'}<br/>
+                    Alt: ${object.altitude_m?.toFixed(0) ?? '—'} m
+                  </div>`,
+                  style: { background: '#1B2A3B', color: 'white', padding: '8px', borderRadius: '4px' },
                 }
-              })
-            }}
+              : null
+          }
+        >
+          {/* MapLibre is only active in flat map modes — GlobeView uses TileLayer instead */}
+          {!globeView && (
+            <Map
+              mapStyle={simpleMap ? SIMPLE_MAP_STYLE : MAP_STYLE}
+              onLoad={(evt) => {
+                // Suppress "Image X could not be loaded" warnings for missing sprite
+                // images in the base map style (e.g. road-shield icons).
+                evt.target.on('styleimagemissing', (e: { id: string }) => {
+                  if (!evt.target.hasImage(e.id)) {
+                    evt.target.addImage(e.id, {
+                      width: 1, height: 1,
+                      data: new Uint8Array(4), // 1 RGBA pixel, transparent
+                    })
+                  }
+                })
+              }}
+            />
+          )}
+        </DeckGL>
+      ) : (
+        <div className="absolute inset-0">
+          <Map
+            style={{ width: '100%', height: '100%' }}
+            mapStyle={simpleMap ? SIMPLE_MAP_STYLE : MAP_STYLE}
           />
-        )}
-      </DeckGL>
+        </div>
+      )}
       {hoverInfo && (
         <div
           className="pointer-events-none absolute z-10 rounded bg-slate-900/90 px-2 py-1 text-xs text-white"
           style={{ left: hoverInfo.x + 8, top: hoverInfo.y + 8 }}
         >
           {hoverInfo.object.callsign ?? hoverInfo.object.track_id}
+        </div>
+      )}
+      {renderWarning && (
+        <div
+          className="absolute left-4 top-4 z-10 rounded border px-3 py-2 text-xs"
+          style={{
+            borderColor: 'rgba(251, 191, 36, 0.45)',
+            background: 'rgba(120, 53, 15, 0.88)',
+            color: '#fef3c7',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.24)',
+          }}
+        >
+          {renderWarning}
         </div>
       )}
     </div>

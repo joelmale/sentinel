@@ -58,7 +58,7 @@ export interface TripPath {
 export type WsMessage =
   | { type: 'connected'; message: string }
   | { type: 'track_events'; events: TrackEventProperties[]; count: number }
-  | { type: 'alert'; rule_id: string; track_id: string; domain: SourceDomain }
+  | { type: 'alert'; rule_id: string; rule_name?: string; track_id: string; domain: SourceDomain }
 
 // Playback state (managed by Zustand)
 export type PlaybackMode = 'live' | 'replay' | 'paused'

@@ -1,0 +1,14 @@
+services:
+  # NPM should own public 80/443. Do not publish Sentinel ports on the host.
+  # Instead, attach Sentinel's internal router to the shared Docker network
+  # so NPM can proxy to the `caddy` service by name.
+  caddy:
+    ports: []
+    networks:
+      - default
+      - homelab-net
+
+networks:
+  homelab-net:
+    external: true
+    name: homelab-net

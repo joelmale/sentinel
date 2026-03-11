@@ -28,6 +28,7 @@ export function useLiveStream({
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const attemptRef = useRef(0)
+  const openedRef = useRef(false)
   const onMessageRef = useRef(onMessage)
   onMessageRef.current = onMessage  // always call the latest callback
 
@@ -43,32 +44,59 @@ export function useLiveStream({
 
     const ws = new WebSocket(url)
     wsRef.current = ws
+    openedRef.current = false
 
     ws.onopen = () => {
+      if (destroyedRef.current || !enabled) {
+        ws.close(1000, 'disposed before open')
+        return
+      }
       console.log('[SENTINEL] WS connected')
+      openedRef.current = true
       attemptRef.current = 0
     }
 
     ws.onmessage = (event) => {
+      let msg: WsMessage
       try {
-        const msg = JSON.parse(event.data) as WsMessage
+        msg = JSON.parse(event.data) as WsMessage
+      } catch (error) {
+        console.warn(
+          '[SENTINEL] WS JSON parse failed',
+          error,
+          typeof event.data === 'string' ? event.data.slice(0, 1000) : event.data,
+        )
+        return
+      }
+
+      try {
         onMessageRef.current(msg)
-      } catch {
-        console.warn('[SENTINEL] Unparseable WS message', event.data)
+      } catch (error) {
+        console.error('[SENTINEL] WS handler failed', error, {
+          type: msg.type,
+          count: msg.type === 'track_events' ? msg.events.length : undefined,
+        })
       }
     }
 
     ws.onerror = () => {
       // onerror always fires before onclose — suppress the redundant log
       // when the socket was closed intentionally by cleanup.
-      if (!destroyedRef.current) {
+      if (!destroyedRef.current && (openedRef.current || ws.readyState === WebSocket.OPEN)) {
         console.warn('[SENTINEL] WS connection error')
       }
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       // Intentional teardown (StrictMode cleanup or component unmount) — don't retry.
       if (destroyedRef.current || !enabled) return
+
+       // Dev-mode mount/cleanup churn can dispose a socket before it finishes
+       // opening. Treat that as a no-op rather than a connection failure.
+      if (!openedRef.current && (event.code === 1000 || ws.readyState === WebSocket.CLOSED)) {
+        return
+      }
+
       const backoff = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attemptRef.current)
       attemptRef.current++
       console.log(`[SENTINEL] WS closed. Reconnecting in ${backoff}ms`)
@@ -81,7 +109,17 @@ export function useLiveStream({
     connect()
     return () => {
       destroyedRef.current = true
-      wsRef.current?.close()
+      const ws = wsRef.current
+      if (ws) {
+        if (ws.readyState === WebSocket.CONNECTING) {
+          ws.onopen = () => ws.close(1000, 'disposed during connect')
+          ws.onmessage = null
+          ws.onerror = null
+          ws.onclose = null
+        } else if (ws.readyState === WebSocket.OPEN) {
+          ws.close(1000, 'component cleanup')
+        }
+      }
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
     }
   }, [connect, enabled])

@@ -1,14 +1,11 @@
-name: sentinel
+name: ${COMPOSE_PROJECT_NAME:-sentinel}
 
 services:
 
-  # ── Reverse proxy ────────────────────────────────────────────────
+  # ── Reverse proxy (internal only; NPM proxies to this over homelab-net) ──
   caddy:
-    image: caddy:2-alpine
-    container_name: sentinel-caddy
-    ports:
-      - "80:80"
-      - "443:443"
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    container_name: ${CADDY_CONTAINER_NAME:-sentinel-caddy}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -17,13 +14,16 @@ services:
       - api
       - frontend
     restart: unless-stopped
+    networks:
+      - default
+      - homelab-net
 
   # ── Frontend (served as static by Caddy) ────────────────────────
   frontend:
     build:
       context: ./frontend
       target: server
-    container_name: sentinel-frontend
+    container_name: ${FRONTEND_CONTAINER_NAME:-sentinel-frontend}
     environment:
       - VITE_API_BASE_URL=${VITE_API_BASE_URL:-/api}
       - VITE_WS_URL=${VITE_WS_URL:-/ws}
@@ -32,13 +32,12 @@ services:
   # ── Backend API ──────────────────────────────────────────────────
   api:
     build: ./api
-    container_name: sentinel-api
+    container_name: ${API_CONTAINER_NAME:-sentinel-api}
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379
       - SECRET_KEY=${SECRET_KEY}
       - ENVIRONMENT=${ENVIRONMENT:-development}
-      # Keycloak — only relevant when running with --profile auth
       - KEYCLOAK_URL=${KEYCLOAK_URL:-}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sentinel}
       - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-sentinel-api}
@@ -50,16 +49,14 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: ${API_HEALTHCHECK_INTERVAL:-30s}
+      timeout: ${API_HEALTHCHECK_TIMEOUT:-10s}
+      retries: ${API_HEALTHCHECK_RETRIES:-3}
 
   # ── Database ─────────────────────────────────────────────────────
-  # `timescaledb-ha` is the PostGIS-capable image line for this prototype.
-  # Sentinel's schema and queries depend on PostGIS geometry functions.
   timescaledb:
-    image: timescale/timescaledb-ha:pg16-ts2.24
-    container_name: sentinel-db
+    image: ${TIMESCALE_IMAGE:-timescale/timescaledb-ha:pg16-ts2.24}
+    container_name: ${DB_CONTAINER_NAME:-sentinel-db}
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-sentinel}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -70,31 +67,28 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      interval: ${DB_HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${DB_HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${DB_HEALTHCHECK_RETRIES:-5}
 
   # ── Redis ────────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine
-    container_name: sentinel-redis
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    container_name: ${REDIS_CONTAINER_NAME:-sentinel-redis}
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-512mb} --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-allkeys-lru}
     volumes:
       - redis_data:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      interval: ${REDIS_HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${REDIS_HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${REDIS_HEALTHCHECK_RETRIES:-3}
 
   # ── Identity provider (OPTIONAL) ─────────────────────────────────
-  # Only starts when you run: docker compose --profile auth up
-  # Phase 1-2: skip this entirely and use API_KEY auth instead.
-  # Phase 5 (Team Features): enable when you need multi-user SSO.
   keycloak:
-    image: quay.io/keycloak/keycloak:24.0
-    container_name: sentinel-keycloak
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:24.0}
+    container_name: ${KEYCLOAK_CONTAINER_NAME:-sentinel-keycloak}
     profiles: ["auth"]
     command: ["start-dev", "--import-realm"]
     environment:
@@ -110,20 +104,15 @@ services:
     build:
       context: ./collectors
       dockerfile: adsb/Dockerfile
-    container_name: sentinel-collector-adsb
+    container_name: ${COLLECTOR_ADSB_CONTAINER_NAME:-sentinel-collector-adsb}
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379
       - OPENSKY_USERNAME=${OPENSKY_USERNAME:-}
       - OPENSKY_PASSWORD=${OPENSKY_PASSWORD:-}
       - POLL_INTERVAL_SEC=${ADSB_POLL_INTERVAL:-10}
-      # ADSBexchange — optional second source; enables when key is present.
-      # Adds military identification, registration, and aircraft type enrichment.
-      # Direct API key (https://www.adsbexchange.com/data-samples/documentation/):
       - ADSBEXCHANGE_API_KEY=${ADSBEXCHANGE_API_KEY:-}
-      # RapidAPI proxy key (alternative access method):
       - ADSBEXCHANGE_RAPID_KEY=${ADSBEXCHANGE_RAPID_KEY:-}
-      # Override the endpoint URL if using a non-default proxy:
       - ADSBEXCHANGE_BASE_URL=${ADSBEXCHANGE_BASE_URL:-}
     depends_on:
       timescaledb:
@@ -136,7 +125,7 @@ services:
     build:
       context: ./collectors
       dockerfile: ais/Dockerfile
-    container_name: sentinel-collector-ais
+    container_name: ${COLLECTOR_AIS_CONTAINER_NAME:-sentinel-collector-ais}
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379
@@ -173,7 +162,7 @@ services:
     build:
       context: ./collectors
       dockerfile: ais/Dockerfile
-    container_name: sentinel-collector-ais-history
+    container_name: ${COLLECTOR_AIS_HISTORY_CONTAINER_NAME:-sentinel-collector-ais-history}
     profiles: ["historical"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -192,21 +181,16 @@ services:
     build:
       context: ./collectors
       dockerfile: space/Dockerfile
-    container_name: sentinel-collector-space
+    container_name: ${COLLECTOR_SPACE_CONTAINER_NAME:-sentinel-collector-space}
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379
       - TLE_REFRESH_INTERVAL_SEC=${TLE_REFRESH_INTERVAL:-7200}
       - POSITION_INTERVAL_SEC=${SPACE_POSITION_INTERVAL:-30}
-      # Space-Track.org credentials (https://www.space-track.org/auth/createAccount)
-      # When set, the collector uses the authoritative USSPACECOM catalog (~5000 payloads)
-      # with rich SATCAT metadata. Falls back to CelesTrak if credentials are blank.
       - SPACETRACK_USER=${SPACETRACK_USER:-}
       - SPACETRACK_PASS=${SPACETRACK_PASS:-}
-      # Optional N2YO API key for supplemental curated TLE fetches.
       - N2YO_API_KEY=${N2YO_API_KEY:-}
       - N2YO_NORAD_IDS=${N2YO_NORAD_IDS:-}
-      # Optional SatNOGS DB lookups for metadata and latest TLEs.
       - SATNOGS_NORAD_IDS=${SATNOGS_NORAD_IDS:-}
       - SATNOGS_SAT_IDS=${SATNOGS_SAT_IDS:-}
       - SPACE_WATCHLIST_PATH=${SPACE_WATCHLIST_PATH:-/app/watchlist.json}
@@ -221,7 +205,7 @@ services:
     build:
       context: ./collectors
       dockerfile: gpsjam/Dockerfile
-    container_name: sentinel-collector-gpsjam
+    container_name: ${COLLECTOR_GPSJAM_CONTAINER_NAME:-sentinel-collector-gpsjam}
     profiles: ["planned"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -238,7 +222,7 @@ services:
     build:
       context: ./collectors
       dockerfile: infra/Dockerfile
-    container_name: sentinel-collector-infra
+    container_name: ${COLLECTOR_INFRA_CONTAINER_NAME:-sentinel-collector-infra}
     profiles: ["planned"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -252,12 +236,9 @@ services:
     restart: unless-stopped
 
   # ── Monitoring (OPTIONAL) ────────────────────────────────────────
-  # Only starts when you run: docker compose --profile monitoring up
-  # Provides ops dashboards: collector throughput, DB size, Redis lag.
-  # Enable once Phase 2 collectors are running and you want visibility.
   grafana:
-    image: grafana/grafana-oss:latest
-    container_name: sentinel-grafana
+    image: ${GRAFANA_IMAGE:-grafana/grafana-oss:latest}
+    container_name: ${GRAFANA_CONTAINER_NAME:-sentinel-grafana}
     profiles: ["monitoring"]
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
@@ -283,4 +264,7 @@ volumes:
 
 networks:
   default:
-    name: sentinel-net
+    name: ${INTERNAL_DOCKER_NETWORK:-sentinel-net}
+  homelab-net:
+    external: true
+    name: ${EXTERNAL_PROXY_NETWORK:-homelab-net}

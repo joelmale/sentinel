@@ -5,8 +5,10 @@
  *   1. Header: grab-to-move handle + title + asset count + hide button
  *   2. Search box (filters across all domains)
  *   3. Domain rows: per-domain checkbox + icon + count + collapse toggle
- *      ↳ Expanded: classification filter chips + track list rows
- *      ↳ Space domain: orbital track duration selector
+ *      ↳ Expanded: classification filter chips + group-by mode chips + track list/tree
+ *      ↳ Space domain: orbital track duration selector + 3-axis tree (type → orbit → constellation)
+ *      ↳ Air domain: flat list or airline groups (ICAO 3-char prefix)
+ *      ↳ Maritime domain: flat list or flag-state groups (MMSI MID prefix)
  *   4. Map Overlays: COCOM boundaries toggle, Globe View toggle
  *
  * State stored in Zustand (layer enabled/disabled, classFilter, globeView)
@@ -15,9 +17,19 @@
 
 import { useMemo, useState } from 'react'
 import { useMapStore } from '@/store/useMapStore'
+import type { LayerVisibility } from '@/store/useMapStore'
 import { useResize } from '@/hooks/useResize'
 import { useDrag } from '@/hooks/useDrag'
 import type { SourceDomain, TrackEventProperties } from '@/types/track'
+import {
+  getAirlineGroup,
+  getMmsiCountry,
+  getConstellation,
+  normalizeObjectType,
+  normalizeOrbitClass,
+  objectTypeSort,
+  orbitClassSort,
+} from '@/data/grouping'
 
 // ── Domain display config ─────────────────────────────────────────
 const DOMAIN_ORDER: SourceDomain[] = ['Air', 'Maritime', 'Space', 'GPS', 'Infra']
@@ -87,44 +99,174 @@ function DragDots({ dragRef, isDragging }: { dragRef: React.Ref<HTMLDivElement>;
   )
 }
 
-// ── Toggle checkbox ───────────────────────────────────────────────
-function LayerToggle({
-  checked,
-  onChange,
+// ── Tri-state layer toggle ─────────────────────────────────────────
+// Three states cycle on click: active → muted → hidden → active
+//   active  = filled checkmark (fully visible, in track list & alerts)
+//   muted   = dash (context-only: dimmed on map, greyed in list)
+//   hidden  = empty (off: not rendered, not listed, not alerted)
+//
+// Think of it like a camera aperture wheel — three distinct stops,
+// not just open/closed.
+function TriStateToggle({
+  visibility,
+  onCycle,
   colorHex,
 }: {
-  checked: boolean
-  onChange: () => void
+  visibility: LayerVisibility
+  onCycle: () => void
   colorHex: string
 }) {
+  const isActive = visibility === 'active'
+  const isMuted  = visibility === 'muted'
+  const isHidden = visibility === 'hidden'
+
+  const borderColor = isHidden
+    ? 'rgba(148,163,184,0.25)'
+    : isMuted
+    ? `${colorHex}60`
+    : colorHex
+  const bgColor = isActive
+    ? `${colorHex}30`
+    : isMuted
+    ? `${colorHex}10`
+    : 'transparent'
+
+  const title = isActive ? 'Active — click to mute' : isMuted ? 'Muted (context only) — click to hide' : 'Hidden — click to activate'
+
   return (
     <div
-      onClick={(e) => { e.stopPropagation(); onChange() }}
+      onClick={(e) => { e.stopPropagation(); onCycle() }}
+      title={title}
       style={{
-        width: 18,
-        height: 18,
-        borderRadius: 5,
-        border: `2px solid ${checked ? colorHex : 'rgba(148,163,184,0.35)'}`,
-        background: checked ? `${colorHex}30` : 'transparent',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        cursor: 'pointer',
-        flexShrink: 0,
-        transition: 'all 0.15s',
+        width: 18, height: 18, borderRadius: 5,
+        border: `2px solid ${borderColor}`,
+        background: bgColor,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: 'pointer', flexShrink: 0, transition: 'all 0.15s',
       }}
     >
-      {checked && (
+      {isActive && (
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-          <polyline
-            points="1.5,5.5 4,8 8.5,2"
-            stroke={colorHex}
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
+          <polyline points="1.5,5.5 4,8 8.5,2" stroke={colorHex} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       )}
+      {isMuted && (
+        <svg width="10" height="4" viewBox="0 0 10 4" fill="none">
+          <line x1="1" y1="2" x2="9" y2="2" stroke={colorHex} strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      )}
+    </div>
+  )
+}
+
+// ── Group-by mode chips ───────────────────────────────────────────
+// Rendered inside a domain's expanded section, above the track list.
+// Acts like a radio group: exactly one mode is active at a time.
+// Analogy: think of these as "view mode" tabs for each domain —
+// the same underlying data rendered differently.
+function GroupByChips({
+  options,
+  value,
+  onChange,
+}: {
+  options: Array<{ key: string; label: string }>
+  value: string
+  onChange: (key: string) => void
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 10px 5px 28px' }}>
+      <span style={{ fontSize: 9, color: '#475569', letterSpacing: '0.1em', textTransform: 'uppercase', marginRight: 2, flexShrink: 0 }}>
+        Group:
+      </span>
+      {options.map((opt) => (
+        <div
+          key={opt.key}
+          onClick={() => onChange(opt.key)}
+          title={`Group by ${opt.label}`}
+          style={{
+            padding: '2px 7px', borderRadius: 4,
+            border: `1px solid ${value === opt.key ? 'rgba(94,234,212,0.5)' : 'rgba(100,116,139,0.25)'}`,
+            background: value === opt.key ? 'rgba(20,184,166,0.12)' : 'transparent',
+            color: value === opt.key ? '#5eead4' : '#64748b',
+            fontSize: 9, fontWeight: 600, letterSpacing: '0.06em',
+            cursor: 'pointer', transition: 'all 0.15s', userSelect: 'none',
+          }}
+        >
+          {opt.label}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ── Group header row ──────────────────────────────────────────────
+// Collapsible section header used inside the grouped track tree.
+// indent=0 is a primary group (e.g. object type), indent=1 is a
+// sub-group (e.g. orbit class), indent=2 is a leaf group (constellation).
+// Each level of indentation adds 14px of left padding, analogous to
+// an outline-view tree control.
+function GroupHeader({
+  label,
+  count,
+  colorHex,
+  isOpen,
+  onToggle,
+  indent = 0,
+}: {
+  label: string
+  count: number
+  colorHex: string
+  isOpen: boolean
+  onToggle: () => void
+  indent?: number
+}) {
+  const paddingLeft = 28 + indent * 14
+  const fontSize = indent === 0 ? 11 : 10
+  const fontWeight = indent === 0 ? 700 : 600
+  const borderTop = indent === 0 ? '1px solid rgba(148,163,184,0.07)' : 'none'
+  const openColor = indent === 0 ? '#cbd5e1' : indent === 1 ? '#94a3b8' : '#64748b'
+  const closedColor = indent === 0 ? '#94a3b8' : '#64748b'
+
+  return (
+    <div
+      onClick={onToggle}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 5,
+        padding: `4px 10px 4px ${paddingLeft}px`,
+        cursor: 'pointer', transition: 'background 0.1s',
+        background: isOpen ? `rgba(30,41,59,${0.5 - indent * 0.12})` : 'transparent',
+        borderTop,
+      }}
+      onMouseEnter={(e) => {
+        if (!isOpen) (e.currentTarget as HTMLDivElement).style.background = 'rgba(148,163,184,0.06)'
+      }}
+      onMouseLeave={(e) => {
+        if (!isOpen) (e.currentTarget as HTMLDivElement).style.background = 'transparent'
+      }}
+    >
+      <span style={{
+        fontSize: 9, color: '#475569', width: 10, textAlign: 'center',
+        display: 'inline-block', flexShrink: 0,
+        transform: isOpen ? 'rotate(0deg)' : 'rotate(-90deg)',
+        transition: 'transform 0.15s',
+      }}>▾</span>
+      <span style={{
+        flex: 1, fontSize, fontWeight,
+        color: isOpen ? openColor : closedColor,
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        transition: 'color 0.15s',
+      }}>
+        {label}
+      </span>
+      <span style={{
+        fontSize: 9, fontWeight: 700,
+        color: colorHex,
+        background: `${colorHex}18`,
+        border: `1px solid ${colorHex}35`,
+        borderRadius: 8, padding: '1px 6px', flexShrink: 0,
+      }}>
+        {count}
+      </span>
     </div>
   )
 }
@@ -188,14 +330,17 @@ function TrackRow({
   asset,
   isSelected,
   onSelect,
+  indent = 0,
 }: {
   asset: TrackEventProperties
   isSelected: boolean
   onSelect: () => void
+  indent?: number
 }) {
   const label = asset.callsign || asset.track_id
   const cls = asset.classification ?? 'Unknown'
   const clsColor = CLASS_COLORS[cls] ?? CLASS_COLORS.Unknown
+  const paddingLeft = 28 + indent * 14
   return (
     <div
       onClick={onSelect}
@@ -203,7 +348,7 @@ function TrackRow({
         display: 'flex',
         alignItems: 'center',
         gap: 8,
-        padding: '5px 10px 5px 28px',
+        padding: `5px 10px 5px ${paddingLeft}px`,
         cursor: 'pointer',
         background: isSelected ? 'rgba(20,184,166,0.18)' : 'transparent',
         borderLeft: isSelected ? '2px solid #14b8a6' : '2px solid transparent',
@@ -262,7 +407,7 @@ export function SourcePanel() {
     selectedDomain,
     flyTo,
     layers,
-    setLayerEnabled,
+    cycleLayerVisibility,
     showCocom,
     toggleCocom,
     globeView,
@@ -271,9 +416,12 @@ export function SourcePanel() {
     setClassFilter,
     spaceTrackDuration,
     setSpaceTrackDuration,
+    workspaceSearch,
+    setWorkspaceSearch,
+    declutterMode,
+    toggleDeclutterMode,
   } = useMapStore()
 
-  const [search, setSearch] = useState('')
   // Which domains have their track list expanded
   const [expanded, setExpanded] = useState<Set<SourceDomain>>(
     () => new Set<SourceDomain>(['Air', 'Maritime'])
@@ -281,6 +429,33 @@ export function SourcePanel() {
   // Per-domain "show all" toggle (when count > MAX_VISIBLE_PER_DOMAIN)
   const MAX_VISIBLE = 12
   const [showAll, setShowAll] = useState<Set<SourceDomain>>(new Set())
+
+  // ── Grouping state ────────────────────────────────────────────────
+  // Per-domain grouping mode. Defaults: Air=airline, Maritime=flag, Space=grouped.
+  // Other domains (GPS, Infra) have no grouping mode.
+  // Think of this like choosing a SQL GROUP BY column per domain.
+  const [groupModes, setGroupModes] = useState<Partial<Record<SourceDomain, string>>>({
+    Air: 'airline',
+    Maritime: 'flag',
+    Space: 'grouped',
+  })
+
+  // Which group headers are expanded in the tree (identified by path key).
+  // Key format: "Domain:Level1" or "Domain:Level1:Level2" or "Domain:L1:L2:L3"
+  // Space Payload groups open by default; Rocket Body and Debris start collapsed
+  // (most analysts care about payloads, debris is noise until selected).
+  const [openGroups, setOpenGroups] = useState<Set<string>>(
+    () => new Set(['Space:Payload'])
+  )
+
+  const toggleGroup = (key: string) => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   // Width resize — right-edge drag handle
   const { size: panelWidth, handleRef: resizeHandleRef, isDragging: isResizing } = useResize({
@@ -316,19 +491,23 @@ export function SourcePanel() {
     return map
   }, [liveAssets, selectedTrackId, selectedDomain])
 
-  // Flat filtered list for search mode
+  // Flat filtered list for search mode — driven by workspace-wide search in store
   const filteredAssets = useMemo(() => {
-    const q = search.trim().toLowerCase()
+    const q = workspaceSearch.trim().toLowerCase()
     if (!q) return null
     return Array.from(liveAssets.values())
-      .filter((a) =>
-        a.track_id.toLowerCase().includes(q) ||
-        (a.callsign ?? '').toLowerCase().includes(q) ||
-        (a.classification ?? '').toLowerCase().includes(q)
-      )
+      .filter((a) => {
+        // Exclude hidden domains from search results
+        if (layers[a.source_domain as keyof typeof layers]?.visibility === 'hidden') return false
+        return (
+          a.track_id.toLowerCase().includes(q) ||
+          (a.callsign ?? '').toLowerCase().includes(q) ||
+          (a.classification ?? '').toLowerCase().includes(q)
+        )
+      })
       .sort((a, b) => (a.callsign || a.track_id).localeCompare(b.callsign || b.track_id))
       .slice(0, 200)
-  }, [liveAssets, search])
+  }, [liveAssets, workspaceSearch, layers])
 
   const toggleExpanded = (d: SourceDomain) => {
     setExpanded((prev) => {
@@ -470,6 +649,25 @@ export function SourcePanel() {
             {liveAssets.size.toLocaleString()} assets live
           </div>
         </div>
+        {/* Declutter toggle — dims non-matching tracks on the map when search is active */}
+        <button
+          onClick={toggleDeclutterMode}
+          title={declutterMode ? 'Declutter ON — non-matching tracks are dimmed. Click to disable.' : 'Declutter OFF — enable to dim non-matching tracks on map'}
+          style={{
+            border: `1px solid ${declutterMode ? 'rgba(20,184,166,0.6)' : 'rgba(148,163,184,0.28)'}`,
+            background: declutterMode ? 'rgba(13,148,136,0.25)' : 'rgba(15,23,42,0.6)',
+            color: declutterMode ? '#5eead4' : '#64748b',
+            borderRadius: '8px',
+            padding: '4px 7px',
+            fontSize: 11,
+            cursor: 'pointer',
+            flexShrink: 0,
+            transition: 'all 0.15s',
+            letterSpacing: '0.04em',
+          }}
+        >
+          {declutterMode ? '◎' : '○'}
+        </button>
         <button
           onClick={toggleSourcePanel}
           style={{
@@ -489,24 +687,89 @@ export function SourcePanel() {
       </div>
 
       {/* ── Search ── */}
-      <div style={{ padding: '8px 12px', borderBottom: '1px solid rgba(148,163,184,0.14)', flexShrink: 0 }}>
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="🔍  Filter callsign, ID, class…"
-          style={{
-            width: '100%',
-            background: 'rgba(15,23,42,0.85)',
-            color: 'white',
-            border: '1px solid rgba(148,163,184,0.28)',
-            borderRadius: '8px',
-            padding: '7px 10px',
-            fontSize: 12,
-            boxSizing: 'border-box',
-            outline: 'none',
-          }}
-        />
+      <div style={{ padding: '8px 12px 6px', borderBottom: '1px solid rgba(148,163,184,0.14)', flexShrink: 0 }}>
+        <div style={{ position: 'relative' }}>
+          <input
+            type="text"
+            value={workspaceSearch}
+            onChange={(e) => setWorkspaceSearch(e.target.value)}
+            placeholder="🔍  Search callsign, ID, class… (workspace-wide)"
+            style={{
+              width: '100%',
+              background: workspaceSearch ? 'rgba(37,99,235,0.1)' : 'rgba(15,23,42,0.85)',
+              color: 'white',
+              border: `1px solid ${workspaceSearch ? 'rgba(59,130,246,0.5)' : 'rgba(148,163,184,0.28)'}`,
+              borderRadius: '8px',
+              padding: '7px 10px',
+              fontSize: 12,
+              boxSizing: 'border-box' as const,
+              outline: 'none',
+              paddingRight: workspaceSearch ? 28 : 10,
+            }}
+          />
+          {workspaceSearch && (
+            <button
+              onClick={() => setWorkspaceSearch('')}
+              style={{
+                position: 'absolute', right: 7, top: '50%', transform: 'translateY(-50%)',
+                background: 'none', border: 'none', color: '#64748b', cursor: 'pointer',
+                fontSize: 14, lineHeight: 1, padding: 0,
+              }}
+              title="Clear search"
+            >×</button>
+          )}
+        </div>
+        {/* Active constraints summary — shows when any filters are set */}
+        {(() => {
+          const mutedDomains  = DOMAIN_ORDER.filter(d => layers[d]?.visibility === 'muted')
+          const hiddenDomains = DOMAIN_ORDER.filter(d => layers[d]?.visibility === 'hidden')
+          const totalFiltered = Object.values(classFilter).reduce((n, arr) => n + (arr?.length ?? 0), 0)
+          if (!mutedDomains.length && !hiddenDomains.length && !totalFiltered && !declutterMode) return null
+          return (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+              {hiddenDomains.map(d => (
+                <span key={d} style={{
+                  fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+                  color: '#ef4444', background: 'rgba(239,68,68,0.1)',
+                  border: '1px solid rgba(239,68,68,0.3)',
+                  borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
+                }} title={`${d} is hidden — click to cycle`}>
+                  {d} hidden
+                </span>
+              ))}
+              {mutedDomains.map(d => (
+                <span key={d} style={{
+                  fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+                  color: '#f59e0b', background: 'rgba(245,158,11,0.1)',
+                  border: '1px solid rgba(245,158,11,0.3)',
+                  borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
+                }}>
+                  {d} muted
+                </span>
+              ))}
+              {totalFiltered > 0 && (
+                <span style={{
+                  fontSize: 9, fontWeight: 700,
+                  color: '#94a3b8', background: 'rgba(148,163,184,0.1)',
+                  border: '1px solid rgba(148,163,184,0.25)',
+                  borderRadius: 4, padding: '1px 6px',
+                }}>
+                  {totalFiltered} class filter{totalFiltered > 1 ? 's' : ''}
+                </span>
+              )}
+              {declutterMode && (
+                <span style={{
+                  fontSize: 9, fontWeight: 700,
+                  color: '#5eead4', background: 'rgba(20,184,166,0.1)',
+                  border: '1px solid rgba(20,184,166,0.3)',
+                  borderRadius: 4, padding: '1px 6px',
+                }}>
+                  ◎ declutter
+                </span>
+              )}
+            </div>
+          )
+        })()}
       </div>
 
       {/* ── Body ── */}
@@ -541,7 +804,9 @@ export function SourcePanel() {
             <SectionLabel label="Layers" />
             {DOMAIN_ORDER.map((domain) => {
               const meta = DOMAIN_META[domain]
-              const layerEnabled = layers[domain]?.enabled ?? true
+              const layerVisibility = layers[domain]?.visibility ?? 'active'
+              const isMuted  = layerVisibility === 'muted'
+              const isHidden = layerVisibility === 'hidden'
               const isExpanded = expanded.has(domain)
               const domainAssets = assetsByDomain.get(domain) ?? []
               const count = domainAssets.length
@@ -549,6 +814,8 @@ export function SourcePanel() {
               const visibleAssetsList = isShowingAll ? domainAssets : domainAssets.slice(0, MAX_VISIBLE)
               const hiddenCount = domainAssets.length - visibleAssetsList.length
               const hiddenClasses = classFilter[domain] ?? []
+              const activeFilterCount = hiddenClasses.length
+              const groupMode = groupModes[domain] ?? 'none'
 
               return (
                 <div key={domain}>
@@ -574,28 +841,41 @@ export function SourcePanel() {
                         (e.currentTarget as HTMLDivElement).style.background = 'transparent'
                     }}
                   >
-                    <LayerToggle
-                      checked={layerEnabled}
-                      onChange={() => setLayerEnabled(domain, !layerEnabled)}
+                    <TriStateToggle
+                      visibility={layerVisibility}
+                      onCycle={() => cycleLayerVisibility(domain)}
                       colorHex={meta.colorHex}
                     />
-                    <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>{meta.icon}</span>
+                    <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0, opacity: isHidden ? 0.3 : 1 }}>{meta.icon}</span>
                     <span
                       style={{
                         flex: 1,
                         fontSize: 12,
                         fontWeight: 600,
-                        color: layerEnabled ? '#e2e8f0' : '#475569',
+                        color: isHidden ? '#374151' : isMuted ? '#64748b' : '#e2e8f0',
                         transition: 'color 0.15s',
                       }}
                     >
                       {domain}
+                      {isMuted && <span style={{ fontSize: 9, fontWeight: 400, color: '#475569', marginLeft: 5 }}>MUTED</span>}
                     </span>
+                    {/* Active filter count badge */}
+                    {activeFilterCount > 0 && (
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, color: '#f59e0b',
+                        background: 'rgba(245,158,11,0.15)',
+                        border: '1px solid rgba(245,158,11,0.3)',
+                        borderRadius: 8, padding: '1px 5px', flexShrink: 0,
+                        marginRight: 4,
+                      }} title={`${activeFilterCount} classification filter${activeFilterCount > 1 ? 's' : ''} active`}>
+                        {activeFilterCount}F
+                      </span>
+                    )}
                     <span
                       style={{
                         fontSize: 10,
                         fontWeight: 700,
-                        color: count > 0 ? meta.colorHex : '#475569',
+                        color: isHidden ? '#374151' : count > 0 ? (isMuted ? `${meta.colorHex}80` : meta.colorHex) : '#475569',
                         background: count > 0 ? `${meta.colorHex}20` : 'rgba(71,85,105,0.2)',
                         border: `1px solid ${count > 0 ? `${meta.colorHex}40` : 'rgba(71,85,105,0.3)'}`,
                         borderRadius: 10,
@@ -686,6 +966,20 @@ export function SourcePanel() {
                         </div>
                       )}
 
+                      {/* ── Group-by mode selector ── */}
+                      {count > 0 && (domain === 'Air' || domain === 'Maritime' || domain === 'Space') && (
+                        <GroupByChips
+                          options={
+                            domain === 'Air'      ? [{ key: 'none', label: 'Flat' }, { key: 'airline', label: 'By Airline' }] :
+                            domain === 'Maritime' ? [{ key: 'none', label: 'Flat' }, { key: 'flag',    label: 'By Flag State' }] :
+                                                    [{ key: 'none', label: 'Flat' }, { key: 'grouped', label: 'Type › Orbit › Const.' }]
+                          }
+                          value={groupMode}
+                          onChange={(m) => setGroupModes((prev) => ({ ...prev, [domain]: m }))}
+                        />
+                      )}
+
+                      {/* ── Track list ── */}
                       {count === 0 ? (
                         <div
                           style={{
@@ -697,6 +991,208 @@ export function SourcePanel() {
                         >
                           No {domain} tracks live
                         </div>
+
+                      // ── AIR: airline grouping ─────────────────────────────────────
+                      ) : domain === 'Air' && groupMode === 'airline' ? (
+                        (() => {
+                          // Bucket by airline group (ICAO 3-char prefix → airline name).
+                          // Analogous to a GROUP BY on the callsign prefix column.
+                          const grouped = new Map<string, TrackEventProperties[]>()
+                          for (const a of domainAssets) {
+                            const key = getAirlineGroup(a.callsign, a.classification)
+                            if (!grouped.has(key)) grouped.set(key, [])
+                            grouped.get(key)!.push(a)
+                          }
+                          // Sort buckets by size descending (busiest airlines first)
+                          const sorted = Array.from(grouped.entries())
+                            .sort((a, b) => b[1].length - a[1].length)
+
+                          return (
+                            <>
+                              {sorted.map(([groupName, groupAssets]) => {
+                                const gKey = `Air:${groupName}`
+                                const isGroupOpen = openGroups.has(gKey)
+                                return (
+                                  <div key={gKey}>
+                                    <GroupHeader
+                                      label={groupName}
+                                      count={groupAssets.length}
+                                      colorHex={meta.colorHex}
+                                      isOpen={isGroupOpen}
+                                      onToggle={() => toggleGroup(gKey)}
+                                      indent={0}
+                                    />
+                                    {isGroupOpen && groupAssets.map((a) => (
+                                      <TrackRow
+                                        key={`${a.source_domain}:${a.track_id}`}
+                                        asset={a}
+                                        isSelected={a.track_id === selectedTrackId && a.source_domain === selectedDomain}
+                                        onSelect={() => handleSelectTrack(a)}
+                                        indent={1}
+                                      />
+                                    ))}
+                                  </div>
+                                )
+                              })}
+                            </>
+                          )
+                        })()
+
+                      // ── MARITIME: flag-state grouping ─────────────────────────────
+                      ) : domain === 'Maritime' && groupMode === 'flag' ? (
+                        (() => {
+                          // MMSI encodes the flag state directly in its first 3 digits
+                          // (Maritime Identification Digit). 100% coverage since every
+                          // vessel must have an MMSI to be tracked via AIS.
+                          const grouped = new Map<string, TrackEventProperties[]>()
+                          for (const a of domainAssets) {
+                            const key = getMmsiCountry(a.track_id)
+                            if (!grouped.has(key)) grouped.set(key, [])
+                            grouped.get(key)!.push(a)
+                          }
+                          const sorted = Array.from(grouped.entries())
+                            .sort((a, b) => b[1].length - a[1].length)
+
+                          return (
+                            <>
+                              {sorted.map(([country, countryAssets]) => {
+                                const gKey = `Maritime:${country}`
+                                const isGroupOpen = openGroups.has(gKey)
+                                return (
+                                  <div key={gKey}>
+                                    <GroupHeader
+                                      label={country}
+                                      count={countryAssets.length}
+                                      colorHex={meta.colorHex}
+                                      isOpen={isGroupOpen}
+                                      onToggle={() => toggleGroup(gKey)}
+                                      indent={0}
+                                    />
+                                    {isGroupOpen && countryAssets.map((a) => (
+                                      <TrackRow
+                                        key={`${a.source_domain}:${a.track_id}`}
+                                        asset={a}
+                                        isSelected={a.track_id === selectedTrackId && a.source_domain === selectedDomain}
+                                        onSelect={() => handleSelectTrack(a)}
+                                        indent={1}
+                                      />
+                                    ))}
+                                  </div>
+                                )
+                              })}
+                            </>
+                          )
+                        })()
+
+                      // ── SPACE: 3-axis tree (Object Type → Orbit Class → Constellation)
+                      ) : domain === 'Space' && groupMode === 'grouped' ? (
+                        (() => {
+                          // Three-level hierarchy: think of it as three SQL GROUP BY columns
+                          // applied in sequence. The deepest level (constellation) gives the
+                          // most specific operational identity — "which program is this?"
+                          //
+                          //  Level 0  Object Type  (Payload / Rocket Body / Debris)
+                          //  Level 1  Orbit Class  (LEO / MEO / GEO / HEO)
+                          //  Level 2  Constellation (Starlink, GPS, ISS, etc.)
+
+                          // ── L0: Object Type ───────────────────────────────────────
+                          const byType = new Map<string, TrackEventProperties[]>()
+                          for (const a of domainAssets) {
+                            const t = normalizeObjectType(a.object_type)
+                            if (!byType.has(t)) byType.set(t, [])
+                            byType.get(t)!.push(a)
+                          }
+                          const typeKeys = Array.from(byType.keys()).sort(objectTypeSort)
+
+                          return (
+                            <>
+                              {typeKeys.map((objType) => {
+                                const typeAssets = byType.get(objType)!
+                                const typeKey = `Space:${objType}`
+                                const isTypeOpen = openGroups.has(typeKey)
+
+                                // ── L1: Orbit Class ─────────────────────────────────
+                                const byOrbit = new Map<string, TrackEventProperties[]>()
+                                for (const a of typeAssets) {
+                                  const o = normalizeOrbitClass(a.orbit_class, a.orbital_period_min)
+                                  if (!byOrbit.has(o)) byOrbit.set(o, [])
+                                  byOrbit.get(o)!.push(a)
+                                }
+                                const orbitKeys = Array.from(byOrbit.keys()).sort(orbitClassSort)
+
+                                return (
+                                  <div key={typeKey}>
+                                    <GroupHeader
+                                      label={objType}
+                                      count={typeAssets.length}
+                                      colorHex={meta.colorHex}
+                                      isOpen={isTypeOpen}
+                                      onToggle={() => toggleGroup(typeKey)}
+                                      indent={0}
+                                    />
+                                    {isTypeOpen && orbitKeys.map((orbitClass) => {
+                                      const orbitAssets = byOrbit.get(orbitClass)!
+                                      const orbitKey = `Space:${objType}:${orbitClass}`
+                                      const isOrbitOpen = openGroups.has(orbitKey)
+
+                                      // ── L2: Constellation ──────────────────────────
+                                      const byConst = new Map<string, TrackEventProperties[]>()
+                                      for (const a of orbitAssets) {
+                                        const c = getConstellation(a.callsign)
+                                        if (!byConst.has(c)) byConst.set(c, [])
+                                        byConst.get(c)!.push(a)
+                                      }
+                                      // Sort constellations by track count descending
+                                      const constKeys = Array.from(byConst.keys())
+                                        .sort((a, b) => byConst.get(b)!.length - byConst.get(a)!.length)
+
+                                      return (
+                                        <div key={orbitKey}>
+                                          <GroupHeader
+                                            label={orbitClass}
+                                            count={orbitAssets.length}
+                                            colorHex={meta.colorHex}
+                                            isOpen={isOrbitOpen}
+                                            onToggle={() => toggleGroup(orbitKey)}
+                                            indent={1}
+                                          />
+                                          {isOrbitOpen && constKeys.map((constellation) => {
+                                            const cAssets = byConst.get(constellation)!
+                                            const cKey = `Space:${objType}:${orbitClass}:${constellation}`
+                                            const isCOpen = openGroups.has(cKey)
+                                            return (
+                                              <div key={cKey}>
+                                                <GroupHeader
+                                                  label={constellation}
+                                                  count={cAssets.length}
+                                                  colorHex={meta.colorHex}
+                                                  isOpen={isCOpen}
+                                                  onToggle={() => toggleGroup(cKey)}
+                                                  indent={2}
+                                                />
+                                                {isCOpen && cAssets.map((a) => (
+                                                  <TrackRow
+                                                    key={`${a.source_domain}:${a.track_id}`}
+                                                    asset={a}
+                                                    isSelected={a.track_id === selectedTrackId && a.source_domain === selectedDomain}
+                                                    onSelect={() => handleSelectTrack(a)}
+                                                    indent={3}
+                                                  />
+                                                ))}
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                                )
+                              })}
+                            </>
+                          )
+                        })()
+
+                      // ── FLAT LIST (all other domains, or when grouping is 'none') ──
                       ) : (
                         <>
                           {visibleAssetsList.map((a) => (
@@ -748,7 +1244,7 @@ export function SourcePanel() {
               }}
               onClick={toggleCocom}
             >
-              <LayerToggle checked={showCocom} onChange={toggleCocom} colorHex="#14b8a6" />
+              <TriStateToggle visibility={showCocom ? 'active' : 'hidden'} onCycle={toggleCocom} colorHex="#14b8a6" />
               <span style={{ fontSize: 14, flexShrink: 0 }}>🗺</span>
               <span
                 style={{
@@ -778,7 +1274,7 @@ export function SourcePanel() {
               }}
               onClick={toggleGlobeView}
             >
-              <LayerToggle checked={globeView} onChange={toggleGlobeView} colorHex="#38bdf8" />
+              <TriStateToggle visibility={globeView ? 'active' : 'hidden'} onCycle={toggleGlobeView} colorHex="#38bdf8" />
               <span style={{ fontSize: 14, flexShrink: 0 }}>🌍</span>
               <span
                 style={{

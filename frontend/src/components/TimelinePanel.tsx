@@ -16,7 +16,7 @@
  *   • Scrubber thumb position drives a CSS gradient for elapsed vs remaining.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { format, intervalToDuration } from 'date-fns'
 import { useMapStore } from '@/store/useMapStore'
 import type { PlaybackState } from '@/store/useMapStore'
@@ -131,6 +131,123 @@ function PresetChip({ label, active, onClick }: { label: string; active: boolean
     >
       {label}
     </button>
+  )
+}
+
+// ── Activity density strip ─────────────────────────────────────────
+// Shows bucketed distinct-track counts per domain across the time window.
+// Think of it like a spectrogram: time on X, domain on Y, brightness = activity.
+// Each domain gets a horizontal lane whose cells light up proportionally to count.
+//
+// Analogy: it's the waveform display under a podcast player, but instead of
+// audio amplitude it shows how busy each domain was at each moment in time.
+
+const DOMAIN_ORDER_STRIP: SourceDomain[] = ['Air', 'Maritime', 'Space', 'GPS', 'Infra']
+const STRIP_DOMAIN_COLORS: Record<SourceDomain, string> = {
+  Air:      '#60a5fa',
+  Maritime: '#22d3ee',
+  Space:    '#c084fc',
+  GPS:      '#f87171',
+  Infra:    '#f59e0b',
+}
+
+interface ActivityBucket { bucket: string; count: number }
+interface ActivityData   { domains: Partial<Record<string, ActivityBucket[]>> }
+
+// Choose bucket_minutes so we get ~60–80 columns across the window
+function chooseBucketMinutes(windowMs: number): number {
+  const windowMinutes = windowMs / 60_000
+  if (windowMinutes <= 120)  return 2
+  if (windowMinutes <= 360)  return 5
+  if (windowMinutes <= 1440) return 15
+  if (windowMinutes <= 2880) return 30
+  return 60
+}
+
+function DensityStrip({ tStart, tEnd }: { tStart: Date; tEnd: Date }) {
+  const [data, setData] = useState<ActivityData | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+
+  const fetch_ = useCallback(() => {
+    if (abortRef.current) abortRef.current.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    const windowMs = tEnd.getTime() - tStart.getTime()
+    const bm = chooseBucketMinutes(windowMs)
+    const params = new URLSearchParams({
+      t_start: tStart.toISOString(),
+      t_end:   tEnd.toISOString(),
+      bucket_minutes: String(bm),
+    })
+    fetch(`/api/tracks/activity?${params}`, { signal: ctrl.signal })
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d) setData(d) })
+      .catch(() => { /* aborted or network error */ })
+  }, [tStart, tEnd])
+
+  useEffect(() => { fetch_() }, [fetch_])
+
+  if (!data) {
+    // Skeleton — faint placeholders while loading
+    return (
+      <div style={{ height: 28, display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 0' }}>
+        {DOMAIN_ORDER_STRIP.map((d) => (
+          <div key={d} style={{ height: 3, borderRadius: 2, background: 'rgba(30,41,59,0.6)' }} />
+        ))}
+      </div>
+    )
+  }
+
+  // Build a unified time axis from all domain buckets
+  const allBuckets = Array.from(
+    new Set(
+      Object.values(data.domains)
+        .flat()
+        .filter((b): b is ActivityBucket => !!b)
+        .map((b) => b.bucket)
+    )
+  ).sort()
+
+  if (allBuckets.length === 0) {
+    return <div style={{ height: 28 }} />
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 1.5, padding: '3px 0' }}>
+      {DOMAIN_ORDER_STRIP.map((domain) => {
+        const domainBuckets = data.domains[domain] ?? []
+        const bucketMap = new Map(domainBuckets.map((b) => [b.bucket, b.count]))
+        const maxCount  = Math.max(1, ...domainBuckets.map((b) => b.count))
+        const color     = STRIP_DOMAIN_COLORS[domain]
+
+        return (
+          <div
+            key={domain}
+            title={`${domain} activity`}
+            style={{
+              height: 4, display: 'flex', gap: 0, borderRadius: 2, overflow: 'hidden',
+            }}
+          >
+            {allBuckets.map((bucket) => {
+              const count   = bucketMap.get(bucket) ?? 0
+              const opacity = count === 0 ? 0.06 : 0.15 + 0.85 * (count / maxCount)
+              return (
+                <div
+                  key={bucket}
+                  style={{
+                    flex: 1,
+                    background: color,
+                    opacity,
+                    transition: 'opacity 0.2s',
+                  }}
+                  title={`${domain} · ${new Date(bucket).toLocaleTimeString()} · ${count} tracks`}
+                />
+              )
+            })}
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -354,6 +471,12 @@ export function TimelinePanel() {
               </button>
             </div>
           )}
+
+          {/* ── Activity density strip ── */}
+          <DensityStrip
+            tStart={playback.timeWindow.start}
+            tEnd={playback.timeWindow.end}
+          />
 
           {/* ROW 2: Scrubber */}
           <div style={{ display:'flex', flexDirection:'column', gap:4 }}>

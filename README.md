@@ -39,7 +39,7 @@ open http://localhost
 | `redis` | Real-time event bus |
 | `keycloak` | Authentication (OAuth2/OIDC) |
 | `collector-adsb` | ADS-B aircraft tracking (OpenSky) |
-| `collector-ais` | AIS maritime tracking (AISHub) |
+| `collector-ais` | AIS maritime tracking (AISStream / AccessAIS / Global Fishing Watch mergeable) |
 | `collector-space` | Satellite TLE + passes (Celestrak) |
 | `collector-gpsjam` | GPS interference tiles (GPSJam.org) |
 | `collector-infra` | Internet + power outages (IODA) |
@@ -47,10 +47,12 @@ open http://localhost
 
 ## API Registration Required
 
-Before running collectors, register for these free APIs:
+Before running collectors, register for these APIs as needed:
 
 - **OpenSky Network**: https://opensky-network.org (ADS-B)
-- **AISHub**: https://www.aishub.net/join-us (Maritime — reciprocal feed)
+- **AISStream**: https://aisstream.io/ (live terrestrial AIS)
+- **Global Fishing Watch**: https://globalfishingwatch.org/our-apis/documentation (hourly delayed vessel presence)
+- **AISHub**: https://www.aishub.net/join-us (optional maritime source; reciprocal feed required)
 - **Space-Track**: https://www.space-track.org/auth/createAccount (Orbital TLEs)
 
 ## Development
@@ -85,7 +87,7 @@ sentinel/
 ├── collectors/
 │   ├── base/          # Shared BaseCollector class
 │   ├── adsb/          # ADS-B / OpenSky collector
-│   ├── ais/           # AIS / AISHub collector
+│   ├── ais/           # AIS collector (AISStream / AccessAIS / GFW)
 │   ├── space/         # Satellite TLE collector
 │   ├── gpsjam/        # GPS jamming collector
 │   └── infra/         # Infrastructure outage collector

@@ -145,12 +145,28 @@ class BaseCollector(ABC):
     # ── Write helpers ─────────────────────────────────────────────
     async def _write_batch(self, events: list[dict]):
         """Write events to TimescaleDB and publish to Redis Stream."""
-        await asyncio.gather(
-            self._write_to_db(events),
-            self._publish_to_redis(events),
-        )
+        history_events = self._events_for_track_history(events)
+        current_state_events = self._events_for_current_state(events)
+        publish_events = self._events_for_publish(events)
 
-    async def _write_to_db(self, events: list[dict]):
+        tasks = []
+        if history_events or current_state_events:
+            tasks.append(self._write_to_db(history_events, current_state_events))
+        if publish_events:
+            tasks.append(self._publish_to_redis(publish_events))
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    def _events_for_track_history(self, events: list[dict]) -> list[dict]:
+        return events
+
+    def _events_for_current_state(self, events: list[dict]) -> list[dict]:
+        return events
+
+    def _events_for_publish(self, events: list[dict]) -> list[dict]:
+        return events
+
+    async def _write_to_db(self, history_events: list[dict], current_state_events: list[dict]):
         """Batch insert into track_events and upsert asset_states."""
         def db_timestamp(value):
             if isinstance(value, datetime):
@@ -161,68 +177,68 @@ class BaseCollector(ABC):
             return value
 
         async with self._db.acquire() as conn:
-            # Batch insert track_events
-            await conn.executemany("""
-                INSERT INTO track_events
-                    (source_domain, source_feed, track_id, callsign,
-                     position, altitude_m, heading_deg, speed_mps,
-                     timestamp, metadata, classification)
-                VALUES
-                    ($1, $2, $3, $4,
-                     CASE
-                          WHEN $5::double precision IS NOT NULL AND $6::double precision IS NOT NULL
-                          THEN ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), 4326)
-                          ELSE NULL::geometry(Point, 4326)
-                     END,
-                     $7, $8, $9, $10, $11::jsonb, $12)
-            """, [
-                (
-                    e["source_domain"], e["source_feed"], e["track_id"],
-                    e.get("callsign"),
-                    e.get("lon"), e.get("lat"),
-                    e.get("altitude_m"), e.get("heading_deg"), e.get("speed_mps"),
-                    db_timestamp(e["timestamp"]),
-                    json.dumps(e.get("metadata", {})),
-                    e.get("classification"),
-                )
-                for e in events
-            ])
+            if history_events:
+                await conn.executemany("""
+                    INSERT INTO track_events
+                        (source_domain, source_feed, track_id, callsign,
+                         position, altitude_m, heading_deg, speed_mps,
+                         timestamp, metadata, classification)
+                    VALUES
+                        ($1, $2, $3, $4,
+                         CASE
+                              WHEN $5::double precision IS NOT NULL AND $6::double precision IS NOT NULL
+                              THEN ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), 4326)
+                              ELSE NULL::geometry(Point, 4326)
+                         END,
+                         $7, $8, $9, $10, $11::jsonb, $12)
+                """, [
+                    (
+                        e["source_domain"], e["source_feed"], e["track_id"],
+                        e.get("callsign"),
+                        e.get("lon"), e.get("lat"),
+                        e.get("altitude_m"), e.get("heading_deg"), e.get("speed_mps"),
+                        db_timestamp(e["timestamp"]),
+                        json.dumps(e.get("metadata", {})),
+                        e.get("classification"),
+                    )
+                    for e in history_events
+                ])
 
-            # Upsert asset_states (current state per entity)
-            await conn.executemany("""
-                INSERT INTO asset_states
-                    (source_domain, source_feed, track_id, callsign,
-                     position, altitude_m, heading_deg, speed_mps,
-                     last_seen, metadata, classification)
-                VALUES
-                    ($1, $2, $3, $4,
-                     CASE
-                          WHEN $5::double precision IS NOT NULL AND $6::double precision IS NOT NULL
-                          THEN ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), 4326)
-                          ELSE NULL::geometry(Point, 4326)
-                     END,
-                     $7, $8, $9, $10, $11::jsonb, $12)
-                ON CONFLICT (source_domain, track_id) DO UPDATE SET
-                    callsign       = EXCLUDED.callsign,
-                    position       = EXCLUDED.position,
-                    altitude_m     = EXCLUDED.altitude_m,
-                    heading_deg    = EXCLUDED.heading_deg,
-                    speed_mps      = EXCLUDED.speed_mps,
-                    last_seen      = EXCLUDED.last_seen,
-                    metadata       = EXCLUDED.metadata,
-                    classification = EXCLUDED.classification
-            """, [
-                (
-                    e["source_domain"], e["source_feed"], e["track_id"],
-                    e.get("callsign"),
-                    e.get("lon"), e.get("lat"),
-                    e.get("altitude_m"), e.get("heading_deg"), e.get("speed_mps"),
-                    db_timestamp(e["timestamp"]),
-                    json.dumps(e.get("metadata", {})),
-                    e.get("classification"),
-                )
-                for e in events
-            ])
+            if current_state_events:
+                await conn.executemany("""
+                    INSERT INTO asset_states
+                        (source_domain, source_feed, track_id, callsign,
+                         position, altitude_m, heading_deg, speed_mps,
+                         last_seen, metadata, classification)
+                    VALUES
+                        ($1, $2, $3, $4,
+                         CASE
+                              WHEN $5::double precision IS NOT NULL AND $6::double precision IS NOT NULL
+                              THEN ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), 4326)
+                              ELSE NULL::geometry(Point, 4326)
+                         END,
+                         $7, $8, $9, $10, $11::jsonb, $12)
+                    ON CONFLICT (source_domain, track_id) DO UPDATE SET
+                        callsign       = EXCLUDED.callsign,
+                        position       = EXCLUDED.position,
+                        altitude_m     = EXCLUDED.altitude_m,
+                        heading_deg    = EXCLUDED.heading_deg,
+                        speed_mps      = EXCLUDED.speed_mps,
+                        last_seen      = EXCLUDED.last_seen,
+                        metadata       = EXCLUDED.metadata,
+                        classification = EXCLUDED.classification
+                """, [
+                    (
+                        e["source_domain"], e["source_feed"], e["track_id"],
+                        e.get("callsign"),
+                        e.get("lon"), e.get("lat"),
+                        e.get("altitude_m"), e.get("heading_deg"), e.get("speed_mps"),
+                        db_timestamp(e["timestamp"]),
+                        json.dumps(e.get("metadata", {})),
+                        e.get("classification"),
+                    )
+                    for e in current_state_events
+                ])
 
     async def _publish_to_redis(self, events: list[dict]):
         """Publish each event to Redis Stream for WebSocket fan-out."""

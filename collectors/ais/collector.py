@@ -4,6 +4,7 @@ AIS Collector
 Supports:
   - AISStream live websocket ingestion
   - AccessAIS historical CSV/ZIP import (manual NOAA/MarineCadastre downloads)
+  - Global Fishing Watch AIS vessel presence ingestion (hourly, delayed)
 
 AISHub config is intentionally left in the environment/docs for future use, but
 the runtime path is disabled by default because free access requires a
@@ -17,9 +18,10 @@ import json
 import logging
 import os
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 import websockets
 
 import sys
@@ -27,6 +29,7 @@ sys.path.insert(0, "/app/base")
 from base_collector import BaseCollector, TrackEventDict
 
 logger = logging.getLogger(__name__)
+LIVE_AIS_FEEDS = {"AISStream", "AccessAIS"}
 
 # Vessel type codes -> classification
 VESSEL_TYPE_MAP = {
@@ -107,6 +110,7 @@ class AISCollector(BaseCollector):
     DOMAIN = "Maritime"
     FEED_NAME = "AIS"
     AISSTREAM_URL = "wss://stream.aisstream.io/v0/stream"
+    GFW_REPORT_URL = "https://gateway.api.globalfishingwatch.org/v3/4wings/report"
 
     def __init__(self):
         self.mode = os.environ.get("AIS_MODE", "aisstream").strip().lower()
@@ -136,15 +140,37 @@ class AISCollector(BaseCollector):
 
         self.accessais_import_path = os.environ.get("ACCESSAIS_IMPORT_PATH", "").strip()
         self.accessais_archive_dir = Path(os.environ.get("ACCESSAIS_ARCHIVE_DIR", "/tmp/accessais-archive"))
+        self.gfw_api_token = os.environ.get("GFW_API_TOKEN", "").strip()
+        self.gfw_dataset = os.environ.get("GFW_DATASET", "public-global-presence:latest").strip()
+        self.gfw_bounding_box = json.loads(
+            os.environ.get("GFW_BOUNDING_BOX", "[[-90,-180],[90,180]]")
+        )
+        self.gfw_filters = json.loads(os.environ.get("GFW_FILTERS", "[]"))
+        self.gfw_temporal_resolution = os.environ.get("GFW_TEMPORAL_RESOLUTION", "HOURLY").strip().upper()
+        self.gfw_spatial_resolution = os.environ.get("GFW_SPATIAL_RESOLUTION", "HIGH").strip().upper()
+        self.gfw_lag_hours = int(os.environ.get("GFW_LAG_HOURS", 96))
+        self.gfw_window_hours = int(os.environ.get("GFW_WINDOW_HOURS", 1))
+        self.gfw_max_rows = int(os.environ.get("GFW_MAX_ROWS", 5000))
+        self.gfw_enrich_only = os.environ.get("GFW_ENRICH_ONLY", "true").strip().lower() not in {"0", "false", "no"}
+        self.gfw_publish_live = os.environ.get("GFW_PUBLISH_LIVE", "false").strip().lower() in {"1", "true", "yes"}
+        self.gfw_state_eligible = os.environ.get("GFW_STATE_ELIGIBLE", "false").strip().lower() in {"1", "true", "yes"}
+        self.gfw_suppress_if_live_seen_hours = int(os.environ.get("GFW_SUPPRESS_IF_LIVE_SEEN_HOURS", 24))
+        self.ais_merge_sources = json.loads(os.environ.get("AIS_MERGE_SOURCES", '["aisstream","gfw"]'))
+        self._gfw_last_bucket_end: datetime | None = None
+        self._recent_live_seen_at: dict[str, datetime] = {}
 
     async def fetch(self) -> list[dict]:
         if self.mode == "aisstream":
             return await self._fetch_aisstream()
         if self.mode == "accessais":
             return await self._fetch_accessais()
+        if self.mode in {"gfw", "globalfishingwatch"}:
+            return await self._fetch_global_fishing_watch()
+        if self.mode in {"merge", "hybrid"}:
+            return await self._fetch_merge()
         if self.mode == "aishub":
             raise NotImplementedError(
-                "AISHub mode is intentionally disabled. Configure AIS_MODE=aisstream or accessais."
+                "AISHub mode is intentionally disabled. Configure AIS_MODE=aisstream, accessais, gfw, or merge."
             )
         raise ValueError(f"Unsupported AIS_MODE: {self.mode}")
 
@@ -275,6 +301,10 @@ class AISCollector(BaseCollector):
             classification=classify_vessel(vessel_type),
             metadata={
                 "provider": "AISStream",
+                "source_priority": 100,
+                "analysis_role": "live",
+                "current_state_eligible": True,
+                "publish_live": True,
                 "message_type": message_type,
                 "mmsi": track_id,
                 "vessel_name": first_present(merged, ("VesselName", "Name")),
@@ -298,6 +328,86 @@ class AISCollector(BaseCollector):
         rows = await asyncio.to_thread(self._load_accessais_rows, path)
         self.import_completed = True
         return rows
+
+    async def _fetch_global_fishing_watch(self) -> list[dict]:
+        if not self.gfw_api_token:
+            raise ValueError("GFW_API_TOKEN is required for AIS_MODE=gfw")
+
+        bucket_end = self._gfw_bucket_end()
+        if self._gfw_last_bucket_end is not None and bucket_end <= self._gfw_last_bucket_end:
+            return []
+
+        start = bucket_end - timedelta(hours=self.gfw_window_hours)
+        params: list[tuple[str, str]] = [
+            ("spatial-aggregation", "true"),
+            ("spatial-resolution", self.gfw_spatial_resolution),
+            ("temporal-resolution", self.gfw_temporal_resolution),
+            ("group-by", "MMSI"),
+            ("format", "JSON"),
+            ("date-range", f"{self._to_gfw_iso(start)},{self._to_gfw_iso(bucket_end)}"),
+            ("datasets[0]", self.gfw_dataset),
+        ]
+        for index, filter_value in enumerate(self.gfw_filters):
+            params.append((f"filters[{index}]", str(filter_value)))
+
+        payload = {"geojson": self._bbox_geojson(self.gfw_bounding_box)}
+        headers = {"Authorization": f"Bearer {self.gfw_api_token}"}
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(self.GFW_REPORT_URL, params=params, json=payload, headers=headers)
+
+        if response.status_code == 429:
+            logger.warning("[AIS] Global Fishing Watch rate/concurrency limit hit: %s", response.text[:300])
+            return []
+        response.raise_for_status()
+
+        data = response.json()
+        if isinstance(data, dict) and data.get("status") == "running":
+            logger.info(
+                "[AIS] Global Fishing Watch report still running for bucket ending %s",
+                bucket_end.isoformat(),
+            )
+            return []
+
+        entries = self._extract_gfw_entries(data)
+        if not entries:
+            self._gfw_last_bucket_end = bucket_end
+            return []
+
+        events: list[dict] = []
+        for row in entries[: self.gfw_max_rows]:
+            event = self._event_from_gfw_row(row, bucket_end=bucket_end)
+            if event:
+                events.append(event)
+
+        self._gfw_last_bucket_end = bucket_end
+        return events
+
+    async def _fetch_merge(self) -> list[dict]:
+        sources = [str(source).strip().lower() for source in self.ais_merge_sources if str(source).strip()]
+        if not sources:
+            raise ValueError("AIS_MERGE_SOURCES must include at least one source")
+
+        tasks: list[tuple[str, asyncio.Task[list[dict]]]] = []
+        for source in sources:
+            if source == "aisstream":
+                tasks.append((source, asyncio.create_task(self._fetch_aisstream())))
+            elif source == "accessais":
+                tasks.append((source, asyncio.create_task(self._fetch_accessais())))
+            elif source in {"gfw", "globalfishingwatch"}:
+                tasks.append((source, asyncio.create_task(self._fetch_global_fishing_watch())))
+            else:
+                raise ValueError(f"Unsupported AIS merge source: {source}")
+
+        merged: list[dict] = []
+        for source, task in tasks:
+            try:
+                merged.extend(await task)
+            except Exception as exc:
+                logger.error("[AIS] Merge source %s failed: %r", source, exc)
+
+        self._remember_live_events(merged)
+        return self._prioritize_merged_events(merged)
 
     def _load_accessais_rows(self, path: Path) -> list[dict]:
         suffixes = [suffix.lower() for suffix in path.suffixes]
@@ -348,6 +458,10 @@ class AISCollector(BaseCollector):
                 classification=classify_vessel(vessel_type),
                 metadata={
                     "provider": "AccessAIS",
+                    "source_priority": 80,
+                    "analysis_role": "historical_import",
+                    "current_state_eligible": True,
+                    "publish_live": False,
                     "mmsi": str(mmsi),
                     "vessel_name": first_present(row, ("VesselName", "vessel_name")),
                     "imo": first_present(row, ("IMO", "imo")),
@@ -358,6 +472,150 @@ class AISCollector(BaseCollector):
             ))
 
         return events
+
+    def _gfw_bucket_end(self) -> datetime:
+        delayed_now = datetime.now(timezone.utc) - timedelta(hours=self.gfw_lag_hours)
+        return delayed_now.replace(minute=0, second=0, microsecond=0)
+
+    def _to_gfw_iso(self, dt: datetime) -> str:
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _bbox_geojson(self, bbox: list[list[float]]) -> dict:
+        if (
+            not isinstance(bbox, list)
+            or len(bbox) != 2
+            or any(not isinstance(pair, list) or len(pair) != 2 for pair in bbox)
+        ):
+            raise ValueError("GFW_BOUNDING_BOX must be [[min_lat,min_lon],[max_lat,max_lon]]")
+
+        min_lat, min_lon = bbox[0]
+        max_lat, max_lon = bbox[1]
+        return {
+            "type": "Polygon",
+            "coordinates": [[
+                [min_lon, min_lat],
+                [max_lon, min_lat],
+                [max_lon, max_lat],
+                [min_lon, max_lat],
+                [min_lon, min_lat],
+            ]],
+        }
+
+    def _extract_gfw_entries(self, payload: object) -> list[dict]:
+        if not isinstance(payload, dict):
+            return []
+        raw_entries = payload.get("entries")
+        if not isinstance(raw_entries, list):
+            return []
+
+        flattened: list[dict] = []
+        for entry in raw_entries:
+            if not isinstance(entry, dict):
+                continue
+            for dataset_entries in entry.values():
+                if isinstance(dataset_entries, list):
+                    flattened.extend(item for item in dataset_entries if isinstance(item, dict))
+        return flattened
+
+    def _event_from_gfw_row(self, row: dict, bucket_end: datetime) -> dict | None:
+        lon = parse_float(row.get("lon"))
+        lat = parse_float(row.get("lat"))
+        if lon is None or lat is None:
+            return None
+
+        mmsi = first_present(row, ("mmsi",))
+        vessel_id = first_present(row, ("vessel_id",))
+        track_id = str(mmsi or vessel_id or "").strip()
+        if not track_id:
+            return None
+
+        vessel_type = row.get("vessel_type")
+        ship_name = first_present(row, ("shipName", "ship_name"))
+        callsign = first_present(row, ("callsign", "callSign", "shipName"))
+        timestamp = parse_timestamp(first_present(row, ("date", "entryTimestamp", "exitTimestamp")) or bucket_end)
+
+        return TrackEventDict.create(
+            source_domain=self.DOMAIN,
+            source_feed="GlobalFishingWatch",
+            track_id=track_id,
+            timestamp=timestamp,
+            lon=lon,
+            lat=lat,
+            callsign=str(callsign).strip() if callsign else None,
+            heading_deg=None,
+            speed_mps=None,
+            classification=self._classify_gfw_vessel_type(vessel_type),
+            metadata={
+                "provider": "GlobalFishingWatch",
+                "source_priority": 40,
+                "analysis_role": "historical_enrichment" if self.gfw_enrich_only else "supplemental_live",
+                "current_state_eligible": self.gfw_state_eligible and not self.gfw_enrich_only,
+                "publish_live": self.gfw_publish_live and not self.gfw_enrich_only,
+                "mmsi": str(mmsi).strip() if mmsi else None,
+                "gfw_vessel_id": str(vessel_id).strip() if vessel_id else None,
+                "vessel_name": ship_name,
+                "callsign": first_present(row, ("callsign", "callSign")),
+                "imo": first_present(row, ("imo",)),
+                "flag": first_present(row, ("flag",)),
+                "hours": parse_float(row.get("hours")),
+                "vessel_type": vessel_type,
+                "geartype": first_present(row, ("geartype",)),
+                "first_transmission_date": first_present(row, ("firstTransmissionDate",)),
+                "last_transmission_date": first_present(row, ("lastTransmissionDate",)),
+                "dataset": first_present(row, ("dataset",)),
+            },
+        )
+
+    def _classify_gfw_vessel_type(self, vessel_type: object) -> str:
+        if vessel_type is None:
+            return "Unknown"
+        value = str(vessel_type).strip()
+        if not value:
+            return "Unknown"
+        return " ".join(part.capitalize() for part in value.replace("_", " ").split())
+
+    def _remember_live_events(self, events: list[dict]) -> None:
+        for event in events:
+            if event.get("source_feed") not in LIVE_AIS_FEEDS:
+                continue
+            self._recent_live_seen_at[event["track_id"]] = parse_timestamp(event.get("timestamp"))
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max(self.gfw_suppress_if_live_seen_hours, 1) * 2)
+        stale_track_ids = [track_id for track_id, seen_at in self._recent_live_seen_at.items() if seen_at < cutoff]
+        for track_id in stale_track_ids:
+            self._recent_live_seen_at.pop(track_id, None)
+
+    def _prioritize_merged_events(self, events: list[dict]) -> list[dict]:
+        prioritized: list[dict] = []
+        live_cutoff = datetime.now(timezone.utc) - timedelta(hours=self.gfw_suppress_if_live_seen_hours)
+
+        for event in events:
+            metadata = dict(event.get("metadata") or {})
+            if event.get("source_feed") == "GlobalFishingWatch":
+                last_live_seen = self._recent_live_seen_at.get(event.get("track_id", ""))
+                if last_live_seen and last_live_seen >= live_cutoff:
+                    metadata["current_state_eligible"] = False
+                    metadata["publish_live"] = False
+                    metadata["suppressed_by_live_source"] = True
+                    metadata["suppressed_by_feed"] = "AISStream"
+            event["metadata"] = metadata
+            prioritized.append(event)
+
+        return prioritized
+
+    def _events_for_current_state(self, events: list[dict]) -> list[dict]:
+        return [
+            event
+            for event in events
+            if bool((event.get("metadata") or {}).get("current_state_eligible", True))
+        ]
+
+    def _events_for_publish(self, events: list[dict]) -> list[dict]:
+        return [
+            event
+            for event in events
+            if bool((event.get("metadata") or {}).get("publish_live", True))
+        ]
 
 
 if __name__ == "__main__":
