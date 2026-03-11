@@ -2,8 +2,9 @@
         lint-api lint-frontend test-api dev-backend dev-frontend dev
 
 # ── Compose file references ───────────────────────────────────────
-DC      = docker compose
-DC_DEV  = docker compose -f docker-compose.yml -f docker-compose.dev.yml
+COMPOSE_ENV_CLEAN = env -u POSTGRES_USER -u POSTGRES_PASSWORD -u POSTGRES_DB
+DC      = $(COMPOSE_ENV_CLEAN) docker compose
+DC_DEV  = $(COMPOSE_ENV_CLEAN) docker compose -f docker-compose.yml -f docker-compose.dev.yml
 
 # ── Default ──────────────────────────────────────────────────────
 help:
