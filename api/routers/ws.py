@@ -18,7 +18,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from redis_client import CONSUMER_GROUP, STREAM_KEY, get_redis
+from redis_client import STREAM_KEY, get_redis
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["WebSocket"])
@@ -67,7 +67,6 @@ async def websocket_live(websocket: WebSocket):
     """
     await manager.connect(websocket)
     redis = await get_redis()
-    consumer_name = f"ws-{id(websocket)}"
 
     # Send initial snapshot of current state
     try:

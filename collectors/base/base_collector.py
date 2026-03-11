@@ -22,7 +22,7 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime
 
 import asyncpg
 import redis.asyncio as aioredis

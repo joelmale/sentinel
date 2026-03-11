@@ -13,7 +13,6 @@ rather than O(total_data).
 import asyncio
 import csv
 import io
-import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 

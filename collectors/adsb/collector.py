@@ -421,11 +421,15 @@ class AdsbCollector(BaseCollector):
 
         idx = 0
         if self._opensky_enabled:
-            r = results[idx]; idx += 1
-            if isinstance(r, dict): opensky_data = r
+            r = results[idx]
+            idx += 1
+            if isinstance(r, dict):
+                opensky_data = r
         if self._adsbx_enabled:
-            r = results[idx]; idx += 1
-            if isinstance(r, dict): adsbx_data = r
+            r = results[idx]
+            idx += 1
+            if isinstance(r, dict):
+                adsbx_data = r
 
         # Merge by ICAO hex → one entry per aircraft
         merged_rows = _merge_sources(opensky_data, adsbx_data)

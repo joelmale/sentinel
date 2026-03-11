@@ -226,12 +226,12 @@ def parse_tle_text(text: str) -> dict[int, tuple[str, str, str]]:
     line 1 and line 2, i.e. chars [2:7] in Python 0-indexed.
     """
     result: dict[int, tuple[str, str, str]] = {}
-    lines = [l.rstrip() for l in text.splitlines() if l.strip()]
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
     i = 0
     while i < len(lines):
-        l = lines[i]
-        if l.startswith("1 ") and len(l) >= 69:
-            line1 = l
+        current_line = lines[i]
+        if current_line.startswith("1 ") and len(current_line) >= 69:
+            line1 = current_line
             if i + 1 < len(lines) and lines[i + 1].startswith("2 "):
                 line2 = lines[i + 1]
                 name = ""
@@ -726,8 +726,10 @@ class SpaceCollector(BaseCollector):
 
             def _f(key: str) -> Optional[float]:
                 v = sc.get(key)
-                try: return float(v) if v not in (None, "", "N/A") else None
-                except (TypeError, ValueError): return None
+                try:
+                    return float(v) if v not in (None, "", "N/A") else None
+                except (TypeError, ValueError):
+                    return None
 
             apogee_km      = _f("APOGEE")
             perigee_km     = _f("PERIGEE")

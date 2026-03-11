@@ -10,7 +10,6 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-import orjson
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse

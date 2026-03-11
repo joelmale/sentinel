@@ -1,6 +1,5 @@
 """Alert rules and alert events REST API."""
 import json
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel

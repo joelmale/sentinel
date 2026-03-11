@@ -12,7 +12,6 @@ Rule evaluation logic:
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 
 import asyncpg
 
