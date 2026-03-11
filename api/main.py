@@ -6,6 +6,7 @@ and lifespan context (DB pool + Redis connection). Think of it as
 the central bus station — routers are the individual bus lines.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -14,9 +15,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
+from alert_evaluator import alert_evaluator_loop
 from db.connection import db_pool
 from redis_client import redis_pool
-from routers import annotations, health, tracks, ws
+from routers import alerts, annotations, health, satellites, tracks, ws
 from settings import Settings
 
 settings = Settings()
@@ -61,4 +63,13 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(tracks.router, prefix="/api")
 app.include_router(annotations.router, prefix="/api")
+app.include_router(alerts.router, prefix="/api")
+app.include_router(satellites.router, prefix="/api")
 app.include_router(ws.router)  # /ws prefix set inside router
+
+
+# ── Background tasks ──────────────────────────────────────────────
+@app.on_event("startup")
+async def start_alert_evaluator() -> None:
+    """Start the alert evaluator background task."""
+    asyncio.create_task(alert_evaluator_loop())

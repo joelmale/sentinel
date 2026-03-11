@@ -1,0 +1,30 @@
+# docker-compose.dev.yml — Development overrides
+#
+# Apply with:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# Or just run:
+#   make dev-backend
+#
+# What this does:
+#   - Exposes api:8000 as localhost:8000 so Vite can proxy directly
+#   - Skips the frontend container (Vite replaces it)
+#   - Skips Caddy (no reverse proxy needed; Vite handles proxying)
+#
+# Think of Caddy as a production load balancer. In dev you talk
+# directly to the FastAPI process the same way a debugger would.
+
+services:
+
+  # Expose the API port directly to the host so the Vite dev server
+  # can proxy /api and /ws requests without going through Caddy.
+  api:
+    ports:
+      - "8000:8000"
+
+  # Disable Caddy — Vite's proxy handles routing in dev.
+  caddy:
+    profiles: ["_disabled_in_dev"]
+
+  # Disable the built frontend container — Vite serves the frontend.
+  frontend:
+    profiles: ["_disabled_in_dev"]

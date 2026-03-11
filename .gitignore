@@ -37,7 +37,16 @@ docker/timescaledb/pgdata/
 *.swp
 *.swo
 .DS_Store
+
+# AI / agent tooling
 AGENTS.md
+.claude/
+.codex/
+.cursor/
+.windsurf/
+.continue/
+.aider*
+.roo/
 
 # Logs
 *.log

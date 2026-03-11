@@ -31,6 +31,13 @@ export function useLiveStream({
   const onMessageRef = useRef(onMessage)
   onMessageRef.current = onMessage  // always call the latest callback
 
+  // In React StrictMode, effects run twice (mount → cleanup → mount).
+  // Without this flag, the cleanup close triggers onclose → schedules a
+  // reconnect → logs a spurious error before the real connection succeeds.
+  // Setting destroyedRef=true tells onclose "this teardown was intentional,
+  // don't retry" — same pattern as AbortController for fetch.
+  const destroyedRef = useRef(false)
+
   const connect = useCallback(() => {
     if (!enabled) return
 
@@ -51,12 +58,17 @@ export function useLiveStream({
       }
     }
 
-    ws.onerror = (err) => {
-      console.error('[SENTINEL] WS error', err)
+    ws.onerror = () => {
+      // onerror always fires before onclose — suppress the redundant log
+      // when the socket was closed intentionally by cleanup.
+      if (!destroyedRef.current) {
+        console.warn('[SENTINEL] WS connection error')
+      }
     }
 
     ws.onclose = () => {
-      if (!enabled) return
+      // Intentional teardown (StrictMode cleanup or component unmount) — don't retry.
+      if (destroyedRef.current || !enabled) return
       const backoff = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attemptRef.current)
       attemptRef.current++
       console.log(`[SENTINEL] WS closed. Reconnecting in ${backoff}ms`)
@@ -65,9 +77,11 @@ export function useLiveStream({
   }, [url, enabled])
 
   useEffect(() => {
+    destroyedRef.current = false
     connect()
     return () => {
-      enabled && wsRef.current?.close()
+      destroyedRef.current = true
+      wsRef.current?.close()
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
     }
   }, [connect, enabled])

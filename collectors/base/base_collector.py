@@ -152,6 +152,14 @@ class BaseCollector(ABC):
 
     async def _write_to_db(self, events: list[dict]):
         """Batch insert into track_events and upsert asset_states."""
+        def db_timestamp(value):
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, str):
+                text = value.replace("Z", "+00:00")
+                return datetime.fromisoformat(text)
+            return value
+
         async with self._db.acquire() as conn:
             # Batch insert track_events
             await conn.executemany("""
@@ -161,8 +169,11 @@ class BaseCollector(ABC):
                      timestamp, metadata, classification)
                 VALUES
                     ($1, $2, $3, $4,
-                     CASE WHEN $5 IS NOT NULL AND $6 IS NOT NULL
-                          THEN ST_SetSRID(ST_MakePoint($5, $6), 4326) END,
+                     CASE
+                          WHEN $5::double precision IS NOT NULL AND $6::double precision IS NOT NULL
+                          THEN ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), 4326)
+                          ELSE NULL::geometry(Point, 4326)
+                     END,
                      $7, $8, $9, $10, $11::jsonb, $12)
             """, [
                 (
@@ -170,7 +181,7 @@ class BaseCollector(ABC):
                     e.get("callsign"),
                     e.get("lon"), e.get("lat"),
                     e.get("altitude_m"), e.get("heading_deg"), e.get("speed_mps"),
-                    e["timestamp"],
+                    db_timestamp(e["timestamp"]),
                     json.dumps(e.get("metadata", {})),
                     e.get("classification"),
                 )
@@ -185,8 +196,11 @@ class BaseCollector(ABC):
                      last_seen, metadata, classification)
                 VALUES
                     ($1, $2, $3, $4,
-                     CASE WHEN $5 IS NOT NULL AND $6 IS NOT NULL
-                          THEN ST_SetSRID(ST_MakePoint($5, $6), 4326) END,
+                     CASE
+                          WHEN $5::double precision IS NOT NULL AND $6::double precision IS NOT NULL
+                          THEN ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), 4326)
+                          ELSE NULL::geometry(Point, 4326)
+                     END,
                      $7, $8, $9, $10, $11::jsonb, $12)
                 ON CONFLICT (source_domain, track_id) DO UPDATE SET
                     callsign       = EXCLUDED.callsign,
@@ -203,7 +217,7 @@ class BaseCollector(ABC):
                     e.get("callsign"),
                     e.get("lon"), e.get("lat"),
                     e.get("altitude_m"), e.get("heading_deg"), e.get("speed_mps"),
-                    e["timestamp"],
+                    db_timestamp(e["timestamp"]),
                     json.dumps(e.get("metadata", {})),
                     e.get("classification"),
                 )

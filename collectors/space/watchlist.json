@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "defaults": {
+    "n2yo_refresh_hours": 12,
+    "satnogs_refresh_hours": 24
+  },
+  "entries": [
+    {
+      "id": "iss",
+      "label": "ISS",
+      "priority": "critical",
+      "norad_id": 25544,
+      "satnogs_sat_id": "XSKZ-5603-1870-9019-3066",
+      "sources": ["n2yo", "satnogs"],
+      "notes": "Reference station for validating watchlist freshness and propagation."
+    },
+    {
+      "id": "tiangong",
+      "label": "Tiangong",
+      "priority": "high",
+      "norad_id": 48274,
+      "sources": ["n2yo", "satnogs"],
+      "notes": "Crewed platform with high analyst interest."
+    },
+    {
+      "id": "worldview-3",
+      "label": "WorldView-3",
+      "priority": "high",
+      "norad_id": 40115,
+      "sources": ["n2yo", "satnogs"],
+      "notes": "Commercial high-resolution EO."
+    },
+    {
+      "id": "wv-legion-1",
+      "label": "WV Legion 1",
+      "priority": "high",
+      "norad_id": 49260,
+      "sources": ["n2yo", "satnogs"]
+    },
+    {
+      "id": "capella-8",
+      "label": "Capella-8",
+      "priority": "medium",
+      "norad_id": 53867,
+      "sources": ["n2yo", "satnogs"]
+    },
+    {
+      "id": "gaofen-3-03",
+      "label": "GaoFen-3 03",
+      "priority": "medium",
+      "norad_id": 57266,
+      "sources": ["n2yo", "satnogs"]
+    }
+  ]
+}

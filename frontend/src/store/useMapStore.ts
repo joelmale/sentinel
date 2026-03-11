@@ -1,26 +1,20 @@
 /**
  * Global map + playback state — managed by Zustand.
  *
- * Zustand works like a singleton React context without the
- * boilerplate. Think of the store as a shared whiteboard:
- * any component can read from it or write to it, and all
- * subscribers re-render only when their watched slice changes.
- *
- * State slices:
- *   - activeLayers: which domain overlays are visible
- *   - playback: live vs replay, current time, speed
- *   - viewport: map center + zoom
- *   - selectedAsset: the track_id currently focused in detail panel
+ * Zustand works like a singleton React context without the boilerplate.
+ * Think of the store as a shared whiteboard: any component can read from
+ * it or write to it, and all subscribers re-render only when their watched
+ * slice changes.
  */
 
 import { create } from 'zustand'
 import { devtools } from 'zustand/middleware'
-import type { PlaybackMode, SourceDomain, TimeWindow } from '@/types/track'
+import type { PlaybackMode, SourceDomain, TimeWindow, TrackEventProperties } from '@/types/track'
 
 // ── Layer state ───────────────────────────────────────────────────
 export interface LayerState {
   enabled: boolean
-  opacity: number         // 0-1
+  opacity: number   // 0–1
 }
 
 export type LayerMap = Record<SourceDomain | 'Annotations', LayerState>
@@ -71,6 +65,18 @@ const DEFAULT_PLAYBACK: PlaybackState = {
 
 // ── Store interface ───────────────────────────────────────────────
 interface MapStore {
+  // Live asset data — shared across all panels so no prop drilling
+  liveAssets: Map<string, TrackEventProperties>
+  upsertAssets: (events: TrackEventProperties[]) => void
+  clearAssets: () => void
+
+  // Trail buffer: last 60 positions per track for live trail rendering
+  trailBuffer: Map<string, Array<{ lon: number; lat: number; timestamp: number }>>
+  clearTrailBuffer: () => void
+  selectedTrackHistory: Array<{ lon: number; lat: number; timestamp: number }>
+  setSelectedTrackHistory: (points: Array<{ lon: number; lat: number; timestamp: number }>) => void
+  clearSelectedTrackHistory: () => void
+
   // Layer visibility
   layers: LayerMap
   setLayerEnabled: (domain: keyof LayerMap, enabled: boolean) => void
@@ -79,6 +85,7 @@ interface MapStore {
   // Viewport
   viewport: Viewport
   setViewport: (viewport: Partial<Viewport>) => void
+  flyTo: (lon: number, lat: number, zoom?: number) => void
 
   // Playback
   playback: PlaybackState
@@ -86,7 +93,7 @@ interface MapStore {
   setCurrentTime: (t: Date) => void
   setTimeWindow: (window: TimeWindow) => void
   setSpeedMultiplier: (speed: PlaybackState['speedMultiplier']) => void
-  tickPlayback: () => void   // advance currentTime by (interval * speedMultiplier)
+  tickPlayback: () => void
 
   // Selected asset
   selectedTrackId: string | null
@@ -94,17 +101,88 @@ interface MapStore {
   selectAsset: (trackId: string, domain: SourceDomain) => void
   clearSelection: () => void
 
-  // Sidebar panels
-  layerPanelOpen: boolean
-  detailPanelOpen: boolean
-  toggleLayerPanel: () => void
-  toggleDetailPanel: () => void
+  // Alerts
+  pendingAlerts: Array<{ alertId: string; ruleId: string; trackId: string; domain: SourceDomain; triggeredAt: string }>
+  addAlert: (alert: { alertId: string; ruleId: string; trackId: string; domain: SourceDomain; triggeredAt: string }) => void
+  dismissAlert: (alertId: string) => void
+
+  // Panel open/close
+  sourcePanelOpen: boolean
+  assetCardOpen: boolean
+  toggleSourcePanel: () => void
+  setAssetCardOpen: (open: boolean) => void
+
+  // UI settings
+  simpleMap: boolean
+  showTrails: boolean
+  showCocom: boolean
+  globeView: boolean
+  toggleSimpleMap: () => void
+  toggleShowTrails: () => void
+  toggleCocom: () => void
+  toggleGlobeView: () => void
+
+  // Classification filter — maps domain name → list of HIDDEN classification strings
+  // An empty array (or absent key) means "show all" for that domain.
+  classFilter: Partial<Record<string, string[]>>
+  setClassFilter: (domain: string, hidden: string[]) => void
+
+  // Space track duration selector
+  spaceTrackDuration: '1h' | '24h' | 'orbit'
+  setSpaceTrackDuration: (d: '1h' | '24h' | 'orbit') => void
+
+  // Orbital track points for selected Space asset (populated by App.tsx query)
+  selectedOrbitPoints: Array<{ lon: number; lat: number; alt_km?: number; timestamp: number }>
+  setSelectedOrbitPoints: (pts: Array<{ lon: number; lat: number; alt_km?: number; timestamp: number }>) => void
+  clearSelectedOrbitPoints: () => void
 }
 
 // ── Store implementation ──────────────────────────────────────────
 export const useMapStore = create<MapStore>()(
   devtools((set, get) => ({
-    // ── Layers ──
+
+    // ── Assets ──────────────────────────────────────────────────
+    liveAssets: new Map(),
+    upsertAssets: (events) =>
+      set((s) => {
+        const next = new Map(s.liveAssets)
+        const nextTrailBuffer = new Map(s.trailBuffer)
+
+        for (const e of events) {
+          next.set(`${e.source_domain}:${e.track_id}`, e)
+
+          // Update trail buffer if lon/lat are valid numbers
+          if (typeof e.lon === 'number' && typeof e.lat === 'number') {
+            const key = `${e.source_domain}:${e.track_id}`
+            const trail = nextTrailBuffer.get(key) ?? []
+
+            // Parse timestamp to get numeric value
+            const timestamp = new Date(e.timestamp).getTime()
+
+            // Add new position
+            trail.push({ lon: e.lon, lat: e.lat, timestamp })
+
+            // Keep max 60 entries per track (FIFO)
+            if (trail.length > 60) {
+              trail.shift()
+            }
+
+            nextTrailBuffer.set(key, trail)
+          }
+        }
+
+        return { liveAssets: next, trailBuffer: nextTrailBuffer }
+      }),
+    clearAssets: () => set({ liveAssets: new Map() }),
+
+    // ── Trail buffer ────────────────────────────────────────────
+    trailBuffer: new Map(),
+    clearTrailBuffer: () => set({ trailBuffer: new Map() }),
+    selectedTrackHistory: [],
+    setSelectedTrackHistory: (points) => set({ selectedTrackHistory: points }),
+    clearSelectedTrackHistory: () => set({ selectedTrackHistory: [] }),
+
+    // ── Layers ──────────────────────────────────────────────────
     layers: DEFAULT_LAYERS,
     setLayerEnabled: (domain, enabled) =>
       set((s) => ({
@@ -115,12 +193,14 @@ export const useMapStore = create<MapStore>()(
         layers: { ...s.layers, [domain]: { ...s.layers[domain], opacity } },
       })),
 
-    // ── Viewport ──
+    // ── Viewport ────────────────────────────────────────────────
     viewport: DEFAULT_VIEWPORT,
     setViewport: (viewport) =>
       set((s) => ({ viewport: { ...s.viewport, ...viewport } })),
+    flyTo: (lon, lat, zoom = 8) =>
+      set({ viewport: { ...get().viewport, longitude: lon, latitude: lat, zoom } }),
 
-    // ── Playback ──
+    // ── Playback ─────────────────────────────────────────────────
     playback: DEFAULT_PLAYBACK,
     setPlaybackMode: (mode) =>
       set((s) => ({ playback: { ...s.playback, mode } })),
@@ -133,40 +213,66 @@ export const useMapStore = create<MapStore>()(
     tickPlayback: () => {
       const { playback } = get()
       if (playback.mode !== 'replay') return
-      const TICK_MS = 1000  // 1 real second
       const newTime = new Date(
-        playback.currentTime.getTime() + TICK_MS * playback.speedMultiplier
+        playback.currentTime.getTime() + 1000 * playback.speedMultiplier
       )
-      // Stop at end of window
       if (newTime >= playback.timeWindow.end) {
         set((s) => ({
-          playback: {
-            ...s.playback,
-            mode: 'paused',
-            currentTime: s.playback.timeWindow.end,
-          },
+          playback: { ...s.playback, mode: 'paused', currentTime: s.playback.timeWindow.end },
         }))
       } else {
-        set((s) => ({
-          playback: { ...s.playback, currentTime: newTime },
-        }))
+        set((s) => ({ playback: { ...s.playback, currentTime: newTime } }))
       }
     },
 
-    // ── Selection ──
+    // ── Selection ────────────────────────────────────────────────
     selectedTrackId: null,
     selectedDomain: null,
     selectAsset: (trackId, domain) =>
-      set({ selectedTrackId: trackId, selectedDomain: domain, detailPanelOpen: true }),
+      set({ selectedTrackId: trackId, selectedDomain: domain, assetCardOpen: true }),
     clearSelection: () =>
-      set({ selectedTrackId: null, selectedDomain: null }),
+      set({
+        selectedTrackId: null,
+        selectedDomain: null,
+        assetCardOpen: false,
+        selectedTrackHistory: [],
+      }),
 
-    // ── Panels ──
-    layerPanelOpen: true,
-    detailPanelOpen: false,
-    toggleLayerPanel: () =>
-      set((s) => ({ layerPanelOpen: !s.layerPanelOpen })),
-    toggleDetailPanel: () =>
-      set((s) => ({ detailPanelOpen: !s.detailPanelOpen })),
+    // ── Alerts ────────────────────────────────────────────────────
+    pendingAlerts: [],
+    addAlert: (alert) =>
+      set((s) => ({ pendingAlerts: [...s.pendingAlerts, alert] })),
+    dismissAlert: (alertId) =>
+      set((s) => ({ pendingAlerts: s.pendingAlerts.filter((a) => a.alertId !== alertId) })),
+
+    // ── Panels ──────────────────────────────────────────────────
+    sourcePanelOpen: true,
+    assetCardOpen: false,
+    toggleSourcePanel: () => set((s) => ({ sourcePanelOpen: !s.sourcePanelOpen })),
+    setAssetCardOpen: (open) => set({ assetCardOpen: open }),
+
+    // ── UI settings ────────────────────────────────────────────
+    simpleMap: false,
+    showTrails: true,
+    showCocom: false,
+    globeView: false,
+    toggleSimpleMap: () => set((s) => ({ simpleMap: !s.simpleMap })),
+    toggleShowTrails: () => set((s) => ({ showTrails: !s.showTrails })),
+    toggleCocom: () => set((s) => ({ showCocom: !s.showCocom })),
+    toggleGlobeView: () => set((s) => ({ globeView: !s.globeView })),
+
+    // ── Classification filter ───────────────────────────────────
+    classFilter: {},
+    setClassFilter: (domain, hidden) =>
+      set((s) => ({ classFilter: { ...s.classFilter, [domain]: hidden } })),
+
+    // ── Space track duration ─────────────────────────────────────
+    spaceTrackDuration: '1h',
+    setSpaceTrackDuration: (spaceTrackDuration) => set({ spaceTrackDuration }),
+
+    // ── Orbital track points ─────────────────────────────────────
+    selectedOrbitPoints: [],
+    setSelectedOrbitPoints: (pts) => set({ selectedOrbitPoints: pts }),
+    clearSelectedOrbitPoints: () => set({ selectedOrbitPoints: [] }),
   }))
 )

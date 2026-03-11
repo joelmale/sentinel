@@ -11,10 +11,13 @@ export interface TrackEventProperties {
   source_feed: string
   track_id: string
   callsign?: string
+  lon?: number
+  lat?: number
   altitude_m?: number
   heading_deg?: number
   speed_mps?: number
   timestamp: string       // ISO8601
+  last_seen?: string
   classification?: string
   // domain-specific extras via metadata spread
   [key: string]: unknown

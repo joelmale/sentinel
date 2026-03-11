@@ -207,6 +207,92 @@ SELECT add_continuous_aggregate_policy(
     schedule_interval => INTERVAL '1 hour'
 );
 
+-- ── Satellite catalog ────────────────────────────────────────────
+-- Persistent metadata for tracked space objects, enriched from
+-- Space-Track SATCAT (country, launch date, orbit class, RCS size)
+-- and optionally from the UCS Satellite Database (operator, purpose).
+-- Updated during each TLE refresh cycle.
+CREATE TABLE satellite_catalog (
+    norad_id        INTEGER         PRIMARY KEY,
+    object_name     TEXT            NOT NULL,       -- e.g. "ISS (ZARYA)"
+    intl_designator TEXT,                           -- e.g. "1998-067A"
+    object_type     TEXT,           -- PAYLOAD / ROCKET BODY / DEBRIS / UNKNOWN
+    country_code    TEXT,           -- ISO-3166 alpha-3 or SATCAT code
+    launch_date     DATE,
+    decay_date      DATE,           -- NULL if still in orbit
+    period_min      DOUBLE PRECISION,
+    inclination_deg DOUBLE PRECISION,
+    apogee_km       DOUBLE PRECISION,
+    perigee_km      DOUBLE PRECISION,
+    rcs_size        TEXT,           -- SMALL / MEDIUM / LARGE (radar cross section)
+    orbit_class     TEXT,           -- LEO / MEO / GEO / HEO / SSO
+    -- Enriched fields (may be blank for debris/rocket bodies)
+    operator        TEXT,
+    purpose         TEXT,           -- e.g. "Earth Observation", "Communications"
+    contractor      TEXT,
+    launch_site     TEXT,
+    -- Source tracking
+    sources         TEXT[]          DEFAULT '{}',  -- ['spacetrack', 'ucs', ...]
+    last_updated    TIMESTAMPTZ     DEFAULT NOW(),
+    metadata        JSONB           DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX idx_satellite_catalog_country
+    ON satellite_catalog (country_code);
+
+CREATE INDEX idx_satellite_catalog_orbit_class
+    ON satellite_catalog (orbit_class);
+
+CREATE INDEX idx_satellite_catalog_object_type
+    ON satellite_catalog (object_type);
+
+-- ── Historical TLE snapshots ──────────────────────────────────────
+-- One row per (norad_id, epoch). Allows retroactive orbital projection:
+-- to replay where a satellite WAS at time T, find the TLE epoch nearest
+-- to T and propagate forward/backward using SGP4.
+-- Think of it as version-controlling orbital state vectors.
+CREATE TABLE satellite_tles (
+    norad_id        INTEGER         NOT NULL,
+    epoch           TIMESTAMPTZ     NOT NULL,   -- TLE reference epoch (UTC)
+    tle_line1       TEXT            NOT NULL,
+    tle_line2       TEXT            NOT NULL,
+    source          TEXT            NOT NULL,   -- 'spacetrack' | 'celestrak'
+    ingested_at     TIMESTAMPTZ     DEFAULT NOW(),
+    PRIMARY KEY (norad_id, epoch)
+);
+
+-- Index for "give me the TLE snapshot closest to time T for satellite N"
+CREATE INDEX idx_satellite_tles_norad_epoch
+    ON satellite_tles (norad_id, epoch DESC);
+
+-- ── Curated space watchlist status ────────────────────────────────
+-- Read-only operational dashboard for curated Space entries tracked
+-- through slow-refresh supplemental sources such as N2YO and SatNOGS.
+CREATE TABLE space_watchlist_status (
+    watch_id             TEXT            PRIMARY KEY,
+    label                TEXT            NOT NULL,
+    priority             TEXT            NOT NULL,
+    enabled              BOOLEAN         DEFAULT TRUE,
+    norad_id             INTEGER,
+    satnogs_sat_id       TEXT,
+    desired_sources      TEXT[]          DEFAULT '{}',
+    notes                TEXT,
+    current_name         TEXT,
+    in_catalog           BOOLEAN         DEFAULT FALSE,
+    active_track         BOOLEAN         DEFAULT FALSE,
+    current_tle_source   TEXT,
+    tle_epoch            TIMESTAMPTZ,
+    tle_age_minutes      DOUBLE PRECISION,
+    last_track_seen      TIMESTAMPTZ,
+    health_status        TEXT            DEFAULT 'idle',
+    source_status        JSONB           DEFAULT '{}'::jsonb,
+    metadata             JSONB           DEFAULT '{}'::jsonb,
+    updated_at           TIMESTAMPTZ     DEFAULT NOW()
+);
+
+CREATE INDEX idx_space_watchlist_priority
+    ON space_watchlist_status (priority, updated_at DESC);
+
 -- ── Audit log ─────────────────────────────────────────────────────
 CREATE TABLE audit_log (
     id          BIGSERIAL   PRIMARY KEY,

@@ -10,11 +10,16 @@ all chunks outside [T1, T2] entirely, making it O(time_range)
 rather than O(total_data).
 """
 
-from datetime import datetime
+import asyncio
+import csv
+import io
+import math
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import orjson
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -190,3 +195,249 @@ async def get_live_assets(
         })
 
     return {"type": "FeatureCollection", "features": features}
+
+
+@router.get("/tracks/export", summary="Export track history as GeoJSON or CSV")
+async def export_tracks(
+    t_start: datetime = Query(..., description="Start time (ISO8601 UTC)"),
+    t_end: datetime = Query(..., description="End time (ISO8601 UTC)"),
+    domain: SourceDomain | None = Query(None),
+    track_id: str | None = Query(None, max_length=64),
+    bbox: str | None = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
+    format: str = Query("geojson", description="geojson | csv"),
+    limit: int = Query(default=50_000, le=200_000),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Export track history as GeoJSON FeatureCollection or CSV download."""
+    conditions = [
+        "timestamp >= :t_start",
+        "timestamp <= :t_end",
+    ]
+    params: dict[str, Any] = {"t_start": t_start, "t_end": t_end}
+
+    if domain:
+        conditions.append("source_domain = :domain")
+        params["domain"] = domain.value
+
+    if track_id:
+        conditions.append("track_id = :track_id")
+        params["track_id"] = track_id
+
+    if bbox:
+        try:
+            min_lon, min_lat, max_lon, max_lat = [float(x) for x in bbox.split(",")]
+            conditions.append(
+                "ST_Within(position, ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326))"
+            )
+            params.update(min_lon=min_lon, min_lat=min_lat, max_lon=max_lon, max_lat=max_lat)
+        except ValueError:
+            pass
+
+    where_clause = " AND ".join(conditions)
+    sql = text(f"""
+        SELECT
+            event_id::text,
+            source_domain,
+            source_feed,
+            track_id,
+            callsign,
+            ST_X(position) AS lon,
+            ST_Y(position) AS lat,
+            altitude_m,
+            heading_deg,
+            speed_mps,
+            timestamp,
+            metadata,
+            classification
+        FROM track_events
+        WHERE {where_clause}
+        ORDER BY timestamp ASC
+        LIMIT :limit
+    """)
+    params["limit"] = limit
+
+    result = await db.execute(sql, params)
+    rows = result.mappings().all()
+
+    if format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(
+            ["event_id", "domain", "feed", "track_id", "callsign", "timestamp",
+             "lon", "lat", "altitude_m", "heading_deg", "speed_mps", "classification"]
+        )
+        for r in rows:
+            writer.writerow([
+                r["event_id"],
+                r["source_domain"],
+                r["source_feed"],
+                r["track_id"],
+                r["callsign"],
+                r["timestamp"],
+                r["lon"],
+                r["lat"],
+                r["altitude_m"],
+                r["heading_deg"],
+                r["speed_mps"],
+                r["classification"],
+            ])
+        output.seek(0)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="sentinel_export_{t_start.date()}.csv"'},
+        )
+
+    # GeoJSON
+    features = []
+    for r in rows:
+        feat = {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]} if r["lon"] is not None else None,
+            "properties": {
+                "event_id": str(r["event_id"]),
+                "domain": r["source_domain"],
+                "feed": r["source_feed"],
+                "track_id": r["track_id"],
+                "callsign": r["callsign"],
+                "timestamp": r["timestamp"].isoformat() if r["timestamp"] else None,
+                "altitude_m": r["altitude_m"],
+                "heading_deg": r["heading_deg"],
+                "speed_mps": r["speed_mps"],
+                "classification": r["classification"],
+            },
+        }
+        features.append(feat)
+
+    geojson_str = orjson.dumps({
+        "type": "FeatureCollection",
+        "features": features,
+        "meta": {"count": len(features)},
+    }).decode("utf-8")
+    return StreamingResponse(
+        iter([geojson_str]),
+        media_type="application/geo+json",
+        headers={"Content-Disposition": f'attachment; filename="sentinel_export_{t_start.date()}.geojson"'},
+    )
+
+
+@router.get("/tracks/orbital", summary="Predict orbital ground track for a Space asset")
+async def get_orbital_track(
+    track_id: str = Query(..., max_length=64, description="NORAD catalogue number or track_id"),
+    duration: str = Query(
+        default="1h",
+        description="Track duration: '1h' | '24h' | 'orbit' (one orbital period)",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Propagate a satellite's TLE forward using SGP4 (skyfield) and return
+    a predicted ground-track as a list of {lon, lat, alt_km, timestamp} points.
+
+    The TLE is read from the most recent asset_states row for this track_id.
+    Propagation is done in a thread-pool executor so it doesn't block the event loop.
+
+    Duration options:
+      '1h'    — next 60 minutes, sampled every ~2 minutes  (~30 points)
+      '24h'   — next 24 hours,   sampled every ~8 minutes  (~180 points)
+      'orbit' — one full orbital period, sampled every ~1 minute
+
+    Note: orbital tracks are best visualised in Globe View — in flat (Mercator)
+    projection a polar orbit will appear to zig-zag across the antimeridian.
+    """
+    # ── Fetch TLE from asset_states ─────────────────────────────
+    sql = text("""
+        SELECT metadata
+        FROM asset_states
+        WHERE track_id = :track_id
+          AND source_domain = 'Space'
+        ORDER BY last_seen DESC
+        LIMIT 1
+    """)
+    result = await db.execute(sql, {"track_id": track_id})
+    row = result.mappings().first()
+
+    if not row or not row["metadata"]:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No orbital data found for track_id '{track_id}'. "
+                   "Ensure the Space collector is running and the satellite has been seen.",
+        )
+
+    metadata = row["metadata"]
+    tle_line1: str | None = metadata.get("tle_line1")
+    tle_line2: str | None = metadata.get("tle_line2")
+
+    if not tle_line1 or not tle_line2:
+        raise HTTPException(
+            status_code=422,
+            detail=f"TLE data missing in metadata for track_id '{track_id}'.",
+        )
+
+    period_min: float = float(metadata.get("orbital_period_min", 90.0))
+
+    # ── Determine propagation window ─────────────────────────────
+    if duration == "orbit":
+        # One complete orbital period — how long before the sat returns to the
+        # same point above Earth. For LEO: ~90 min; GEO: 1440 min.
+        duration_min = period_min
+        sample_min = max(0.5, period_min / 180)     # ~180 sample points
+    elif duration == "24h":
+        duration_min = 1440.0
+        sample_min = 8.0                             # ~180 points
+    else:  # "1h"
+        duration_min = 60.0
+        sample_min = 2.0                             # ~30 points
+
+    # ── Propagate in thread-pool (skyfield is synchronous) ───────
+    def _propagate() -> list[dict]:
+        try:
+            from skyfield.api import EarthSatellite, wgs84, Loader
+        except ImportError as exc:
+            raise RuntimeError(f"skyfield not installed: {exc}") from exc
+
+        # Use a local Loader so we can build a fresh timescale.
+        # We don't need the cached TLE file here — we already have the lines.
+        loader = Loader('/tmp/skyfield_data')
+        ts = loader.timescale()
+
+        sat = EarthSatellite(tle_line1, tle_line2, track_id, ts)
+
+        now_utc = datetime.now(timezone.utc)
+        points = []
+        step = sample_min
+
+        # Walk forward in time, computing subpoint at each step
+        minutes = 0.0
+        while minutes <= duration_min:
+            t_utc = now_utc + timedelta(minutes=minutes)
+            t = ts.from_datetime(t_utc)
+            try:
+                geocentric = sat.at(t)
+                subpoint = wgs84.subpoint_of(geocentric)
+                points.append({
+                    "lon": round(subpoint.longitude.degrees, 5),
+                    "lat": round(subpoint.latitude.degrees, 5),
+                    "alt_km": round(subpoint.elevation.km, 1),
+                    "timestamp": t_utc.isoformat(),
+                })
+            except Exception:
+                pass  # skip degenerate propagation steps
+            minutes += step
+
+        return points
+
+    loop = asyncio.get_event_loop()
+    try:
+        points = await loop.run_in_executor(None, _propagate)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    return {
+        "track_id": track_id,
+        "duration": duration,
+        "period_min": round(period_min, 2),
+        "sample_interval_min": sample_min,
+        "point_count": len(points),
+        "points": points,
+    }
