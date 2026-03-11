@@ -83,10 +83,10 @@ function DragDots({ dragRef, isDragging }: { dragRef: React.Ref<HTMLDivElement>;
         transition: 'background 0.15s',
       }}
       onMouseEnter={(e) => {
-        ;(e.currentTarget as HTMLDivElement).style.background = 'rgba(148,163,184,0.18)'
+        (e.currentTarget as HTMLDivElement).style.background = 'rgba(148,163,184,0.18)'
       }}
       onMouseLeave={(e) => {
-        ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+        (e.currentTarget as HTMLDivElement).style.background = 'transparent'
       }}
     >
       {Array.from({ length: 6 }).map((_, i) => (
@@ -211,6 +211,8 @@ function GroupHeader({
   colorHex,
   isOpen,
   onToggle,
+  isFilteredOut = false,
+  onToggleFilter,
   indent = 0,
 }: {
   label: string
@@ -218,6 +220,8 @@ function GroupHeader({
   colorHex: string
   isOpen: boolean
   onToggle: () => void
+  isFilteredOut?: boolean
+  onToggleFilter?: () => void
   indent?: number
 }) {
   const paddingLeft = 28 + indent * 14
@@ -252,18 +256,42 @@ function GroupHeader({
       }}>▾</span>
       <span style={{
         flex: 1, fontSize, fontWeight,
-        color: isOpen ? openColor : closedColor,
+        color: isFilteredOut ? '#475569' : isOpen ? openColor : closedColor,
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         transition: 'color 0.15s',
       }}>
         {label}
       </span>
+      {onToggleFilter && (
+        <span
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleFilter()
+          }}
+          title={isFilteredOut ? `Show ${label}` : `Hide ${label}`}
+          style={{
+            fontSize: 9,
+            fontWeight: 700,
+            color: isFilteredOut ? '#64748b' : '#e2e8f0',
+            background: isFilteredOut ? 'rgba(71,85,105,0.18)' : 'rgba(20,184,166,0.14)',
+            border: `1px solid ${isFilteredOut ? 'rgba(100,116,139,0.3)' : 'rgba(20,184,166,0.35)'}`,
+            borderRadius: 8,
+            padding: '1px 6px',
+            flexShrink: 0,
+            cursor: 'pointer',
+            userSelect: 'none',
+          }}
+        >
+          {isFilteredOut ? 'OFF' : 'ON'}
+        </span>
+      )}
       <span style={{
         fontSize: 9, fontWeight: 700,
-        color: colorHex,
-        background: `${colorHex}18`,
-        border: `1px solid ${colorHex}35`,
+        color: isFilteredOut ? '#94a3b8' : colorHex,
+        background: isFilteredOut ? 'rgba(71,85,105,0.18)' : `${colorHex}18`,
+        border: `1px solid ${isFilteredOut ? 'rgba(100,116,139,0.3)' : `${colorHex}35`}`,
         borderRadius: 8, padding: '1px 6px', flexShrink: 0,
+        cursor: onToggleFilter ? 'pointer' : 'default',
       }}>
         {count}
       </span>
@@ -414,6 +442,9 @@ export function SourcePanel() {
     toggleGlobeView,
     classFilter,
     setClassFilter,
+    hiddenGroupFilters,
+    toggleHiddenGroupFilter,
+    clearHiddenGroupFilters,
     spaceTrackDuration,
     setSpaceTrackDuration,
     workspaceSearch,
@@ -455,6 +486,15 @@ export function SourcePanel() {
       else next.add(key)
       return next
     })
+  }
+
+  const isGroupFiltered = (domain: SourceDomain, key: string) => {
+    const hiddenGroups = hiddenGroupFilters[domain] ?? []
+    const parts = key.split(':')
+    for (let i = 2; i <= parts.length; i += 1) {
+      if (hiddenGroups.includes(parts.slice(0, i).join(':'))) return true
+    }
+    return false
   }
 
   // Width resize — right-edge drag handle
@@ -621,10 +661,10 @@ export function SourcePanel() {
           transition: 'background 0.15s',
         }}
         onMouseEnter={(e) => {
-          ;(e.currentTarget as HTMLDivElement).style.background = 'rgba(148,163,184,0.18)'
+          (e.currentTarget as HTMLDivElement).style.background = 'rgba(148,163,184,0.18)'
         }}
         onMouseLeave={(e) => {
-          ;(e.currentTarget as HTMLDivElement).style.background = 'transparent'
+          (e.currentTarget as HTMLDivElement).style.background = 'transparent'
         }}
       />
 
@@ -816,6 +856,7 @@ export function SourcePanel() {
               const hiddenClasses = classFilter[domain] ?? []
               const activeFilterCount = hiddenClasses.length
               const groupMode = groupModes[domain] ?? 'none'
+              const activeGroupFilters = hiddenGroupFilters[domain] ?? []
 
               return (
                 <div key={domain}>
@@ -979,6 +1020,52 @@ export function SourcePanel() {
                         />
                       )}
 
+                      {activeGroupFilters.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '2px 10px 8px 28px' }}>
+                          <span style={{
+                            fontSize: 9,
+                            color: '#64748b',
+                            letterSpacing: '0.1em',
+                            textTransform: 'uppercase',
+                            marginRight: 2,
+                          }}>
+                            Group filters:
+                          </span>
+                          {activeGroupFilters.slice(0, 4).map((key) => (
+                            <span
+                              key={key}
+                              style={{
+                                fontSize: 9,
+                                fontWeight: 700,
+                                color: '#f59e0b',
+                                background: 'rgba(245,158,11,0.14)',
+                                border: '1px solid rgba(245,158,11,0.32)',
+                                borderRadius: 8,
+                                padding: '1px 6px',
+                              }}
+                            >
+                              {key.split(':').slice(1).join(' / ')}
+                            </span>
+                          ))}
+                          {activeGroupFilters.length > 4 && (
+                            <span style={{ fontSize: 9, color: '#94a3b8' }}>+{activeGroupFilters.length - 4}</span>
+                          )}
+                          <span
+                            onClick={() => clearHiddenGroupFilters(domain)}
+                            style={{
+                              fontSize: 9,
+                              fontWeight: 700,
+                              color: '#5eead4',
+                              cursor: 'pointer',
+                              userSelect: 'none',
+                            }}
+                            title={`Clear ${domain} group filters`}
+                          >
+                            Clear
+                          </span>
+                        </div>
+                      )}
+
                       {/* ── Track list ── */}
                       {count === 0 ? (
                         <div
@@ -1012,6 +1099,7 @@ export function SourcePanel() {
                               {sorted.map(([groupName, groupAssets]) => {
                                 const gKey = `Air:${groupName}`
                                 const isGroupOpen = openGroups.has(gKey)
+                                const isFilteredOut = isGroupFiltered(domain, gKey)
                                 return (
                                   <div key={gKey}>
                                     <GroupHeader
@@ -1019,10 +1107,12 @@ export function SourcePanel() {
                                       count={groupAssets.length}
                                       colorHex={meta.colorHex}
                                       isOpen={isGroupOpen}
+                                      isFilteredOut={isFilteredOut}
                                       onToggle={() => toggleGroup(gKey)}
+                                      onToggleFilter={() => toggleHiddenGroupFilter(domain, gKey)}
                                       indent={0}
                                     />
-                                    {isGroupOpen && groupAssets.map((a) => (
+                                    {isGroupOpen && !isFilteredOut && groupAssets.map((a) => (
                                       <TrackRow
                                         key={`${a.source_domain}:${a.track_id}`}
                                         asset={a}
@@ -1058,6 +1148,7 @@ export function SourcePanel() {
                               {sorted.map(([country, countryAssets]) => {
                                 const gKey = `Maritime:${country}`
                                 const isGroupOpen = openGroups.has(gKey)
+                                const isFilteredOut = isGroupFiltered(domain, gKey)
                                 return (
                                   <div key={gKey}>
                                     <GroupHeader
@@ -1065,10 +1156,12 @@ export function SourcePanel() {
                                       count={countryAssets.length}
                                       colorHex={meta.colorHex}
                                       isOpen={isGroupOpen}
+                                      isFilteredOut={isFilteredOut}
                                       onToggle={() => toggleGroup(gKey)}
+                                      onToggleFilter={() => toggleHiddenGroupFilter(domain, gKey)}
                                       indent={0}
                                     />
-                                    {isGroupOpen && countryAssets.map((a) => (
+                                    {isGroupOpen && !isFilteredOut && countryAssets.map((a) => (
                                       <TrackRow
                                         key={`${a.source_domain}:${a.track_id}`}
                                         asset={a}
@@ -1110,6 +1203,7 @@ export function SourcePanel() {
                                 const typeAssets = byType.get(objType)!
                                 const typeKey = `Space:${objType}`
                                 const isTypeOpen = openGroups.has(typeKey)
+                                const isTypeFiltered = isGroupFiltered(domain, typeKey)
 
                                 // ── L1: Orbit Class ─────────────────────────────────
                                 const byOrbit = new Map<string, TrackEventProperties[]>()
@@ -1127,13 +1221,16 @@ export function SourcePanel() {
                                       count={typeAssets.length}
                                       colorHex={meta.colorHex}
                                       isOpen={isTypeOpen}
+                                      isFilteredOut={isTypeFiltered}
                                       onToggle={() => toggleGroup(typeKey)}
+                                      onToggleFilter={() => toggleHiddenGroupFilter(domain, typeKey)}
                                       indent={0}
                                     />
-                                    {isTypeOpen && orbitKeys.map((orbitClass) => {
+                                    {isTypeOpen && !isTypeFiltered && orbitKeys.map((orbitClass) => {
                                       const orbitAssets = byOrbit.get(orbitClass)!
                                       const orbitKey = `Space:${objType}:${orbitClass}`
                                       const isOrbitOpen = openGroups.has(orbitKey)
+                                      const isOrbitFiltered = isGroupFiltered(domain, orbitKey)
 
                                       // ── L2: Constellation ──────────────────────────
                                       const byConst = new Map<string, TrackEventProperties[]>()
@@ -1153,13 +1250,16 @@ export function SourcePanel() {
                                             count={orbitAssets.length}
                                             colorHex={meta.colorHex}
                                             isOpen={isOrbitOpen}
+                                            isFilteredOut={isOrbitFiltered}
                                             onToggle={() => toggleGroup(orbitKey)}
+                                            onToggleFilter={() => toggleHiddenGroupFilter(domain, orbitKey)}
                                             indent={1}
                                           />
-                                          {isOrbitOpen && constKeys.map((constellation) => {
+                                          {isOrbitOpen && !isOrbitFiltered && constKeys.map((constellation) => {
                                             const cAssets = byConst.get(constellation)!
                                             const cKey = `Space:${objType}:${orbitClass}:${constellation}`
                                             const isCOpen = openGroups.has(cKey)
+                                            const isConstellationFiltered = isGroupFiltered(domain, cKey)
                                             return (
                                               <div key={cKey}>
                                                 <GroupHeader
@@ -1167,10 +1267,12 @@ export function SourcePanel() {
                                                   count={cAssets.length}
                                                   colorHex={meta.colorHex}
                                                   isOpen={isCOpen}
+                                                  isFilteredOut={isConstellationFiltered}
                                                   onToggle={() => toggleGroup(cKey)}
+                                                  onToggleFilter={() => toggleHiddenGroupFilter(domain, cKey)}
                                                   indent={2}
                                                 />
-                                                {isCOpen && cAssets.map((a) => (
+                                                {isCOpen && !isConstellationFiltered && cAssets.map((a) => (
                                                   <TrackRow
                                                     key={`${a.source_domain}:${a.track_id}`}
                                                     asset={a}

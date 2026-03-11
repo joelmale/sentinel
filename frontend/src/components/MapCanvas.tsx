@@ -29,7 +29,7 @@
  *  12. Annotations (TextLayer + IconLayer)
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import DeckGL from '@deck.gl/react'
 // GlobeView is an experimental API in deck.gl v9 — prefixed with underscore
 import { _GlobeView as GlobeView } from '@deck.gl/core'
@@ -42,6 +42,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { useMapStore } from '@/store/useMapStore'
 import { COCOM_GEOJSON_URL, COCOM_LABELS, getCocomColors } from '@/data/cocom'
 import type { TrackEventProperties } from '@/types/track'
+import { getAirlineGroup, getConstellation, getMmsiCountry, normalizeObjectType, normalizeOrbitClass } from '@/data/grouping'
 
 const CLASSIFICATION_COLORS: Record<string, [number, number, number]> = {
   Commercial: [100, 181, 246],
@@ -97,6 +98,7 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
     showCocom,
     globeView,
     classFilter,
+    hiddenGroupFilters,
     workspaceSearch,
     declutterMode,
     selectAsset,
@@ -123,15 +125,40 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
   // Filter assets: hidden layers and filtered classifications are excluded entirely.
   // Muted layers pass through (rendered dimmed). Think of hidden=off, muted=context.
   const visibleAssets = useMemo(() => {
+    const isHiddenByGroup = (asset: TrackEventProperties): boolean => {
+      const domain = asset.source_domain
+      const hidden = hiddenGroupFilters[domain] ?? []
+      if (hidden.length === 0) return false
+
+      const keys: string[] = []
+      if (domain === 'Air') {
+        keys.push(`Air:${getAirlineGroup(asset.callsign, asset.classification)}`)
+      } else if (domain === 'Maritime') {
+        keys.push(`Maritime:${getMmsiCountry(asset.track_id)}`)
+      } else if (domain === 'Space') {
+        const objectType = normalizeObjectType(asset.object_type)
+        const orbitClass = normalizeOrbitClass(asset.orbit_class, asset.orbital_period_min)
+        const constellation = getConstellation(asset.callsign)
+        keys.push(
+          `Space:${objectType}`,
+          `Space:${objectType}:${orbitClass}`,
+          `Space:${objectType}:${orbitClass}:${constellation}`,
+        )
+      }
+
+      return keys.some((key) => hidden.includes(key))
+    }
+
     return liveAssets.filter((a) => {
       const layerState = layers[a.source_domain as keyof typeof layers]
       if (layerState?.visibility === 'hidden') return false
       // Classification filter — hide assets whose classification is in the "hidden" list
       const hidden = classFilter[a.source_domain] ?? []
       if (hidden.length > 0 && a.classification && hidden.includes(a.classification)) return false
+      if (isHiddenByGroup(a)) return false
       return true
     })
-  }, [liveAssets, layers, classFilter])
+  }, [liveAssets, layers, classFilter, hiddenGroupFilters])
 
   // Workspace search match set — drives declutter opacity on map.
   // Like a spotlight: when declutter mode is on, non-matching tracks dim to ~10%.
@@ -152,19 +179,19 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
   }, [visibleAssets, workspaceSearch])
 
   // Per-asset alpha helper: applies search-based declutter dimming
-  const getAlpha = (d: TrackEventProperties, baseAlpha = 255): number => {
+  const getAlpha = useCallback((d: TrackEventProperties, baseAlpha = 255): number => {
     if (declutterMode && searchMatchSet !== null) {
       return searchMatchSet.has(`${d.source_domain}:${d.track_id}`) ? baseAlpha : 25
     }
     return baseAlpha
-  }
+  }, [declutterMode, searchMatchSet])
 
   // Per-domain effective opacity: muted domains render at 25% of their base opacity
-  const domainOpacity = (domain: string): number => {
+  const domainOpacity = useCallback((domain: string): number => {
     const ls = layers[domain as keyof typeof layers]
     if (!ls) return 1
     return ls.visibility === 'muted' ? ls.opacity * 0.25 : ls.opacity
-  }
+  }, [layers])
 
   const deckLayers = useMemo(() => {
     const ls: Layer<object>[] = []
@@ -177,7 +204,6 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
         minZoom: 0,
         maxZoom: 19,
         tileSize: 256,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         renderSubLayers: (props: any) => {
           const { west, south, east, north } = props.tile.bbox
           if (!props.data) return null
@@ -201,9 +227,7 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
         stroked: true,
         filled: true,
         pickable: false,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         getFillColor: (f: any) => getCocomColors(f.properties).fill,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         getLineColor: (f: any) => getCocomColors(f.properties).line,
         lineWidthMinPixels: 1.5,
         lineWidthMaxPixels: 3,
@@ -481,6 +505,8 @@ export function MapCanvas({ liveAssets, onMapClick }: MapCanvasProps) {
     visibleAssets,
     layers,
     classFilter,
+    domainOpacity,
+    getAlpha,
     selectAsset,
     trailBuffer,
     selectedTrackId,

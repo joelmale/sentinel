@@ -54,12 +54,12 @@ export interface LayerState {
 export type LayerMap = Record<SourceDomain | 'Annotations', LayerState>
 
 const DEFAULT_LAYERS: LayerMap = {
-  Air:         { visibility: 'active', opacity: 0.9 },
-  Maritime:    { visibility: 'active', opacity: 0.9 },
-  Space:       { visibility: 'active', opacity: 0.8 },
-  GPS:         { visibility: 'active', opacity: 0.7 },
-  Infra:       { visibility: 'active', opacity: 0.6 },
-  Annotations: { visibility: 'active', opacity: 1.0 },
+  Air:         { visibility: 'hidden', opacity: 0.9 },
+  Maritime:    { visibility: 'hidden', opacity: 0.9 },
+  Space:       { visibility: 'hidden', opacity: 0.8 },
+  GPS:         { visibility: 'hidden', opacity: 0.7 },
+  Infra:       { visibility: 'hidden', opacity: 0.6 },
+  Annotations: { visibility: 'hidden', opacity: 1.0 },
 }
 
 // ── Viewport ──────────────────────────────────────────────────────
@@ -177,6 +177,11 @@ interface MapStore {
   // An empty array (or absent key) means "show all" for that domain.
   classFilter: Partial<Record<string, string[]>>
   setClassFilter: (domain: string, hidden: string[]) => void
+
+  // Group filter — maps domain name → list of hidden grouping keys from SourcePanel
+  hiddenGroupFilters: Partial<Record<SourceDomain, string[]>>
+  toggleHiddenGroupFilter: (domain: SourceDomain, key: string) => void
+  clearHiddenGroupFilters: (domain: SourceDomain) => void
 
   // Space track duration selector
   spaceTrackDuration: '1h' | '24h' | 'orbit'
@@ -373,6 +378,19 @@ export const useMapStore = create<MapStore>()(
     classFilter: {},
     setClassFilter: (domain, hidden) =>
       set((s) => ({ classFilter: { ...s.classFilter, [domain]: hidden } })),
+
+    // ── Group filter ────────────────────────────────────────────
+    hiddenGroupFilters: {},
+    toggleHiddenGroupFilter: (domain, key) =>
+      set((s) => {
+        const current = s.hiddenGroupFilters[domain] ?? []
+        const next = current.includes(key)
+          ? current.filter((item) => item !== key)
+          : [...current, key]
+        return { hiddenGroupFilters: { ...s.hiddenGroupFilters, [domain]: next } }
+      }),
+    clearHiddenGroupFilters: (domain) =>
+      set((s) => ({ hiddenGroupFilters: { ...s.hiddenGroupFilters, [domain]: [] } })),
 
     // ── Space track duration ─────────────────────────────────────
     spaceTrackDuration: '1h',
