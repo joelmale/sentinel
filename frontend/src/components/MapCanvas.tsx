@@ -83,6 +83,7 @@ const SIMPLE_MAP_STYLE = {
 
 // OSM tiles used when globe view is active (deck.gl TileLayer, not MapLibre)
 const GLOBE_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+const LANDING_POINT_INTERACTIVE_ZOOM = 4
 
 interface MapCanvasProps {
   liveAssets: TrackEventProperties[]
@@ -272,7 +273,9 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
 
     // ── Undersea cables ─────────────────────────────────────────
     if (showUnderseaCables) {
-      const landingPointRadius = Math.min(14, Math.max(3, viewport.zoom * 1.15))
+      const landingPointRadius = Math.min(10, Math.max(3, viewport.zoom * 0.9))
+      const landingPointPickRadius = Math.min(22, Math.max(10, landingPointRadius + 8))
+      const landingPointsInteractive = viewport.zoom >= LANDING_POINT_INTERACTIVE_ZOOM
 
       ls.push(new GeoJsonLayer({
         id: 'undersea-cables',
@@ -291,20 +294,18 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }))
 
       ls.push(new GeoJsonLayer({
-        id: 'undersea-cable-landing-points',
+        id: 'undersea-cable-landing-point-hitareas',
         data: UNDERSEA_CABLE_LANDING_POINTS_GEOJSON_URL,
-        stroked: true,
+        stroked: false,
         filled: true,
         pointType: 'circle',
-        pickable: true,
-        pointRadiusMinPixels: 3,
-        pointRadiusMaxPixels: 16,
-        getPointRadius: landingPointRadius,
-        getFillColor: [255, 248, 220, 220],
-        getLineColor: [120, 53, 15, 220],
-        lineWidthMinPixels: 1,
-        opacity: 0.95,
-        updateTriggers: { getPointRadius: [landingPointRadius] },
+        pickable: landingPointsInteractive,
+        pointRadiusMinPixels: 10,
+        pointRadiusMaxPixels: 22,
+        getPointRadius: landingPointPickRadius,
+        getFillColor: [255, 255, 255, 1],
+        opacity: 0.01,
+        updateTriggers: { getPointRadius: [landingPointPickRadius], pickable: [landingPointsInteractive] },
         onHover: ({ x, y, object }) => {
           const landingPoint = object?.properties as { name?: string; id?: string } | undefined
           setHoverInfo(landingPoint ? { x, y, object: { kind: 'landingPoint', item: landingPoint } } : null)
@@ -321,6 +322,23 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
             lat: coordinates[1],
           })
         },
+      }))
+
+      ls.push(new GeoJsonLayer({
+        id: 'undersea-cable-landing-points',
+        data: UNDERSEA_CABLE_LANDING_POINTS_GEOJSON_URL,
+        stroked: true,
+        filled: true,
+        pointType: 'circle',
+        pickable: false,
+        pointRadiusMinPixels: 3,
+        pointRadiusMaxPixels: 12,
+        getPointRadius: landingPointRadius,
+        getFillColor: [255, 248, 220, 220],
+        getLineColor: [120, 53, 15, 220],
+        lineWidthMinPixels: 1,
+        opacity: 0.95,
+        updateTriggers: { getPointRadius: [landingPointRadius] },
       }))
 
       if (selectedLandingPoint) {
@@ -743,6 +761,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     return () => window.clearTimeout(id)
   }, [renderWarning])
 
+  const deckCursor = hoverInfo?.object.kind === 'landingPoint'
+    ? 'pointer'
+    : 'grab'
+
   return (
     <div className="relative w-full h-full">
       {!rendererDisabled ? (
@@ -753,6 +775,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           onViewStateChange={({ viewState: vs }) =>
             setViewport(vs as unknown as typeof viewport)
           }
+          getCursor={({ isDragging }) => (isDragging ? 'grabbing' : deckCursor)}
           controller={true}
           layers={deckLayers}
           onError={(error) => {
