@@ -48,4 +48,7 @@ jobs:
       - name: Copy .env
         run: cp .env.example .env
       - name: Build all images
-        run: docker compose build --no-cache
+        run: |
+          export GIT_SHA="${GITHUB_SHA}"
+          export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          docker compose build --no-cache

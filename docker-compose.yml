@@ -23,6 +23,9 @@ services:
     build:
       context: ./frontend
       target: server
+      args:
+        VCS_REF: ${GIT_SHA:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: sentinel-frontend
     environment:
       - VITE_API_BASE_URL=${VITE_API_BASE_URL:-/api}
@@ -31,7 +34,11 @@ services:
 
   # ── Backend API ──────────────────────────────────────────────────
   api:
-    build: ./api
+    build:
+      context: ./api
+      args:
+        VCS_REF: ${GIT_SHA:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: sentinel-api
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -110,6 +117,9 @@ services:
     build:
       context: ./collectors
       dockerfile: adsb/Dockerfile
+      args:
+        VCS_REF: ${GIT_SHA:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: sentinel-collector-adsb
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -160,6 +170,9 @@ services:
     build:
       context: ./collectors
       dockerfile: ais/Dockerfile
+      args:
+        VCS_REF: ${GIT_SHA:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: sentinel-collector-ais
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -197,6 +210,9 @@ services:
     build:
       context: ./collectors
       dockerfile: ais/Dockerfile
+      args:
+        VCS_REF: ${GIT_SHA:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: sentinel-collector-ais-history
     profiles: ["historical"]
     environment:
@@ -216,6 +232,9 @@ services:
     build:
       context: ./collectors
       dockerfile: space/Dockerfile
+      args:
+        VCS_REF: ${GIT_SHA:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: sentinel-collector-space
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -245,6 +264,9 @@ services:
     build:
       context: ./collectors
       dockerfile: gpsjam/Dockerfile
+      args:
+        VCS_REF: ${GIT_SHA:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: sentinel-collector-gpsjam
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -271,6 +293,9 @@ services:
     build:
       context: ./collectors
       dockerfile: infra/Dockerfile
+      args:
+        VCS_REF: ${GIT_SHA:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: sentinel-collector-infra
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -303,6 +328,9 @@ services:
     build:
       context: ./collectors
       dockerfile: acled/Dockerfile
+      args:
+        VCS_REF: ${GIT_SHA:-dev}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: sentinel-collector-acled
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}

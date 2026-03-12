@@ -11,6 +11,14 @@ RUN npm run build
 # ── Stage 2: Serve via Nginx ─────────────────────────────────────
 FROM nginx:alpine AS server
 
+ARG VCS_REF=dev
+ARG BUILD_TIME=unknown
+LABEL org.opencontainers.image.revision=$VCS_REF \
+      org.opencontainers.image.created=$BUILD_TIME \
+      org.opencontainers.image.source="https://github.com/joelmale/sentinel"
+ENV VCS_REF=$VCS_REF \
+    BUILD_TIME=$BUILD_TIME
+
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 # SPA fallback: all routes serve index.html
