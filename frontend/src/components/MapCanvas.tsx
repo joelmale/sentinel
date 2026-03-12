@@ -84,6 +84,13 @@ const SIMPLE_MAP_STYLE = {
 // OSM tiles used when globe view is active (deck.gl TileLayer, not MapLibre)
 const GLOBE_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
 const LANDING_POINT_INTERACTIVE_ZOOM = 4
+const UNDERSEA_NETWORK_FOCUS_VIEW = {
+  longitude: 18,
+  latitude: 8,
+  zoom: 2.3,
+  bearing: 0,
+  pitch: 0,
+}
 
 interface MapCanvasProps {
   liveAssets: TrackEventProperties[]
@@ -95,7 +102,28 @@ type HoverObject =
   | { kind: 'track'; item: TrackEventProperties }
   | { kind: 'disruption'; item: DisruptionEvent }
   | { kind: 'underseaCable'; item: { name?: string; id?: string } }
-  | { kind: 'landingPoint'; item: { name?: string; id?: string } }
+  | { kind: 'landingPoint'; item: { name?: string; id?: string; lon?: number; lat?: number } }
+
+function clampZoom(nextZoom: number): number {
+  return Math.max(1.5, Math.min(18, nextZoom))
+}
+
+function niceDistance(meters: number): number {
+  const steps = [1, 2, 5]
+  const exponent = Math.floor(Math.log10(meters))
+  const magnitude = 10 ** exponent
+  const normalized = meters / magnitude
+  const step = steps.find((candidate) => normalized <= candidate) ?? 10
+  return step * magnitude
+}
+
+function formatScaleDistance(meters: number): string {
+  if (meters >= 1000) {
+    const km = meters / 1000
+    return Number.isInteger(km) ? `${km} km` : `${km.toFixed(1)} km`
+  }
+  return `${Math.round(meters)} m`
+}
 
 export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProps) {
   const {
@@ -307,8 +335,21 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         opacity: 0.01,
         updateTriggers: { getPointRadius: [landingPointPickRadius], pickable: [landingPointsInteractive] },
         onHover: ({ x, y, object }) => {
-          const landingPoint = object?.properties as { name?: string; id?: string } | undefined
-          setHoverInfo(landingPoint ? { x, y, object: { kind: 'landingPoint', item: landingPoint } } : null)
+          const landingPoint = object as { geometry?: { coordinates?: [number, number] }; properties?: { name?: string; id?: string } } | undefined
+          const coordinates = landingPoint?.geometry?.coordinates
+          const properties = landingPoint?.properties
+          setHoverInfo(properties ? {
+            x,
+            y,
+            object: {
+              kind: 'landingPoint',
+              item: {
+                ...properties,
+                lon: coordinates?.[0],
+                lat: coordinates?.[1],
+              },
+            },
+          } : null)
         },
         onClick: ({ object }) => {
           const landingPoint = object as { geometry?: { coordinates?: [number, number] }; properties?: { name?: string; id?: string } } | undefined
@@ -353,6 +394,22 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           lineWidthUnits: 'pixels',
           getLineWidth: 2.5,
           getLineColor: [251, 191, 36, 235],
+          pickable: false,
+        }))
+      }
+
+      if (hoverInfo?.object.kind === 'landingPoint' && typeof hoverInfo.object.item.lon === 'number' && typeof hoverInfo.object.item.lat === 'number') {
+        ls.push(new ScatterplotLayer({
+          id: 'undersea-cable-landing-point-hover',
+          data: [hoverInfo.object.item],
+          getPosition: (d: { lon?: number; lat?: number }) => [d.lon ?? 0, d.lat ?? 0],
+          getRadius: landingPointRadius + 4,
+          radiusUnits: 'pixels',
+          stroked: true,
+          filled: false,
+          lineWidthUnits: 'pixels',
+          getLineWidth: 2,
+          getLineColor: [255, 237, 213, 235],
           pickable: false,
         }))
       }
@@ -730,6 +787,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     selectedLandingPoint,
     selectedTrackHistory,
     selectedOrbitPoints,
+    hoverInfo,
     showTrails,
     showCocom,
     showUnderseaCables,
@@ -765,8 +823,32 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     ? 'pointer'
     : 'grab'
 
+  const scaleBar = useMemo(() => {
+    const metersPerPixel = 156543.03392 * Math.cos((viewport.latitude * Math.PI) / 180) / (2 ** viewport.zoom)
+    const idealMeters = Math.max(1, metersPerPixel * 120)
+    const distanceMeters = niceDistance(idealMeters)
+    const widthPx = distanceMeters / metersPerPixel
+    return {
+      label: formatScaleDistance(distanceMeters),
+      widthPx: Math.max(36, Math.min(160, widthPx)),
+    }
+  }, [viewport.latitude, viewport.zoom])
+
+  const zoomContext = useMemo(() => {
+    if (viewport.zoom < 2.5) return 'Global view'
+    if (viewport.zoom < LANDING_POINT_INTERACTIVE_ZOOM) {
+      return showUnderseaCables ? `Regional view · zoom to ${LANDING_POINT_INTERACTIVE_ZOOM}+ for landing points` : 'Regional view'
+    }
+    if (viewport.zoom < 7) {
+      return showUnderseaCables ? 'Infrastructure selection enabled' : 'Operational view'
+    }
+    return 'Local detail view'
+  }, [showUnderseaCables, viewport.zoom])
+
+  const compassVisible = globeView || Math.abs(viewport.bearing) > 0.5 || Math.abs(viewport.pitch) > 0.5
+
   return (
-    <div className="relative w-full h-full">
+    <div className="relative w-full h-full" style={{ cursor: deckCursor }}>
       {!rendererDisabled ? (
         <DeckGL
           views={globeView ? new GlobeView({ id: 'globe' }) : undefined}
@@ -807,6 +889,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           {/* MapLibre is only active in flat map modes — GlobeView uses TileLayer instead */}
           {!globeView && (
             <Map
+              cursor={deckCursor}
               mapStyle={simpleMap ? SIMPLE_MAP_STYLE : MAP_STYLE}
               onLoad={(evt) => {
                 // Suppress "Image X could not be loaded" warnings for missing sprite
@@ -831,6 +914,68 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           />
         </div>
       )}
+      <div className="absolute bottom-4 right-4 z-10 flex flex-col items-end gap-2" style={{ pointerEvents: 'auto' }}>
+        <div style={mapChromeOverlayStyle}>
+          <div style={zoomReadoutStyle}>Zoom {viewport.zoom.toFixed(1)}</div>
+          <div style={zoomContextStyle}>{zoomContext}</div>
+          <div style={zoomButtonsRowStyle}>
+            <button
+              type="button"
+              style={mapButtonStyle}
+              onClick={() => setViewport({ zoom: clampZoom(viewport.zoom + 0.8) })}
+              aria-label="Zoom in"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              style={mapButtonStyle}
+              onClick={() => setViewport({ zoom: clampZoom(viewport.zoom - 0.8) })}
+              aria-label="Zoom out"
+            >
+              -
+            </button>
+          </div>
+        </div>
+        {showUnderseaCables && (
+          <div style={thresholdBadgeStyle(viewport.zoom >= LANDING_POINT_INTERACTIVE_ZOOM)}>
+            {viewport.zoom >= LANDING_POINT_INTERACTIVE_ZOOM
+              ? 'Landing points selectable'
+              : `Zoom to ${LANDING_POINT_INTERACTIVE_ZOOM}+ to select landing points`}
+          </div>
+        )}
+        {showUnderseaCables && (
+          <button
+            type="button"
+            style={mapActionStyle}
+            onClick={() => setViewport(UNDERSEA_NETWORK_FOCUS_VIEW)}
+          >
+            Focus undersea network
+          </button>
+        )}
+        <div style={scaleBarOverlayStyle}>
+          <div style={scaleBarLabelStyle}>{scaleBar.label}</div>
+          <div style={{ ...scaleBarLineStyle, width: `${scaleBar.widthPx}px` }} />
+        </div>
+        {compassVisible && (
+          <button
+            type="button"
+            style={compassStyle}
+            onClick={() => setViewport({ bearing: 0, pitch: 0 })}
+            title="Reset map bearing and pitch"
+          >
+            <span
+              style={{
+                ...compassNeedleStyle,
+                transform: `rotate(${-viewport.bearing}deg)`,
+              }}
+            >
+              ↑
+            </span>
+            <span style={compassLabelStyle}>N</span>
+          </button>
+        )}
+      </div>
       {hoverInfo && (
         <div
           className="pointer-events-none absolute z-10 rounded bg-slate-900/90 px-2 py-1 text-xs text-white"
@@ -858,4 +1003,130 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       )}
     </div>
   )
+}
+
+const mapChromeOverlayStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  flexDirection: 'column',
+  alignItems: 'flex-start',
+  gap: 6,
+  padding: '6px 8px',
+  borderRadius: 10,
+  background: 'rgba(15,23,42,0.46)',
+  backdropFilter: 'blur(8px)',
+}
+
+const zoomReadoutStyle: React.CSSProperties = {
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  fontSize: 14,
+  fontWeight: 700,
+  color: '#f8fafc',
+}
+
+const zoomContextStyle: React.CSSProperties = {
+  fontSize: 11,
+  lineHeight: 1.4,
+  color: '#cbd5e1',
+}
+
+const zoomButtonsRowStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: 8,
+}
+
+const mapButtonStyle: React.CSSProperties = {
+  width: 28,
+  height: 28,
+  borderRadius: 8,
+  border: '1px solid rgba(148,163,184,0.22)',
+  background: 'rgba(15,23,42,0.72)',
+  color: '#f8fafc',
+  fontSize: 18,
+  lineHeight: 1,
+  cursor: 'pointer',
+}
+
+const mapActionStyle: React.CSSProperties = {
+  width: 'fit-content',
+  padding: '8px 10px',
+  borderRadius: 10,
+  border: '1px solid rgba(148,163,184,0.18)',
+  background: 'rgba(15,23,42,0.62)',
+  color: '#e2e8f0',
+  fontSize: 11,
+  fontWeight: 600,
+  cursor: 'pointer',
+  backdropFilter: 'blur(8px)',
+}
+
+const thresholdBadgeStyle = (active: boolean): React.CSSProperties => ({
+  padding: '7px 9px',
+  borderRadius: 10,
+  border: active
+    ? '1px solid rgba(34,197,94,0.28)'
+    : '1px solid rgba(245,158,11,0.24)',
+  background: active
+    ? 'rgba(21,128,61,0.18)'
+    : 'rgba(120,53,15,0.35)',
+  color: active ? '#bbf7d0' : '#fde68a',
+  fontSize: 11,
+  lineHeight: 1.35,
+  backgroundClip: 'padding-box',
+  backdropFilter: 'blur(8px)',
+})
+
+const compassStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 8,
+  width: 'fit-content',
+  padding: '8px 10px',
+  borderRadius: 10,
+  border: '1px solid rgba(148,163,184,0.18)',
+  background: 'rgba(15,23,42,0.62)',
+  color: '#f8fafc',
+  cursor: 'pointer',
+  backdropFilter: 'blur(8px)',
+}
+
+const compassNeedleStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  width: 22,
+  height: 22,
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontSize: 18,
+  color: '#f87171',
+}
+
+const compassLabelStyle: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 700,
+  letterSpacing: '0.12em',
+  color: '#cbd5e1',
+}
+
+const scaleBarOverlayStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  flexDirection: 'column',
+  alignItems: 'flex-start',
+  padding: '4px 6px',
+  borderRadius: 8,
+  background: 'rgba(15,23,42,0.38)',
+  backdropFilter: 'blur(6px)',
+}
+
+const scaleBarLabelStyle: React.CSSProperties = {
+  marginBottom: 2,
+  fontSize: 10,
+  fontWeight: 600,
+  color: '#e2e8f0',
+}
+
+const scaleBarLineStyle: React.CSSProperties = {
+  height: 8,
+  borderLeft: '2px solid #f8fafc',
+  borderRight: '2px solid #f8fafc',
+  borderBottom: '2px solid #f8fafc',
 }

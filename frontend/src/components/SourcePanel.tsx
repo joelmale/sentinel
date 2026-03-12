@@ -744,20 +744,33 @@ export function SourcePanel() {
           position: 'absolute',
           right: 0,
           top: 0,
-          width: '8px',
+          width: '12px',
           height: '100%',
           cursor: 'col-resize',
           zIndex: 10,
-          background: 'transparent',
-          transition: 'background 0.15s',
+          background: 'linear-gradient(270deg, rgba(94,234,212,0.2), rgba(94,234,212,0))',
+          opacity: 0.45,
+          transition: 'opacity 0.15s',
         }}
         onMouseEnter={(e) => {
-          (e.currentTarget as HTMLDivElement).style.background = 'rgba(148,163,184,0.18)'
+          (e.currentTarget as HTMLDivElement).style.opacity = '0.9'
         }}
         onMouseLeave={(e) => {
-          (e.currentTarget as HTMLDivElement).style.background = 'transparent'
+          (e.currentTarget as HTMLDivElement).style.opacity = '0.45'
         }}
-      />
+      >
+        <div style={{
+          position: 'absolute',
+          right: 3,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          width: 3,
+          height: 48,
+          borderRadius: 999,
+          background: 'rgba(226,232,240,0.45)',
+          pointerEvents: 'none',
+        }} />
+      </div>
 
       {/* ── Bottom-edge resize handle (height) ── */}
       <div
@@ -767,19 +780,32 @@ export function SourcePanel() {
           bottom: 0,
           left: 0,
           width: 'calc(100% - 16px)',
-          height: '8px',
+          height: '12px',
           cursor: 'row-resize',
           zIndex: 10,
-          background: 'transparent',
-          transition: 'background 0.15s',
+          background: 'linear-gradient(0deg, rgba(94,234,212,0.2), rgba(94,234,212,0))',
+          opacity: 0.45,
+          transition: 'opacity 0.15s',
         }}
         onMouseEnter={(e) => {
-          (e.currentTarget as HTMLDivElement).style.background = 'rgba(148,163,184,0.18)'
+          (e.currentTarget as HTMLDivElement).style.opacity = '0.9'
         }}
         onMouseLeave={(e) => {
-          (e.currentTarget as HTMLDivElement).style.background = 'transparent'
+          (e.currentTarget as HTMLDivElement).style.opacity = '0.45'
         }}
-      />
+      >
+        <div style={{
+          position: 'absolute',
+          left: '50%',
+          bottom: 3,
+          transform: 'translateX(-50%)',
+          width: 56,
+          height: 3,
+          borderRadius: 999,
+          background: 'rgba(226,232,240,0.45)',
+          pointerEvents: 'none',
+        }} />
+      </div>
 
       {/* ── Bottom-right corner resize handle (width + height) ── */}
       <div
@@ -788,20 +814,21 @@ export function SourcePanel() {
           position: 'absolute',
           bottom: 0,
           right: 0,
-          width: '16px',
-          height: '16px',
+          width: '22px',
+          height: '22px',
           cursor: 'se-resize',
           zIndex: 11,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
+          borderTopLeftRadius: '10px',
+          background: 'linear-gradient(135deg, rgba(94,234,212,0), rgba(94,234,212,0.22))',
         }}
       >
-        {/* Subtle grip dots so the corner is discoverable */}
-        <svg width="8" height="8" viewBox="0 0 8 8" fill="none" style={{ opacity: 0.35, pointerEvents: 'none' }}>
-          <circle cx="2" cy="6" r="1" fill="#94a3b8" />
-          <circle cx="6" cy="6" r="1" fill="#94a3b8" />
-          <circle cx="6" cy="2" r="1" fill="#94a3b8" />
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ opacity: 0.7, pointerEvents: 'none' }}>
+          <path d="M4 11L11 4" stroke="#e2e8f0" strokeWidth="1.25" strokeLinecap="round" />
+          <path d="M7 11L11 7" stroke="#e2e8f0" strokeWidth="1.25" strokeLinecap="round" />
+          <path d="M1 11L11 1" stroke="#94a3b8" strokeWidth="1.25" strokeLinecap="round" />
         </svg>
       </div>
 
