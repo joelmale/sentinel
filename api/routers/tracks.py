@@ -244,7 +244,11 @@ async def get_domain_status(
             "stale": stale_assets,
             "feeds": len(feeds),
             "due_feeds": due_feeds,
-            "latest_seen": _ensure_tz(latest_seen).isoformat() if latest_seen else None,
+            "latest_seen": (
+                ensured_latest_seen.isoformat()
+                if (ensured_latest_seen := _ensure_tz(latest_seen)) is not None
+                else None
+            ),
             "avg_speed_mps": round(sum(speeds) / len(speeds), 1) if speeds else None,
             "avg_altitude_m": round(sum(altitudes) / len(altitudes), 1) if altitudes else None,
             "events_1h": int(sum(f["events_1h"] for f in feeds)),
