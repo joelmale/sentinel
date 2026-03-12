@@ -5,12 +5,10 @@ import path from 'path'
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: { '@': path.resolve(__dirname, './src') },
-  },
-  optimizeDeps: {
-    // maplibre-gl ships a malformed source map in this environment.
-    // Excluding it from prebundling avoids esbuild trying to parse it.
-    exclude: ['maplibre-gl'],
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+      child_process: path.resolve(__dirname, './src/shims/child-process-browser.ts'),
+    },
   },
   server: {
     port: 5173,
@@ -31,5 +29,28 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: true,
+    // MapLibre is intrinsically large; use intentional vendor chunking so the
+    // warning reflects real regressions instead of the baseline map payload.
+    chunkSizeWarningLimit: 1300,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('maplibre-gl') || id.includes('react-map-gl') || id.includes('@vis.gl/react-maplibre')) {
+            return 'map-vendor'
+          }
+          if (id.includes('@deck.gl') || id.includes('@luma.gl') || id.includes('@math.gl') || id.includes('@loaders.gl')) {
+            return 'deck-vendor'
+          }
+          if (id.includes('recharts') || id.includes('d3-')) {
+            return 'charts-vendor'
+          }
+          if (id.includes('@tanstack/react-query')) {
+            return 'query-vendor'
+          }
+          return 'vendor'
+        },
+      },
+    },
   },
 })

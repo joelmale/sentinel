@@ -1,7 +1,7 @@
 """
 Alert Evaluator — background task that runs every 30 seconds.
 
-Queries asset_states against enabled alert_rules and fires alert_events.
+Queries asset_states against active alert_rules and fires alert_events.
 Publishes alerts to the Redis Stream for WebSocket delivery to browsers.
 
 Rule evaluation logic:
@@ -27,7 +27,7 @@ async def _evaluate_once(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn:
         # Load active rules
         rules = await conn.fetch(
-            "SELECT id, domain, conditions FROM alert_rules WHERE enabled = true"
+            "SELECT id, domain, conditions FROM alert_rules WHERE is_active = true"
         )
         if not rules:
             return
@@ -74,10 +74,10 @@ async def _evaluate_once(pool: asyncpg.Pool) -> None:
 
                 # Insert new alert event
                 alert_id = await conn.fetchval(
-                    """INSERT INTO alert_events (rule_id, track_id, domain, status, triggered_at)
-                       VALUES ($1, $2, $3, 'open', now())
+                    """INSERT INTO alert_events (rule_id, track_id, status, triggered_at)
+                       VALUES ($1, $2, 'open', now())
                        RETURNING id""",
-                    rule_id, track_id, domain
+                    rule_id, track_id
                 )
 
                 log.info(f"[ALERT] Rule {rule_id} triggered for {domain}:{track_id} (alert_id={alert_id})")

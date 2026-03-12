@@ -9,16 +9,16 @@
  *      ↳ Space domain: orbital track duration selector + 3-axis tree (type → orbit → constellation)
  *      ↳ Air domain: flat list or airline groups (ICAO 3-char prefix)
  *      ↳ Maritime domain: flat list or flag-state groups (MMSI MID prefix)
- *   4. Map Overlays: COCOM boundaries toggle, Globe View toggle
+ *   4. Map Overlays: COCOM boundaries, undersea cables, Globe View
  *
  * State stored in Zustand (layer enabled/disabled, classFilter, globeView)
  * and localStorage (panel width + drag position).
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMapStore } from '@/store/useMapStore'
 import type { LayerVisibility } from '@/store/useMapStore'
-import { useResize } from '@/hooks/useResize'
+import { useResizePanel } from '@/hooks/useResizePanel'
 import { useDrag } from '@/hooks/useDrag'
 import type { SourceDomain, TrackEventProperties } from '@/types/track'
 import {
@@ -213,6 +213,8 @@ function GroupHeader({
   onToggle,
   isFilteredOut = false,
   onToggleFilter,
+  isExcluded = false,
+  onToggleExclude,
   indent = 0,
 }: {
   label: string
@@ -222,6 +224,10 @@ function GroupHeader({
   onToggle: () => void
   isFilteredOut?: boolean
   onToggleFilter?: () => void
+  // Badge-click exclusion — dims tracks on map rather than hiding them entirely.
+  // Analogy: like closing the aperture half-way vs switching the camera off.
+  isExcluded?: boolean
+  onToggleExclude?: () => void
   indent?: number
 }) {
   const paddingLeft = 28 + indent * 14
@@ -253,12 +259,15 @@ function GroupHeader({
         display: 'inline-block', flexShrink: 0,
         transform: isOpen ? 'rotate(0deg)' : 'rotate(-90deg)',
         transition: 'transform 0.15s',
+        opacity: isExcluded ? 0.4 : 1,
       }}>▾</span>
       <span style={{
         flex: 1, fontSize, fontWeight,
         color: isFilteredOut ? '#475569' : isOpen ? openColor : closedColor,
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         transition: 'color 0.15s',
+        opacity: isExcluded ? 0.4 : 1,
+        textDecoration: isExcluded ? 'line-through' : undefined,
       }}>
         {label}
       </span>
@@ -285,14 +294,30 @@ function GroupHeader({
           {isFilteredOut ? 'OFF' : 'ON'}
         </span>
       )}
-      <span style={{
-        fontSize: 9, fontWeight: 700,
-        color: isFilteredOut ? '#94a3b8' : colorHex,
-        background: isFilteredOut ? 'rgba(71,85,105,0.18)' : `${colorHex}18`,
-        border: `1px solid ${isFilteredOut ? 'rgba(100,116,139,0.3)' : `${colorHex}35`}`,
-        borderRadius: 8, padding: '1px 6px', flexShrink: 0,
-        cursor: onToggleFilter ? 'pointer' : 'default',
-      }}>
+      {/* Count badge — click to exclude (dim on map) / restore. Red tint when excluded. */}
+      <span
+        onClick={(e) => {
+          e.stopPropagation()
+          onToggleExclude?.()
+        }}
+        title={
+          isExcluded
+            ? `Restore ${label} (click to un-dim on map)`
+            : onToggleExclude
+              ? `Exclude ${label} — dim on map, hide from list`
+              : undefined
+        }
+        style={{
+          fontSize: 9, fontWeight: 700,
+          color: isExcluded ? '#ef4444' : isFilteredOut ? '#94a3b8' : colorHex,
+          background: isExcluded ? 'rgba(239,68,68,0.15)' : isFilteredOut ? 'rgba(71,85,105,0.18)' : `${colorHex}18`,
+          border: `1px solid ${isExcluded ? 'rgba(239,68,68,0.4)' : isFilteredOut ? 'rgba(100,116,139,0.3)' : `${colorHex}35`}`,
+          borderRadius: 8, padding: '1px 6px', flexShrink: 0,
+          cursor: onToggleExclude ? 'pointer' : 'default',
+          transition: 'all 0.15s',
+          userSelect: 'none',
+        }}
+      >
         {count}
       </span>
     </div>
@@ -437,7 +462,9 @@ export function SourcePanel() {
     layers,
     cycleLayerVisibility,
     showCocom,
+    showUnderseaCables,
     toggleCocom,
+    toggleUnderseaCables,
     globeView,
     toggleGlobeView,
     classFilter,
@@ -451,6 +478,7 @@ export function SourcePanel() {
     setWorkspaceSearch,
     declutterMode,
     toggleDeclutterMode,
+    setGroupExcludedTracks,
   } = useMapStore()
 
   // Which domains have their track list expanded
@@ -497,13 +525,76 @@ export function SourcePanel() {
     return false
   }
 
-  // Width resize — right-edge drag handle
-  const { size: panelWidth, handleRef: resizeHandleRef, isDragging: isResizing } = useResize({
-    direction: 'right',
-    defaultSize: 320,
-    minSize: 260,
-    maxSize: 520,
-    storageKey: 'sentinel.sourcePanelWidth',
+  // ── Badge-click group exclusion (dim on map) ──────────────────────
+  // Separate from hiddenGroupFilters (full hide): exclusion dims tracks to ~10% alpha
+  // while keeping them in visibleAssets. Like a dimmer vs a kill switch.
+  //
+  // Key format per domain:
+  //   Air:      airline group name        e.g. "Delta Air Lines"
+  //   Maritime: flag-state country name   e.g. "Panama"
+  //   Space:    path fragment             e.g. "Payload", "Payload:LEO", "Payload:LEO:Starlink"
+  const [groupFilters, setGroupFilters] = useState<Partial<Record<SourceDomain, Set<string>>>>({})
+
+  const toggleGroupFilter = (domain: SourceDomain, key: string) => {
+    setGroupFilters((prev) => {
+      const cur = new Set(prev[domain] ?? [])
+      if (cur.has(key)) cur.delete(key); else cur.add(key)
+      return { ...prev, [domain]: cur }
+    })
+  }
+
+  const clearGroupFilters = (domain: SourceDomain) => {
+    setGroupFilters((prev) => ({ ...prev, [domain]: new Set() }))
+  }
+
+  // Sync local groupFilters → store groupExcludedTracks so MapCanvas can dim them.
+  // This is a derived Set computed whenever the filter or asset list changes —
+  // analogous to a SQL JOIN between the exclusion keys and the live track table.
+  useEffect(() => {
+    const excluded = new Set<string>()
+    for (const a of liveAssets.values()) {
+      const domain = a.source_domain as SourceDomain
+      const filters = groupFilters[domain]
+      if (!filters?.size) continue
+
+      if (domain === 'Air') {
+        const g = getAirlineGroup(a.callsign, a.classification)
+        if (filters.has(g)) excluded.add(`${domain}:${a.track_id}`)
+      } else if (domain === 'Maritime') {
+        const c = getMmsiCountry(a.track_id)
+        if (filters.has(c)) excluded.add(`${domain}:${a.track_id}`)
+      } else if (domain === 'Space') {
+        const L0 = normalizeObjectType(a.object_type)
+        const L1 = normalizeOrbitClass(a.orbit_class, a.orbital_period_min)
+        const L2 = getConstellation(a.callsign)
+        const full = `${L0}:${L1}:${L2}`
+        for (const f of filters) {
+          if (full === f || full.startsWith(f + ':') || f === L0 || f === `${L0}:${L1}`) {
+            excluded.add(`${domain}:${a.track_id}`)
+            break
+          }
+        }
+      }
+    }
+    setGroupExcludedTracks(excluded)
+  }, [groupFilters, liveAssets, setGroupExcludedTracks])
+
+  // 2-D resize — right edge (width), bottom edge (height), corner (both)
+  const {
+    width: panelWidth,
+    height: panelHeight,
+    rightHandleRef,
+    bottomHandleRef,
+    cornerHandleRef,
+    isDragging: isResizing,
+  } = useResizePanel({
+    defaultWidth: 320,
+    defaultHeight: Math.round(window.innerHeight * 0.81),
+    minWidth: 260,
+    maxWidth: 520,
+    minHeight: 300,
+    maxHeight: Math.round(window.innerHeight - 120),
+    storageKey: 'sentinel.sourcePanelSize',
   })
 
   // Drag-to-move — grab handle in header
@@ -632,7 +723,7 @@ export function SourcePanel() {
         left: '12px',
         top: '82px',
         width: panelWidth,
-        height: '90vh',
+        height: panelHeight,
         zIndex: 20,
         background: 'rgba(15, 23, 42, 0.96)',
         border: '2px solid rgba(255,255,255,0.9)',
@@ -646,9 +737,9 @@ export function SourcePanel() {
         userSelect: isResizing || isDragging ? 'none' : undefined,
       }}
     >
-      {/* ── Right-edge resize handle ── */}
+      {/* ── Right-edge resize handle (width) ── */}
       <div
-        ref={resizeHandleRef}
+        ref={rightHandleRef}
         style={{
           position: 'absolute',
           right: 0,
@@ -667,6 +758,52 @@ export function SourcePanel() {
           (e.currentTarget as HTMLDivElement).style.background = 'transparent'
         }}
       />
+
+      {/* ── Bottom-edge resize handle (height) ── */}
+      <div
+        ref={bottomHandleRef}
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          width: 'calc(100% - 16px)',
+          height: '8px',
+          cursor: 'row-resize',
+          zIndex: 10,
+          background: 'transparent',
+          transition: 'background 0.15s',
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLDivElement).style.background = 'rgba(148,163,184,0.18)'
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLDivElement).style.background = 'transparent'
+        }}
+      />
+
+      {/* ── Bottom-right corner resize handle (width + height) ── */}
+      <div
+        ref={cornerHandleRef}
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          right: 0,
+          width: '16px',
+          height: '16px',
+          cursor: 'se-resize',
+          zIndex: 11,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        {/* Subtle grip dots so the corner is discoverable */}
+        <svg width="8" height="8" viewBox="0 0 8 8" fill="none" style={{ opacity: 0.35, pointerEvents: 'none' }}>
+          <circle cx="2" cy="6" r="1" fill="#94a3b8" />
+          <circle cx="6" cy="6" r="1" fill="#94a3b8" />
+          <circle cx="6" cy="2" r="1" fill="#94a3b8" />
+        </svg>
+      </div>
 
       {/* ── Header ── */}
       <div
@@ -857,6 +994,8 @@ export function SourcePanel() {
               const activeFilterCount = hiddenClasses.length
               const groupMode = groupModes[domain] ?? 'none'
               const activeGroupFilters = hiddenGroupFilters[domain] ?? []
+              // Badge-click exclusion keys for this domain (dim on map, hide from list)
+              const activeFilters = groupFilters[domain] ?? new Set<string>()
 
               return (
                 <div key={domain}>
@@ -1016,7 +1155,11 @@ export function SourcePanel() {
                                                     [{ key: 'none', label: 'Flat' }, { key: 'grouped', label: 'Type › Orbit › Const.' }]
                           }
                           value={groupMode}
-                          onChange={(m) => setGroupModes((prev) => ({ ...prev, [domain]: m }))}
+                          onChange={(m) => {
+                            setGroupModes((prev) => ({ ...prev, [domain]: m }))
+                            // Clear exclusions when switching to Flat — the group keys no longer apply
+                            if (m === 'none') clearGroupFilters(domain)
+                          }}
                         />
                       )}
 
@@ -1066,6 +1209,46 @@ export function SourcePanel() {
                         </div>
                       )}
 
+                      {/* ── Active exclusion strip (badge-click dim exclusions) ── */}
+                      {activeFilters.size > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '2px 10px 8px 28px', alignItems: 'center' }}>
+                          <span style={{
+                            fontSize: 9, color: '#64748b',
+                            letterSpacing: '0.1em', textTransform: 'uppercase', marginRight: 2, flexShrink: 0,
+                          }}>
+                            Excluded:
+                          </span>
+                          {Array.from(activeFilters).map((key) => (
+                            <span
+                              key={key}
+                              onClick={() => toggleGroupFilter(domain, key)}
+                              title={`Restore ${key}`}
+                              style={{
+                                fontSize: 9, fontWeight: 700,
+                                color: '#ef4444',
+                                background: 'rgba(239,68,68,0.12)',
+                                border: '1px solid rgba(239,68,68,0.35)',
+                                borderRadius: 8, padding: '1px 6px',
+                                cursor: 'pointer', userSelect: 'none',
+                              }}
+                            >
+                              {key} ×
+                            </span>
+                          ))}
+                          <span
+                            onClick={() => clearGroupFilters(domain)}
+                            title={`Clear all ${domain} exclusions`}
+                            style={{
+                              fontSize: 9, fontWeight: 700,
+                              color: '#5eead4',
+                              cursor: 'pointer', userSelect: 'none', marginLeft: 4,
+                            }}
+                          >
+                            Clear all
+                          </span>
+                        </div>
+                      )}
+
                       {/* ── Track list ── */}
                       {count === 0 ? (
                         <div
@@ -1100,6 +1283,7 @@ export function SourcePanel() {
                                 const gKey = `Air:${groupName}`
                                 const isGroupOpen = openGroups.has(gKey)
                                 const isFilteredOut = isGroupFiltered(domain, gKey)
+                                const isExcluded = activeFilters.has(groupName)
                                 return (
                                   <div key={gKey}>
                                     <GroupHeader
@@ -1110,9 +1294,11 @@ export function SourcePanel() {
                                       isFilteredOut={isFilteredOut}
                                       onToggle={() => toggleGroup(gKey)}
                                       onToggleFilter={() => toggleHiddenGroupFilter(domain, gKey)}
+                                      isExcluded={isExcluded}
+                                      onToggleExclude={() => toggleGroupFilter(domain, groupName)}
                                       indent={0}
                                     />
-                                    {isGroupOpen && !isFilteredOut && groupAssets.map((a) => (
+                                    {isGroupOpen && !isFilteredOut && !isExcluded && groupAssets.map((a) => (
                                       <TrackRow
                                         key={`${a.source_domain}:${a.track_id}`}
                                         asset={a}
@@ -1149,6 +1335,7 @@ export function SourcePanel() {
                                 const gKey = `Maritime:${country}`
                                 const isGroupOpen = openGroups.has(gKey)
                                 const isFilteredOut = isGroupFiltered(domain, gKey)
+                                const isExcluded = activeFilters.has(country)
                                 return (
                                   <div key={gKey}>
                                     <GroupHeader
@@ -1159,9 +1346,11 @@ export function SourcePanel() {
                                       isFilteredOut={isFilteredOut}
                                       onToggle={() => toggleGroup(gKey)}
                                       onToggleFilter={() => toggleHiddenGroupFilter(domain, gKey)}
+                                      isExcluded={isExcluded}
+                                      onToggleExclude={() => toggleGroupFilter(domain, country)}
                                       indent={0}
                                     />
-                                    {isGroupOpen && !isFilteredOut && countryAssets.map((a) => (
+                                    {isGroupOpen && !isFilteredOut && !isExcluded && countryAssets.map((a) => (
                                       <TrackRow
                                         key={`${a.source_domain}:${a.track_id}`}
                                         asset={a}
@@ -1204,6 +1393,7 @@ export function SourcePanel() {
                                 const typeKey = `Space:${objType}`
                                 const isTypeOpen = openGroups.has(typeKey)
                                 const isTypeFiltered = isGroupFiltered(domain, typeKey)
+                                const isTypeExcluded = activeFilters.has(objType)
 
                                 // ── L1: Orbit Class ─────────────────────────────────
                                 const byOrbit = new Map<string, TrackEventProperties[]>()
@@ -1224,13 +1414,17 @@ export function SourcePanel() {
                                       isFilteredOut={isTypeFiltered}
                                       onToggle={() => toggleGroup(typeKey)}
                                       onToggleFilter={() => toggleHiddenGroupFilter(domain, typeKey)}
+                                      isExcluded={isTypeExcluded}
+                                      onToggleExclude={() => toggleGroupFilter(domain, objType)}
                                       indent={0}
                                     />
-                                    {isTypeOpen && !isTypeFiltered && orbitKeys.map((orbitClass) => {
+                                    {isTypeOpen && !isTypeFiltered && !isTypeExcluded && orbitKeys.map((orbitClass) => {
                                       const orbitAssets = byOrbit.get(orbitClass)!
                                       const orbitKey = `Space:${objType}:${orbitClass}`
+                                      const orbitFilterKey = `${objType}:${orbitClass}`
                                       const isOrbitOpen = openGroups.has(orbitKey)
                                       const isOrbitFiltered = isGroupFiltered(domain, orbitKey)
+                                      const isOrbitExcluded = activeFilters.has(orbitFilterKey)
 
                                       // ── L2: Constellation ──────────────────────────
                                       const byConst = new Map<string, TrackEventProperties[]>()
@@ -1253,13 +1447,17 @@ export function SourcePanel() {
                                             isFilteredOut={isOrbitFiltered}
                                             onToggle={() => toggleGroup(orbitKey)}
                                             onToggleFilter={() => toggleHiddenGroupFilter(domain, orbitKey)}
+                                            isExcluded={isOrbitExcluded}
+                                            onToggleExclude={() => toggleGroupFilter(domain, orbitFilterKey)}
                                             indent={1}
                                           />
-                                          {isOrbitOpen && !isOrbitFiltered && constKeys.map((constellation) => {
+                                          {isOrbitOpen && !isOrbitFiltered && !isOrbitExcluded && constKeys.map((constellation) => {
                                             const cAssets = byConst.get(constellation)!
                                             const cKey = `Space:${objType}:${orbitClass}:${constellation}`
+                                            const constFilterKey = `${objType}:${orbitClass}:${constellation}`
                                             const isCOpen = openGroups.has(cKey)
                                             const isConstellationFiltered = isGroupFiltered(domain, cKey)
+                                            const isConstExcluded = activeFilters.has(constFilterKey)
                                             return (
                                               <div key={cKey}>
                                                 <GroupHeader
@@ -1270,9 +1468,11 @@ export function SourcePanel() {
                                                   isFilteredOut={isConstellationFiltered}
                                                   onToggle={() => toggleGroup(cKey)}
                                                   onToggleFilter={() => toggleHiddenGroupFilter(domain, cKey)}
+                                                  isExcluded={isConstExcluded}
+                                                  onToggleExclude={() => toggleGroupFilter(domain, constFilterKey)}
                                                   indent={2}
                                                 />
-                                                {isCOpen && !isConstellationFiltered && cAssets.map((a) => (
+                                                {isCOpen && !isConstellationFiltered && !isConstExcluded && cAssets.map((a) => (
                                                   <TrackRow
                                                     key={`${a.source_domain}:${a.track_id}`}
                                                     asset={a}
@@ -1361,6 +1561,36 @@ export function SourcePanel() {
               </span>
               <span style={{ fontSize: 9, color: '#64748b', letterSpacing: '0.06em', flexShrink: 0 }}>
                 AOR
+              </span>
+            </div>
+
+            {/* Undersea cable context */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '7px 12px 7px 10px',
+                borderBottom: '1px solid rgba(148,163,184,0.08)',
+                cursor: 'pointer',
+              }}
+              onClick={toggleUnderseaCables}
+            >
+              <TriStateToggle visibility={showUnderseaCables ? 'active' : 'hidden'} onCycle={toggleUnderseaCables} colorHex="#f59e0b" />
+              <span style={{ fontSize: 14, flexShrink: 0 }}>🪢</span>
+              <span
+                style={{
+                  flex: 1,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: showUnderseaCables ? '#e2e8f0' : '#475569',
+                  transition: 'color 0.15s',
+                }}
+              >
+                Undersea Cables
+              </span>
+              <span style={{ fontSize: 9, color: '#64748b', letterSpacing: '0.06em', flexShrink: 0 }}>
+                INFRA
               </span>
             </div>
 

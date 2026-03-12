@@ -1,0 +1,246 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "NAME": "USNORTHCOM",
+        "command": "USNORTHCOM",
+        "representation": "approximate",
+        "derived_from": "official AOR descriptions plus generalized theater reconstruction"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-180, 84],
+            [-20, 84],
+            [-20, 60],
+            [-28, 56],
+            [-40, 50],
+            [-52, 46],
+            [-60, 40],
+            [-64, 34],
+            [-68, 28],
+            [-76, 22],
+            [-82, 20],
+            [-88, 23],
+            [-92, 20],
+            [-98, 18],
+            [-106, 18],
+            [-118, 18],
+            [-124, 28],
+            [-128, 38],
+            [-134, 48],
+            [-146, 56],
+            [-160, 62],
+            [-172, 66],
+            [-180, 68],
+            [-180, 84]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "NAME": "USSOUTHCOM",
+        "command": "USSOUTHCOM",
+        "representation": "approximate",
+        "derived_from": "official AOR descriptions plus generalized theater reconstruction"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-118, 18],
+            [-106, 18],
+            [-98, 20],
+            [-90, 18],
+            [-84, 18],
+            [-78, 18],
+            [-72, 20],
+            [-66, 22],
+            [-58, 20],
+            [-48, 14],
+            [-40, 4],
+            [-36, -12],
+            [-38, -30],
+            [-46, -46],
+            [-60, -58],
+            [-78, -58],
+            [-92, -48],
+            [-102, -30],
+            [-110, -10],
+            [-116, 8],
+            [-118, 18]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "NAME": "USEUCOM",
+        "command": "USEUCOM",
+        "representation": "approximate",
+        "derived_from": "official AOR descriptions plus generalized theater reconstruction"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-30, 84],
+            [100, 84],
+            [100, 56],
+            [90, 52],
+            [78, 50],
+            [66, 46],
+            [58, 42],
+            [50, 40],
+            [42, 38],
+            [34, 36],
+            [28, 36],
+            [22, 38],
+            [16, 42],
+            [8, 44],
+            [0, 44],
+            [-10, 42],
+            [-18, 38],
+            [-24, 32],
+            [-24, 20],
+            [-18, 24],
+            [-10, 30],
+            [-4, 36],
+            [-8, 46],
+            [-16, 54],
+            [-24, 64],
+            [-30, 72],
+            [-30, 84]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "NAME": "USAFRICOM",
+        "command": "USAFRICOM",
+        "representation": "approximate",
+        "derived_from": "official AOR descriptions plus generalized theater reconstruction"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-36, 38],
+            [-20, 40],
+            [-2, 40],
+            [12, 38],
+            [22, 34],
+            [24, 31],
+            [28, 23],
+            [34, 14],
+            [44, 4],
+            [52, -10],
+            [50, -28],
+            [40, -40],
+            [24, -46],
+            [6, -44],
+            [-10, -38],
+            [-24, -26],
+            [-32, -10],
+            [-36, 8],
+            [-36, 38]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "NAME": "USCENTCOM",
+        "command": "USCENTCOM",
+        "representation": "approximate",
+        "derived_from": "official AOR descriptions plus generalized theater reconstruction"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [24, 31],
+            [28, 24],
+            [34, 18],
+            [42, 12],
+            [52, 12],
+            [62, 14],
+            [70, 12],
+            [78, 18],
+            [86, 26],
+            [90, 36],
+            [88, 46],
+            [80, 50],
+            [68, 48],
+            [54, 44],
+            [40, 38],
+            [30, 34],
+            [24, 31]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "NAME": "USINDOPACOM",
+        "command": "USINDOPACOM",
+        "representation": "approximate",
+        "derived_from": "official AOR descriptions plus generalized theater reconstruction",
+        "note": "Rendered as two polygons to preserve the Pacific split across the antimeridian"
+      },
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [68, 34],
+              [84, 34],
+              [96, 30],
+              [108, 24],
+              [116, 14],
+              [122, 2],
+              [128, -12],
+              [132, -28],
+              [138, -42],
+              [150, -52],
+              [180, -55],
+              [180, 62],
+              [108, 62],
+              [102, 52],
+              [96, 44],
+              [84, 38],
+              [72, 36],
+              [68, 34]
+            ]
+          ],
+          [
+            [
+              [-180, 62],
+              [-150, 62],
+              [-138, 56],
+              [-130, 46],
+              [-126, 34],
+              [-124, 20],
+              [-126, 2],
+              [-136, -18],
+              [-150, -38],
+              [-164, -52],
+              [-180, -55],
+              [-180, 62]
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

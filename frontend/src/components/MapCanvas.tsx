@@ -41,6 +41,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 
 import { useMapStore } from '@/store/useMapStore'
 import { COCOM_GEOJSON_URL, COCOM_LABELS, getCocomColors } from '@/data/cocom'
+import { UNDERSEA_CABLES_GEOJSON_URL, UNDERSEA_CABLE_LANDING_POINTS_GEOJSON_URL } from '@/data/underseaCables'
 import type { DisruptionEvent, TrackEventProperties } from '@/types/track'
 import { getAirlineGroup, getConstellation, getMmsiCountry, normalizeObjectType, normalizeOrbitClass } from '@/data/grouping'
 
@@ -92,6 +93,8 @@ interface MapCanvasProps {
 type HoverObject =
   | { kind: 'track'; item: TrackEventProperties }
   | { kind: 'disruption'; item: DisruptionEvent }
+  | { kind: 'underseaCable'; item: { name?: string; id?: string } }
+  | { kind: 'landingPoint'; item: { name?: string; id?: string } }
 
 export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProps) {
   const {
@@ -101,21 +104,26 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     simpleMap,
     showTrails,
     showCocom,
+    showUnderseaCables,
     globeView,
     classFilter,
     hiddenGroupFilters,
     workspaceSearch,
     declutterMode,
     selectAsset,
+    selectLandingPoint,
+    clearLandingPointSelection,
     trailBuffer,
     selectedTrackId,
     selectedDomain,
+    selectedLandingPoint,
     selectedTrackHistory,
     selectedOrbitPoints,
   } = useMapStore()
   const [hoverInfo, setHoverInfo] = useState<{ x: number; y: number; object: HoverObject } | null>(null)
   const [renderWarning, setRenderWarning] = useState<string | null>(null)
   const [rendererDisabled, setRendererDisabled] = useState(false)
+  const [cocomFailed, setCocomFailed] = useState(false)
   const faultHandledRef = useRef(false)
   const resizeFaultSeenRef = useRef(false)
 
@@ -227,9 +235,9 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     }
 
     // ── COCOM boundaries ────────────────────────────────────────
-    if (showCocom) {
-      // Real geographic boundaries loaded at runtime from jonahadkins/Combatant-Commands
-      // The browser fetches this URL directly — bypasses server-side egress restrictions.
+    if (showCocom && !cocomFailed) {
+      // Local generalized-theater polygons. These are intentionally approximate
+      // ocean-spanning AOR shapes, not official legal boundary GIS.
       ls.push(new GeoJsonLayer({
         id: 'cocom-fills',
         data: COCOM_GEOJSON_URL,
@@ -260,6 +268,76 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         pickable: false,
         opacity: 0.9,
       }))
+    }
+
+    // ── Undersea cables ─────────────────────────────────────────
+    if (showUnderseaCables) {
+      const landingPointRadius = Math.min(14, Math.max(3, viewport.zoom * 1.15))
+
+      ls.push(new GeoJsonLayer({
+        id: 'undersea-cables',
+        data: UNDERSEA_CABLES_GEOJSON_URL,
+        stroked: true,
+        filled: false,
+        pickable: true,
+        lineWidthMinPixels: 1.5,
+        lineWidthMaxPixels: 3,
+        getLineColor: [245, 158, 11, 180],
+        opacity: 0.8,
+        onHover: ({ x, y, object }) => {
+          const cable = object?.properties as { name?: string; id?: string } | undefined
+          setHoverInfo(cable ? { x, y, object: { kind: 'underseaCable', item: cable } } : null)
+        },
+      }))
+
+      ls.push(new GeoJsonLayer({
+        id: 'undersea-cable-landing-points',
+        data: UNDERSEA_CABLE_LANDING_POINTS_GEOJSON_URL,
+        stroked: true,
+        filled: true,
+        pointType: 'circle',
+        pickable: true,
+        pointRadiusMinPixels: 3,
+        pointRadiusMaxPixels: 16,
+        getPointRadius: landingPointRadius,
+        getFillColor: [255, 248, 220, 220],
+        getLineColor: [120, 53, 15, 220],
+        lineWidthMinPixels: 1,
+        opacity: 0.95,
+        updateTriggers: { getPointRadius: [landingPointRadius] },
+        onHover: ({ x, y, object }) => {
+          const landingPoint = object?.properties as { name?: string; id?: string } | undefined
+          setHoverInfo(landingPoint ? { x, y, object: { kind: 'landingPoint', item: landingPoint } } : null)
+        },
+        onClick: ({ object }) => {
+          const landingPoint = object as { geometry?: { coordinates?: [number, number] }; properties?: { name?: string; id?: string } } | undefined
+          const coordinates = landingPoint?.geometry?.coordinates
+          const properties = landingPoint?.properties
+          if (!coordinates || !properties?.id || !properties?.name) return
+          selectLandingPoint({
+            id: properties.id,
+            name: properties.name,
+            lon: coordinates[0],
+            lat: coordinates[1],
+          })
+        },
+      }))
+
+      if (selectedLandingPoint) {
+        ls.push(new ScatterplotLayer({
+          id: 'undersea-cable-landing-point-selection',
+          data: [selectedLandingPoint],
+          getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
+          getRadius: landingPointRadius + 6,
+          radiusUnits: 'pixels',
+          stroked: true,
+          filled: false,
+          lineWidthUnits: 'pixels',
+          getLineWidth: 2.5,
+          getLineColor: [251, 191, 36, 235],
+          pickable: false,
+        }))
+      }
     }
 
     // ── Maritime: live positions ─────────────────────────────────
@@ -510,10 +588,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     }
 
     // ── Disruption overlays (GPS/Infra normalized events) ─────────────────
-    const gpsDisruptions = visibleDisruptions.filter((event) => event.source_domain === 'GPS')
-    const nonGpsDisruptions = visibleDisruptions.filter((event) => event.source_domain !== 'GPS')
-
-    const nonGpsDisruptionFeatures = nonGpsDisruptions
+    const disruptionFeatures = visibleDisruptions
       .filter((event) => event.geometry)
       .map((event) => ({
         type: 'Feature' as const,
@@ -521,7 +596,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         properties: event,
       }))
 
-    const gpsCentroids = gpsDisruptions
+    const disruptionCentroids = visibleDisruptions
       .filter((event) => event.centroid?.coordinates)
       .map((event) => ({
         ...event,
@@ -529,108 +604,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         lat: event.centroid!.coordinates[1],
       }))
 
-    const nonGpsDisruptionCentroids = nonGpsDisruptions
-      .filter((event) => event.centroid?.coordinates)
-      .map((event) => ({
-        ...event,
-        lon: event.centroid!.coordinates[0],
-        lat: event.centroid!.coordinates[1],
-      }))
-
-    if (gpsCentroids.length > 0) {
-      ls.push(new ScatterplotLayer({
-        id: 'gpsjam-heat-halo',
-        data: gpsCentroids,
-        getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
-        getRadius: (d: DisruptionEvent & { lon: number; lat: number }) => 120000 + ((d.severity ?? 10) * 8000),
-        radiusUnits: 'meters',
-        stroked: false,
-        filled: true,
-        getFillColor: (d: DisruptionEvent) => {
-          const severity = d.severity ?? 0
-          const alpha = Math.max(18, Math.min(88, Math.round(severity * 1.8)))
-          return severity >= 10
-            ? [239, 68, 68, alpha]
-            : severity >= 2
-              ? [245, 158, 11, alpha]
-              : [250, 204, 21, alpha]
-        },
-        pickable: true,
-        opacity: 0.9,
-        onHover: ({ x, y, object }) => {
-          const event = object as DisruptionEvent | undefined
-          setHoverInfo(event ? { x, y, object: { kind: 'disruption', item: event } } : null)
-        },
-        onClick: ({ object }) => {
-          const event = object as DisruptionEvent | undefined
-          if (event?.track_id) {
-            selectAsset(event.track_id, event.source_domain)
-          }
-        },
-      }))
-
-      ls.push(new ScatterplotLayer({
-        id: 'gpsjam-heat-core',
-        data: gpsCentroids,
-        getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
-        getRadius: (d: DisruptionEvent & { lon: number; lat: number }) => 42000 + ((d.severity ?? 10) * 2600),
-        radiusUnits: 'meters',
-        stroked: false,
-        filled: true,
-        getFillColor: (d: DisruptionEvent) => {
-          const severity = d.severity ?? 0
-          const alpha = Math.max(35, Math.min(155, Math.round(severity * 2.2)))
-          return severity >= 10
-            ? [248, 113, 113, alpha]
-            : severity >= 2
-              ? [251, 191, 36, alpha]
-              : [253, 224, 71, alpha]
-        },
-        pickable: false,
-        opacity: 0.95,
-      }))
-    }
-
-    if (viewport.zoom >= 4.5 && gpsDisruptions.length > 0) {
-      const gpsHexFeatures = gpsDisruptions
-        .filter((event) => event.geometry)
-        .map((event) => ({
-          type: 'Feature' as const,
-          geometry: event.geometry!,
-          properties: event,
-        }))
-
-      ls.push(new GeoJsonLayer({
-        id: 'gpsjam-hex-drilldown',
-        data: gpsHexFeatures,
-        pickable: true,
-        stroked: true,
-        filled: true,
-        lineWidthMinPixels: 1,
-        getLineColor: () => [254, 226, 226, 120],
-        getFillColor: (feature: any) => {
-          const event = feature.properties as DisruptionEvent
-          const alpha = Math.max(6, Math.min(42, Math.round((event.severity ?? 0) * 0.5)))
-          return [254, 202, 202, alpha]
-        },
-        opacity: 0.35,
-        onHover: ({ x, y, object }) => {
-          const event = object?.properties as DisruptionEvent | undefined
-          setHoverInfo(event ? { x, y, object: { kind: 'disruption', item: event } } : null)
-        },
-        onClick: ({ object }) => {
-          const event = object?.properties as DisruptionEvent | undefined
-          if (event?.track_id) {
-            selectAsset(event.track_id, event.source_domain)
-          }
-        },
-      }))
-    }
-
-    if (nonGpsDisruptionFeatures.length > 0) {
+    if (disruptionFeatures.length > 0) {
       ls.push(new GeoJsonLayer({
         id: 'disruption-footprints',
-        data: nonGpsDisruptionFeatures,
+        data: disruptionFeatures,
         pickable: true,
         stroked: true,
         filled: true,
@@ -662,10 +639,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }))
     }
 
-    if (nonGpsDisruptionCentroids.length > 0) {
+    if (disruptionCentroids.length > 0) {
       ls.push(new ScatterplotLayer({
         id: 'disruption-centroids',
-        data: nonGpsDisruptionCentroids,
+        data: disruptionCentroids,
         getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
         getRadius: (d: DisruptionEvent & { lon: number; lat: number }) => 40000 + ((d.severity ?? 10) * 2200),
         radiusUnits: 'meters',
@@ -698,7 +675,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
 
       ls.push(new TextLayer({
         id: 'disruption-labels',
-        data: nonGpsDisruptionCentroids.filter((event) => (event.severity ?? 0) >= 10),
+        data: disruptionCentroids.filter((event) => (event.severity ?? 0) >= 10),
         getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
         getText: (d: DisruptionEvent) => {
           if (d.category === 'conflict') return '✹'
@@ -727,17 +704,22 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     domainOpacity,
     getAlpha,
     selectAsset,
+    selectLandingPoint,
+    clearLandingPointSelection,
     trailBuffer,
     selectedTrackId,
     selectedDomain,
+    selectedLandingPoint,
     selectedTrackHistory,
     selectedOrbitPoints,
-    viewport.zoom,
     showTrails,
     showCocom,
+    showUnderseaCables,
+    cocomFailed,
     globeView,
     declutterMode,
     searchMatchSet,
+    viewport.zoom,
   ])
 
   useEffect(() => {
@@ -774,6 +756,13 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           controller={true}
           layers={deckLayers}
           onError={(error) => {
+            const message = String(error?.message ?? error ?? '')
+            if (message.includes('cocom-fills') || message.includes(COCOM_GEOJSON_URL)) {
+              console.error('[SENTINEL] COCOM overlay failed to load', error)
+              setCocomFailed(true)
+              setRenderWarning('COCOM boundary layer failed to load. Base map and other overlays remain active.')
+              return
+            }
             if (faultHandledRef.current) return
             faultHandledRef.current = true
             console.error('[SENTINEL] DeckGL render error, disabling renderer', error)
@@ -782,6 +771,9 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
             setRenderWarning('Map renderer disabled after WebGL fault. Reload to restore overlays.')
           }}
           onClick={(info) => {
+            if (!info.object) {
+              clearLandingPointSelection()
+            }
             if (!info.object && onMapClick) {
               const [lon, lat] = info.coordinate as [number, number]
               onMapClick(lon, lat)
@@ -823,7 +815,9 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         >
           {hoverInfo.object.kind === 'track'
             ? (hoverInfo.object.item.callsign ?? hoverInfo.object.item.track_id)
-            : (hoverInfo.object.item.title ?? hoverInfo.object.item.external_event_id)}
+            : hoverInfo.object.kind === 'disruption'
+              ? (hoverInfo.object.item.title ?? hoverInfo.object.item.external_event_id)
+              : (hoverInfo.object.item.name ?? hoverInfo.object.item.id ?? 'Unnamed feature')}
         </div>
       )}
       {renderWarning && (

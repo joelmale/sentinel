@@ -16,13 +16,17 @@ class AlertRuleCreate(BaseModel):
     domain: str
     conditions: dict  # {"bbox": [min_lon, min_lat, max_lon, max_lat], "classification": "Military"}
     notification_channels: list[str] = ["websocket"]
+    created_by: str = "analyst"
 
 
 @router.get("/rules")
 async def list_rules(db: AsyncSession = Depends(get_db)):
     """List all alert rules."""
     sql = text(
-        "SELECT id, name, domain, conditions, enabled, created_at FROM alert_rules ORDER BY created_at DESC"
+        """SELECT id, name, domain, conditions, is_active AS enabled, created_at, created_by,
+                  notify_channels AS notification_channels
+           FROM alert_rules
+           ORDER BY created_at DESC"""
     )
     result = await db.execute(sql)
     rows = result.mappings().all()
@@ -33,8 +37,14 @@ async def list_rules(db: AsyncSession = Depends(get_db)):
 async def create_rule(body: AlertRuleCreate, db: AsyncSession = Depends(get_db)):
     """Create a new alert rule."""
     sql = text(
-        """INSERT INTO alert_rules (name, domain, conditions, notification_channels, enabled)
-           VALUES (:name, :domain, :conditions, :channels, true) RETURNING id, name, domain, enabled"""
+        """INSERT INTO alert_rules (
+               name, domain, conditions, notify_channels, is_active, created_by
+           )
+           VALUES (
+               :name, :domain, CAST(:conditions AS jsonb), CAST(:channels AS text[]), true, :created_by
+           )
+           RETURNING id, name, domain, is_active AS enabled, created_at, created_by,
+                     notify_channels AS notification_channels"""
     )
     result = await db.execute(
         sql,
@@ -42,7 +52,8 @@ async def create_rule(body: AlertRuleCreate, db: AsyncSession = Depends(get_db))
             "name": body.name,
             "domain": body.domain,
             "conditions": json.dumps(body.conditions),
-            "channels": json.dumps(body.notification_channels),
+            "channels": body.notification_channels,
+            "created_by": body.created_by,
         },
     )
     await db.commit()
@@ -65,7 +76,7 @@ async def list_alert_events(
 ):
     """List recent alert events."""
     sql = text(
-        """SELECT ae.id, ae.rule_id, ae.track_id, ae.domain, ae.status, ae.triggered_at,
+        """SELECT ae.id, ae.rule_id, ae.track_id, ar.domain, ae.status, ae.triggered_at,
                   ar.name as rule_name
            FROM alert_events ae
            JOIN alert_rules ar ON ar.id = ae.rule_id

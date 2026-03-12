@@ -13,5 +13,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY base/base_collector.py /app/base/base_collector.py
 COPY adsb/collector.py ./collector.py
+COPY adsb/bincraft_decoder.py ./bincraft_decoder.py
 
 CMD ["python", "collector.py"]

@@ -17,6 +17,7 @@ import { MapCanvas } from '@/components/MapCanvas'
 import { SourcePanel } from '@/components/SourcePanel'
 import { TimelinePanel } from '@/components/TimelinePanel'
 import { AssetCard } from '@/components/AssetCard'
+import { UnderseaLandingPointCard } from '@/components/UnderseaLandingPointCard'
 import { AnnotationModal } from '@/components/AnnotationModal'
 import { AlertNotification } from '@/components/AlertNotification'
 import { AlertQueuePanel } from '@/components/AlertQueuePanel'
@@ -478,6 +479,7 @@ function SentinelApp() {
 
       {/* ── Right asset detail panel ───────────────────────────── */}
       <AssetCard />
+      <UnderseaLandingPointCard />
 
       {/* ── Annotation modal ───────────────────────────────────── */}
       {annotationPos && (

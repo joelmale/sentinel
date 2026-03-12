@@ -228,24 +228,50 @@ async def get_disruption_dashboard(
         LIMIT 18
     """)
 
-    summary_result, source_result, category_result, recent_result = await asyncio.gather(
+    # Run all four queries concurrently.  Each is wrapped individually so a
+    # single failing query degrades gracefully rather than aborting the whole
+    # dashboard response.  The gather collects results in order; exceptions are
+    # captured as sentinel values and treated as empty result sets below.
+    results = await asyncio.gather(
         db.execute(summary_sql, {"domain": domain.value, "since": since}),
         db.execute(source_sql, {"domain": domain.value, "since": since}),
         db.execute(category_sql, {"domain": domain.value, "since": since}),
         db.execute(recent_sql, {"domain": domain.value, "since": since}),
+        return_exceptions=True,
     )
 
-    summary_row = summary_result.mappings().first()
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
+    def _safe_mappings(result: Any, label: str) -> list:
+        if isinstance(result, BaseException):
+            _logger.warning("[disruption-dashboard] %s query failed: %s", label, result)
+            return []
+        try:
+            return result.mappings().all()
+        except Exception as exc:
+            _logger.warning("[disruption-dashboard] %s result processing failed: %s", label, exc)
+            return []
+
+    summary_rows   = _safe_mappings(results[0], "summary")
+    source_rows    = _safe_mappings(results[1], "sources")
+    category_rows  = _safe_mappings(results[2], "categories")
+    recent_rows    = _safe_mappings(results[3], "recent_events")
+
+    summary_row = summary_rows[0] if summary_rows else None
+
+    now = datetime.now(timezone.utc)
     sources = []
-    for row in source_result.mappings().all():
+    for row in source_rows:
         latest_seen = row["latest_seen"]
-        age_minutes = None
-        if latest_seen is not None:
-            age_minutes = round((datetime.now(timezone.utc) - latest_seen).total_seconds() / 60.0, 1)
+        # Guard against timezone-naive datetimes from some DB driver configs
+        if latest_seen is not None and latest_seen.tzinfo is None:
+            latest_seen = latest_seen.replace(tzinfo=timezone.utc)
+        age_minutes = round((now - latest_seen).total_seconds() / 60.0, 1) if latest_seen else None
         sources.append({
             "source_feed": row["source_feed"],
-            "total_events": int(row["total_events"]),
-            "active_events": int(row["active_events"]),
+            "total_events": int(row["total_events"] or 0),
+            "active_events": int(row["active_events"] or 0),
             "avg_trust": round(float(row["avg_trust"]), 3) if row["avg_trust"] is not None else None,
             "avg_confidence": round(float(row["avg_confidence"]), 3) if row["avg_confidence"] is not None else None,
             "avg_severity": round(float(row["avg_severity"]), 2) if row["avg_severity"] is not None else None,
@@ -253,9 +279,16 @@ async def get_disruption_dashboard(
             "age_minutes": age_minutes,
         })
 
+    def _ts(dt: Any) -> str | None:
+        if dt is None:
+            return None
+        if hasattr(dt, "tzinfo") and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+
     return {
         "domain": domain.value,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": now.isoformat(),
         "hours": hours,
         "summary": {
             "total_events": int(summary_row["total_events"] or 0) if summary_row else 0,
@@ -264,13 +297,13 @@ async def get_disruption_dashboard(
             "avg_trust": round(float(summary_row["avg_trust"]), 3) if summary_row and summary_row["avg_trust"] is not None else None,
             "avg_confidence": round(float(summary_row["avg_confidence"]), 3) if summary_row and summary_row["avg_confidence"] is not None else None,
             "avg_severity": round(float(summary_row["avg_severity"]), 2) if summary_row and summary_row["avg_severity"] is not None else None,
-            "latest_seen": summary_row["latest_seen"].isoformat() if summary_row and summary_row["latest_seen"] else None,
+            "latest_seen": _ts(summary_row["latest_seen"]) if summary_row else None,
             "impacted_assets": int(summary_row["impacted_assets"] or 0) if summary_row else 0,
         },
         "sources": sources,
         "categories": [
             {"label": row["category"], "count": int(row["count"])}
-            for row in category_result.mappings().all()
+            for row in category_rows
         ],
-        "recent_events": [dict(row) for row in recent_result.mappings().all()],
+        "recent_events": [dict(row) for row in recent_rows],
     }

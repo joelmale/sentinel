@@ -1,5 +1,12 @@
 import { useEffect } from 'react'
 
+type BinCraftMetrics = {
+  avg_receiver_count: number | null
+  avg_rssi: number | null
+  dominant_surveillance_type: string | null
+  surveillance_type_count: number
+}
+
 type FeedStatus = {
   feed: string
   asset_count: number
@@ -12,6 +19,7 @@ type FeedStatus = {
   active_tracks_1h: number
   health: string
   classifications: Record<string, number>
+  bincraft?: BinCraftMetrics
 }
 
 type DomainSummary = {
@@ -235,6 +243,34 @@ export function DomainStatusDashboard({ open, loading, error, domain, data, onCl
                       </div>
                     </div>
 
+                    {feed.bincraft && (
+                      <div style={bincraftStripStyle}>
+                        <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#38bdf8', marginBottom: 8 }}>
+                          ◈ binCraft signal quality (1h)
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+                          <div>
+                            <div style={miniLabelStyle}>avg receivers</div>
+                            <div style={{ ...miniValueStyle, color: '#38bdf8' }}>
+                              {feed.bincraft.avg_receiver_count != null ? feed.bincraft.avg_receiver_count.toFixed(1) : '—'}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={miniLabelStyle}>avg RSSI</div>
+                            <div style={{ ...miniValueStyle, color: feed.bincraft.avg_rssi != null && feed.bincraft.avg_rssi > -20 ? '#34d399' : '#f59e0b' }}>
+                              {feed.bincraft.avg_rssi != null ? `${feed.bincraft.avg_rssi.toFixed(1)} dB` : '—'}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={miniLabelStyle}>dominant mode</div>
+                            <div style={{ ...miniValueStyle, fontSize: 11, color: '#94a3b8' }}>
+                              {feed.bincraft.dominant_surveillance_type ?? '—'}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     <div style={sourceGridStyle}>
                       {classEntries.map(([label, count]) => (
                         <div key={label} style={classificationBadgeStyle(theme.accent)}>
@@ -456,6 +492,14 @@ const classificationBadgeStyle = (accent: string): React.CSSProperties => ({
   background: `${accent}12`,
   border: `1px solid ${accent}33`,
 })
+
+const bincraftStripStyle: React.CSSProperties = {
+  marginTop: 12,
+  padding: '10px 12px',
+  borderRadius: 12,
+  background: 'rgba(56,189,248,0.06)',
+  border: '1px solid rgba(56,189,248,0.18)',
+}
 
 const emptyStateStyle: React.CSSProperties = {
   padding: 32,

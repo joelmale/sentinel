@@ -67,13 +67,29 @@ async def get_domain_status(
           AND timestamp >= :day_cutoff
         GROUP BY source_feed
     """)
+    # binCraft-specific metrics: receiver consensus and RSSI from JSONB metadata.
+    # Only rows that carry 'receiver_count' have binCraft enrichment.
+    bincraft_sql = text("""
+        SELECT
+            source_feed,
+            ROUND(AVG((metadata->>'receiver_count')::numeric), 1) AS avg_receiver_count,
+            ROUND(AVG((metadata->>'rssi')::numeric),          1) AS avg_rssi,
+            COUNT(DISTINCT metadata->>'surveillance_type')        AS surveillance_type_count,
+            MODE() WITHIN GROUP (ORDER BY metadata->>'surveillance_type') AS dominant_surveillance_type
+        FROM track_events
+        WHERE source_domain = :domain
+          AND timestamp >= :active_cutoff
+          AND metadata ? 'receiver_count'
+        GROUP BY source_feed
+    """)
 
     assets: list[Any] = []
     feed_events: dict[str, Any] = {}
+    bincraft_meta: dict[str, Any] = {}
 
     try:
         asset_result = await db.execute(asset_sql, {"domain": domain.value})
-        assets = asset_result.mappings().all()
+        assets = list(asset_result.mappings().all())
     except Exception:
         logger.exception("[tracks.domain-status] asset_states query failed for %s", domain.value)
 
@@ -86,94 +102,134 @@ async def get_domain_status(
     except Exception:
         logger.exception("[tracks.domain-status] track_events query failed for %s", domain.value)
 
-    classification_counts: dict[str, int] = {}
-    feed_summary: dict[str, dict[str, Any]] = {}
-    stale_assets = 0
-    fresh_assets = 0
-    speeds: list[float] = []
-    altitudes: list[float] = []
-    latest_seen: datetime | None = None
+    try:
+        bc_result = await db.execute(
+            bincraft_sql,
+            {"domain": domain.value, "active_cutoff": active_cutoff},
+        )
+        bincraft_meta = {row["source_feed"]: row for row in bc_result.mappings().all()}
+    except Exception:
+        logger.debug("[tracks.domain-status] bincraft metadata query failed for %s (non-critical)", domain.value)
 
-    for feed, event_row in feed_events.items():
-        feed_summary.setdefault(feed, {
-            "feed": feed,
-            "asset_count": 0,
-            "fresh_assets": 0,
-            "stale_assets": 0,
-            "latest_seen": None,
-            "classifications": {},
-            "events_1h": int(event_row["events_1h"] or 0),
-            "events_24h": int(event_row["events_24h"] or 0),
-            "active_tracks_1h": int(event_row["active_tracks_1h"] or 0),
-        })
+    def _ensure_tz(dt: datetime | None) -> datetime | None:
+        """Guard against timezone-naive datetimes from some asyncpg configurations."""
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
 
-    for row in assets:
-        classification = row["classification"] or "Unknown"
-        classification_counts[classification] = classification_counts.get(classification, 0) + 1
+    try:
+        classification_counts: dict[str, int] = {}
+        feed_summary: dict[str, dict[str, Any]] = {}
+        stale_assets = 0
+        fresh_assets = 0
+        speeds: list[float] = []
+        altitudes: list[float] = []
+        latest_seen: datetime | None = None
 
-        last_seen = row["last_seen"]
-        if last_seen is None:
-            continue
-        latest_seen = last_seen if latest_seen is None or last_seen > latest_seen else latest_seen
-        if last_seen >= stale_cutoff:
-            fresh_assets += 1
-        else:
-            stale_assets += 1
+        for feed, event_row in feed_events.items():
+            feed_summary.setdefault(feed, {
+                "feed": feed,
+                "asset_count": 0,
+                "fresh_assets": 0,
+                "stale_assets": 0,
+                "latest_seen": None,
+                "classifications": {},
+                "events_1h": int(event_row["events_1h"] or 0),
+                "events_24h": int(event_row["events_24h"] or 0),
+                "active_tracks_1h": int(event_row["active_tracks_1h"] or 0),
+            })
 
-        feed = row["source_feed"]
-        summary = feed_summary.setdefault(feed, {
-            "feed": feed,
-            "asset_count": 0,
-            "fresh_assets": 0,
-            "stale_assets": 0,
-            "latest_seen": None,
-            "classifications": {},
-            "events_1h": 0,
-            "events_24h": 0,
-            "active_tracks_1h": 0,
-        })
-        summary["asset_count"] += 1
-        if last_seen >= stale_cutoff:
-            summary["fresh_assets"] += 1
-        else:
-            summary["stale_assets"] += 1
-        if summary["latest_seen"] is None or last_seen > summary["latest_seen"]:
-            summary["latest_seen"] = last_seen
-        summary["classifications"][classification] = summary["classifications"].get(classification, 0) + 1
+        for row in assets:
+            classification = row["classification"] or "Unknown"
+            classification_counts[classification] = classification_counts.get(classification, 0) + 1
 
-        speed = row["speed_mps"]
-        altitude = row["altitude_m"]
-        if speed is not None:
-            speeds.append(float(speed))
-        if altitude is not None:
-            altitudes.append(float(altitude))
+            last_seen = _ensure_tz(row["last_seen"])
+            if last_seen is None:
+                continue
+            latest_seen = last_seen if latest_seen is None or last_seen > latest_seen else latest_seen
+            if last_seen >= stale_cutoff:
+                fresh_assets += 1
+            else:
+                stale_assets += 1
 
-    feeds = []
-    due_feeds = 0
-    for feed, summary in feed_summary.items():
-        latest = summary["latest_seen"]
-        age_minutes = ((now - latest).total_seconds() / 60) if latest else None
-        health = "healthy"
-        if latest is None:
-            health = "missing"
-        elif latest < stale_cutoff:
-            health = "stale"
-            due_feeds += 1
-        feeds.append({
-            "feed": feed,
-            "asset_count": summary["asset_count"],
-            "fresh_assets": summary["fresh_assets"],
-            "stale_assets": summary["stale_assets"],
-            "latest_seen": latest.isoformat() if latest else None,
-            "age_minutes": age_minutes,
-            "events_1h": int(summary["events_1h"]),
-            "events_24h": int(summary["events_24h"]),
-            "active_tracks_1h": int(summary["active_tracks_1h"]),
-            "health": health,
-            "classifications": summary["classifications"],
-        })
+            feed = row["source_feed"]
+            summary = feed_summary.setdefault(feed, {
+                "feed": feed,
+                "asset_count": 0,
+                "fresh_assets": 0,
+                "stale_assets": 0,
+                "latest_seen": None,
+                "classifications": {},
+                "events_1h": 0,
+                "events_24h": 0,
+                "active_tracks_1h": 0,
+            })
+            summary["asset_count"] += 1
+            if last_seen >= stale_cutoff:
+                summary["fresh_assets"] += 1
+            else:
+                summary["stale_assets"] += 1
+            if summary["latest_seen"] is None or last_seen > summary["latest_seen"]:
+                summary["latest_seen"] = last_seen
+            summary["classifications"][classification] = summary["classifications"].get(classification, 0) + 1
 
-    feeds.sort(key=lambda feed: (-feed["asset_count"], feed["feed"]))
+            speed = row["speed_mps"]
+            altitude = row["altitude_m"]
+            if speed is not None:
+                speeds.append(float(speed))
+            if altitude is not None:
+                altitudes.append(float(altitude))
+
+        feeds = []
+        due_feeds = 0
+        for feed_name, summary in feed_summary.items():
+            latest = _ensure_tz(summary["latest_seen"])
+            age_minutes = ((now - latest).total_seconds() / 60) if latest else None
+            health = "healthy"
+            if latest is None:
+                health = "missing"
+            elif latest < stale_cutoff:
+                health = "stale"
+                due_feeds += 1
+
+            bc = bincraft_meta.get(feed_name, {})
+            feed_entry: dict[str, Any] = {
+                "feed": feed_name,
+                "asset_count": summary["asset_count"],
+                "fresh_assets": summary["fresh_assets"],
+                "stale_assets": summary["stale_assets"],
+                "latest_seen": latest.isoformat() if latest else None,
+                "age_minutes": age_minutes,
+                "events_1h": int(summary["events_1h"]),
+                "events_24h": int(summary["events_24h"]),
+                "active_tracks_1h": int(summary["active_tracks_1h"]),
+                "health": health,
+                "classifications": summary["classifications"],
+            }
+            # Attach binCraft-specific metrics when this feed carries binCraft data
+            if bc:
+                feed_entry["bincraft"] = {
+                    "avg_receiver_count": float(bc["avg_receiver_count"]) if bc["avg_receiver_count"] is not None else None,
+                    "avg_rssi": float(bc["avg_rssi"]) if bc["avg_rssi"] is not None else None,
+                    "dominant_surveillance_type": bc["dominant_surveillance_type"],
+                    "surveillance_type_count": int(bc["surveillance_type_count"] or 0),
+                }
+            feeds.append(feed_entry)
+
+    except Exception:
+        logger.exception("[tracks.domain-status] data processing failed for %s", domain.value)
+        feeds = []
+        due_feeds = 0
+        classification_counts = {}
+        latest_seen = None
+        fresh_assets = 0
+        stale_assets = 0
+        speeds = []
+        altitudes = []
+
+    feeds.sort(key=lambda f: (-f["asset_count"], f["feed"]))
     classifications = [
         {"label": label, "count": count}
         for label, count in sorted(classification_counts.items(), key=lambda item: (-item[1], item[0]))
@@ -188,11 +244,11 @@ async def get_domain_status(
             "stale": stale_assets,
             "feeds": len(feeds),
             "due_feeds": due_feeds,
-            "latest_seen": latest_seen.isoformat() if latest_seen else None,
+            "latest_seen": _ensure_tz(latest_seen).isoformat() if latest_seen else None,
             "avg_speed_mps": round(sum(speeds) / len(speeds), 1) if speeds else None,
             "avg_altitude_m": round(sum(altitudes) / len(altitudes), 1) if altitudes else None,
-            "events_1h": int(sum(feed["events_1h"] for feed in feeds)),
-            "events_24h": int(sum(feed["events_24h"] for feed in feeds)),
+            "events_1h": int(sum(f["events_1h"] for f in feeds)),
+            "events_24h": int(sum(f["events_24h"] for f in feeds)),
         },
         "feeds": feeds,
         "classifications": classifications[:8],

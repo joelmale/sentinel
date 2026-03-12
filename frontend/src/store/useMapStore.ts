@@ -38,6 +38,13 @@ export interface InvestigationContext {
   ruleName?: string
 }
 
+export interface UnderseaLandingPointSelection {
+  id: string
+  name: string
+  lon: number
+  lat: number
+}
+
 // ── Layer state ───────────────────────────────────────────────────
 // Three-state visibility — think of it like a monitor dimmer switch:
 //   active  = full brightness, in track list, in alerts (was: enabled=true)
@@ -145,6 +152,9 @@ interface MapStore {
   selectedDomain: SourceDomain | null
   selectAsset: (trackId: string, domain: SourceDomain) => void
   clearSelection: () => void
+  selectedLandingPoint: UnderseaLandingPointSelection | null
+  selectLandingPoint: (point: UnderseaLandingPointSelection) => void
+  clearLandingPointSelection: () => void
 
   // Alerts — full triage lifecycle
   pendingAlerts: AlertItem[]
@@ -167,10 +177,12 @@ interface MapStore {
   simpleMap: boolean
   showTrails: boolean
   showCocom: boolean
+  showUnderseaCables: boolean
   globeView: boolean
   toggleSimpleMap: () => void
   toggleShowTrails: () => void
   toggleCocom: () => void
+  toggleUnderseaCables: () => void
   toggleGlobeView: () => void
 
   // Classification filter — maps domain name → list of HIDDEN classification strings
@@ -182,6 +194,12 @@ interface MapStore {
   hiddenGroupFilters: Partial<Record<SourceDomain, string[]>>
   toggleHiddenGroupFilter: (domain: SourceDomain, key: string) => void
   clearHiddenGroupFilters: (domain: SourceDomain) => void
+
+  // Group exclusion — set of 'domain:track_id' keys that should be dimmed on the map.
+  // Unlike hiddenGroupFilters (which removes tracks entirely), these remain visible but
+  // rendered at ~10% alpha. Populated by SourcePanel via badge-click exclusion.
+  groupExcludedTracks: Set<string>
+  setGroupExcludedTracks: (s: Set<string>) => void
 
   // Space track duration selector
   spaceTrackDuration: '1h' | '24h' | 'orbit'
@@ -296,8 +314,14 @@ export const useMapStore = create<MapStore>()(
     // ── Selection ────────────────────────────────────────────────
     selectedTrackId: null,
     selectedDomain: null,
+    selectedLandingPoint: null,
     selectAsset: (trackId, domain) =>
-      set({ selectedTrackId: trackId, selectedDomain: domain, assetCardOpen: true }),
+      set({
+        selectedTrackId: trackId,
+        selectedDomain: domain,
+        selectedLandingPoint: null,
+        assetCardOpen: true,
+      }),
     clearSelection: () =>
       set({
         selectedTrackId: null,
@@ -305,6 +329,15 @@ export const useMapStore = create<MapStore>()(
         assetCardOpen: false,
         selectedTrackHistory: [],
       }),
+    selectLandingPoint: (point) =>
+      set({
+        selectedLandingPoint: point,
+        selectedTrackId: null,
+        selectedDomain: null,
+        assetCardOpen: false,
+        selectedTrackHistory: [],
+      }),
+    clearLandingPointSelection: () => set({ selectedLandingPoint: null }),
 
     // ── Alerts ────────────────────────────────────────────────────
     pendingAlerts: [],
@@ -368,10 +401,12 @@ export const useMapStore = create<MapStore>()(
     simpleMap: false,
     showTrails: true,
     showCocom: false,
+    showUnderseaCables: false,
     globeView: false,
     toggleSimpleMap: () => set((s) => ({ simpleMap: !s.simpleMap })),
     toggleShowTrails: () => set((s) => ({ showTrails: !s.showTrails })),
     toggleCocom: () => set((s) => ({ showCocom: !s.showCocom })),
+    toggleUnderseaCables: () => set((s) => ({ showUnderseaCables: !s.showUnderseaCables })),
     toggleGlobeView: () => set((s) => ({ globeView: !s.globeView })),
 
     // ── Classification filter ───────────────────────────────────
@@ -391,6 +426,10 @@ export const useMapStore = create<MapStore>()(
       }),
     clearHiddenGroupFilters: (domain) =>
       set((s) => ({ hiddenGroupFilters: { ...s.hiddenGroupFilters, [domain]: [] } })),
+
+    // ── Group exclusion (dim on map) ─────────────────────────────
+    groupExcludedTracks: new Set<string>(),
+    setGroupExcludedTracks: (s) => set({ groupExcludedTracks: s }),
 
     // ── Space track duration ─────────────────────────────────────
     spaceTrackDuration: '1h',
