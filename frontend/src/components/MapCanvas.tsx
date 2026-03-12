@@ -914,7 +914,19 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           />
         </div>
       )}
-      <div className="absolute bottom-4 right-4 z-10 flex flex-col items-end gap-2" style={{ pointerEvents: 'auto' }}>
+      <div
+        style={{
+          position: 'absolute',
+          right: 16,
+          bottom: 16,
+          zIndex: 10,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-end',
+          gap: 8,
+          pointerEvents: 'auto',
+        }}
+      >
         <div style={mapChromeOverlayStyle}>
           <div style={zoomReadoutStyle}>Zoom {viewport.zoom.toFixed(1)}</div>
           <div style={zoomContextStyle}>{zoomContext}</div>
