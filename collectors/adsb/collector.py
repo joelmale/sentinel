@@ -1041,15 +1041,18 @@ class AdsbCollector(BaseCollector):
 
         idx = 0
         if self._opensky_enabled:
-            r = results[idx]; idx += 1
+            r = results[idx]
+            idx += 1
             if isinstance(r, dict):
                 opensky_data = r
         if self._adsbx_enabled:
-            r = results[idx]; idx += 1
+            r = results[idx]
+            idx += 1
             if isinstance(r, dict):
                 adsbx_data = r
         if bincraft_due:
-            r = results[idx]; idx += 1
+            r = results[idx]
+            idx += 1
             if isinstance(r, dict):
                 bincraft_data = r
 

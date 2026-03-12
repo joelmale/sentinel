@@ -3,6 +3,16 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 export default defineConfig({
     plugins: [react()],
+    // Force Vite/esbuild to pre-bundle maplibre-gl during the dep-optimisation
+    // pass.  @vis.gl/react-maplibre loads it via a runtime dynamic import
+    // (import('maplibre-gl')), which Vite's static scanner may not discover.
+    // Without explicit inclusion, the UMD bundle can be served raw to the
+    // browser before esbuild converts it to ESM, producing
+    //   "Cannot read properties of undefined (reading 'Map')"
+    // at the Map-constructor check in @vis.gl/react-maplibre/dist/components/map.js.
+    optimizeDeps: {
+        include: ['maplibre-gl'],
+    },
     resolve: {
         alias: {
             '@': path.resolve(__dirname, './src'),

@@ -142,7 +142,7 @@ services:
       # Browser fingerprint — set to match your own browser for consistent Cloudflare scoring.
       # See .env.example for guidance on finding your own values.
       - BINCRAFT_USER_AGENT=${BINCRAFT_USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0}
-      - BINCRAFT_SEC_CH_UA=${BINCRAFT_SEC_CH_UA:-"Microsoft Edge";v="145", "Not/A)Brand";v="8", "Chromium";v="145"}
+      - BINCRAFT_SEC_CH_UA=${BINCRAFT_SEC_CH_UA:-"Not:A-Brand";v="99", "Microsoft Edge";v="145", "Chromium";v="145"}
       - BINCRAFT_SEC_CH_UA_PLATFORM=${BINCRAFT_SEC_CH_UA_PLATFORM:-macOS}
       # Bounding box: south,north,west,east. Default = global.
       - ADSBX_BINCRAFT_BOX=${ADSBX_BINCRAFT_BOX:--90,90,-180,180}

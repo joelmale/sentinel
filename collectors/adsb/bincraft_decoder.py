@@ -298,12 +298,18 @@ def decode_aircraft_payload(payload: bytes) -> dict[str, Any]:
         # nav_modes expansion (present only when flags77 bit 2 is set)
         if flags77 & 0x04:
             modes: list[str] = []
-            if nav_modes & 1:  modes.append("autopilot")
-            if nav_modes & 2:  modes.append("vnav")
-            if nav_modes & 4:  modes.append("alt_hold")
-            if nav_modes & 8:  modes.append("approach")
-            if nav_modes & 16: modes.append("lnav")
-            if nav_modes & 32: modes.append("tcas")
+            if nav_modes & 1:
+                modes.append("autopilot")
+            if nav_modes & 2:
+                modes.append("vnav")
+            if nav_modes & 4:
+                modes.append("alt_hold")
+            if nav_modes & 8:
+                modes.append("approach")
+            if nav_modes & 16:
+                modes.append("lnav")
+            if nav_modes & 32:
+                modes.append("tcas")
             ac["nav_modes"] = modes
         else:
             ac["nav_modes"] = None

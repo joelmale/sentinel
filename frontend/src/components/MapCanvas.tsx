@@ -780,7 +780,6 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     getAlpha,
     selectAsset,
     selectLandingPoint,
-    clearLandingPointSelection,
     trailBuffer,
     selectedTrackId,
     selectedDomain,
