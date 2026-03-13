@@ -545,8 +545,16 @@ function SentinelApp() {
     GPS: 0,
     Infra: 0,
   }
+  const staleCounts = uiGlobalSummary?.stale_domains ?? globalSummary?.stale_domains ?? {
+    Air: 0,
+    Maritime: 0,
+    Space: 0,
+    GPS: 0,
+    Infra: 0,
+  }
 
   const totalTracked = uiGlobalSummary?.total ?? globalSummary?.total ?? 0
+  const staleTracked = uiGlobalSummary?.stale_total ?? globalSummary?.stale_total ?? 0
   const statItems = [
     { icon: '✈', key: 'Air', color: '#60a5fa' },
     { icon: '⚓', key: 'Maritime', color: '#22d3ee' },
@@ -612,7 +620,7 @@ function SentinelApp() {
             <div style={headerCardStyle}>
               <span style={headerLabelStyle}>Tracked</span>
               <span style={headerValueStyle}>{totalTracked.toLocaleString()}</span>
-              <span style={headerMetaStyle}>Live assets</span>
+              <span style={headerMetaStyle}>{staleTracked > 0 ? `Fresh live · ${staleTracked.toLocaleString()} stale hidden` : 'Fresh live assets'}</span>
             </div>
             {statItems.map(({ icon, key, color }) => (
               <div
@@ -652,7 +660,10 @@ function SentinelApp() {
                   <span style={{ fontSize: 14 }}>{icon}</span>
                   <span style={{ ...headerValueStyle, color }}>{(counts[key] ?? 0).toLocaleString()}</span>
                 </div>
-                <span style={headerMetaStyle}>{key === 'GPS' ? 'Interference' : 'Tracks'}</span>
+                <span style={headerMetaStyle}>
+                  {key === 'GPS' ? 'Interference' : 'Tracks'}
+                  {(staleCounts[key] ?? 0) > 0 ? ` · ${(staleCounts[key] ?? 0).toLocaleString()} stale` : ''}
+                </span>
               </div>
             ))}
           </div>

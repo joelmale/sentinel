@@ -86,6 +86,8 @@ export interface LiveSummaryResponse {
   generated_at: string
   total: number
   domains: Record<SourceDomain, number>
+  stale_total: number
+  stale_domains: Record<SourceDomain, number>
 }
 
 export interface SpaceAggregateProperties {
