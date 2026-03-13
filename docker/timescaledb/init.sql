@@ -107,6 +107,26 @@ CREATE INDEX idx_entity_assertions_entity_time
 CREATE INDEX idx_entity_assertions_attr
     ON entity_assertions (attribute_key, asserted_at DESC);
 
+CREATE TABLE entity_impacts (
+    impact_id            UUID            PRIMARY KEY,
+    source_entity_id     UUID            NOT NULL REFERENCES entities(entity_id),
+    target_entity_id     UUID            NOT NULL REFERENCES entities(entity_id),
+    relationship_type    TEXT            NOT NULL,
+    confidence           DOUBLE PRECISION,
+    valid_from           TIMESTAMPTZ,
+    valid_to             TIMESTAMPTZ,
+    metadata             JSONB           DEFAULT '{}'::jsonb,
+    created_at           TIMESTAMPTZ     DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ     DEFAULT NOW(),
+    UNIQUE (source_entity_id, target_entity_id, relationship_type)
+);
+
+CREATE INDEX idx_entity_impacts_source
+    ON entity_impacts (source_entity_id, relationship_type, updated_at DESC);
+
+CREATE INDEX idx_entity_impacts_target
+    ON entity_impacts (target_entity_id, relationship_type, updated_at DESC);
+
 -- ── Core track events table ───────────────────────────────────────
 -- Canonical historical track samples used for analyst replay/history.
 -- Linked back to the raw normalized observation that produced the sample.

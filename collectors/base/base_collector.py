@@ -292,6 +292,21 @@ class BaseCollector(ABC):
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS entity_impacts (
+                impact_id UUID PRIMARY KEY,
+                source_entity_id UUID NOT NULL REFERENCES entities(entity_id),
+                target_entity_id UUID NOT NULL REFERENCES entities(entity_id),
+                relationship_type TEXT NOT NULL,
+                confidence DOUBLE PRECISION,
+                valid_from TIMESTAMPTZ,
+                valid_to TIMESTAMPTZ,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (source_entity_id, target_entity_id, relationship_type)
+            )
+            """,
+            """
             CREATE TABLE IF NOT EXISTS asset_observations (
                 observation_id UUID PRIMARY KEY,
                 entity_id UUID REFERENCES entities(entity_id),
@@ -386,6 +401,8 @@ class BaseCollector(ABC):
             "CREATE INDEX IF NOT EXISTS idx_source_runs_feed_started ON source_runs (source_feed, started_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_entity_assertions_entity_time ON entity_assertions (entity_id, asserted_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_entity_assertions_attr ON entity_assertions (attribute_key, asserted_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_entity_impacts_source ON entity_impacts (source_entity_id, relationship_type, updated_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_entity_impacts_target ON entity_impacts (target_entity_id, relationship_type, updated_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_entity_time ON asset_observations (entity_id, observed_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_feed_record ON asset_observations (source_feed, source_record_id, observed_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_position ON asset_observations USING GIST (position)",
@@ -994,6 +1011,55 @@ class BaseCollector(ABC):
                       AND d.external_event_id = $2
                 """, [
                     (e["source_feed"], e["external_event_id"])
+                    for e in disruption_events
+                ])
+                await conn.executemany("""
+                    DELETE FROM entity_impacts
+                    WHERE source_entity_id = $1
+                      AND relationship_type = 'intersects'
+                """, [
+                    (self._disruption_entity_id(e["source_feed"], e["external_event_id"]),)
+                    for e in disruption_events
+                ])
+                await conn.executemany("""
+                    INSERT INTO entity_impacts (
+                        impact_id, source_entity_id, target_entity_id, relationship_type,
+                        confidence, valid_from, valid_to, metadata
+                    )
+                    SELECT
+                        uuid_generate_v4(),
+                        $1::uuid,
+                        a.entity_id,
+                        'intersects',
+                        $2,
+                        $3,
+                        $4,
+                        $5::jsonb
+                    FROM disruption_events AS d
+                    JOIN asset_states AS a
+                      ON a.entity_id IS NOT NULL
+                     AND a.source_domain IN ('Air', 'Maritime', 'Space')
+                     AND a.position IS NOT NULL
+                     AND d.geometry IS NOT NULL
+                     AND ST_Intersects(a.position, d.geometry)
+                    WHERE d.source_feed = $6
+                      AND d.external_event_id = $7
+                    ON CONFLICT (source_entity_id, target_entity_id, relationship_type) DO UPDATE SET
+                        confidence = EXCLUDED.confidence,
+                        valid_from = EXCLUDED.valid_from,
+                        valid_to = EXCLUDED.valid_to,
+                        metadata = entity_impacts.metadata || EXCLUDED.metadata,
+                        updated_at = NOW()
+                """, [
+                    (
+                        self._disruption_entity_id(e["source_feed"], e["external_event_id"]),
+                        e.get("confidence"),
+                        db_timestamp(e.get("valid_from")),
+                        db_timestamp(e.get("valid_to")) if e.get("valid_to") else None,
+                        json.dumps({"source_feed": e["source_feed"], "event_type": e["event_type"]}),
+                        e["source_feed"],
+                        e["external_event_id"],
+                    )
                     for e in disruption_events
                 ])
 
