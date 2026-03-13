@@ -22,6 +22,7 @@ import { AnnotationModal } from '@/components/AnnotationModal'
 import { AlertQueuePanel } from '@/components/AlertQueuePanel'
 import { InvestigationPanel } from '@/components/InvestigationPanel'
 import { PerformancePanel } from '@/components/PerformancePanel'
+import { TrackBrowserView } from '@/components/TrackBrowserView'
 import { SpaceWatchDashboard, type SpaceWatchDashboardPayload } from '@/components/SpaceWatchDashboard'
 import { DomainStatusDashboard, type DomainStatusDashboardPayload } from '@/components/DomainStatusDashboard'
 import { DisruptionDashboard, type DisruptionDashboardPayload } from '@/components/DisruptionDashboard'
@@ -33,8 +34,6 @@ import { usePerfStore } from '@/store/usePerfStore'
 import type {
   DisruptionEventResponse,
   LiveSummaryResponse,
-  SpaceAggregate,
-  SpaceAggregateFeatureCollection,
   TrackEventProperties,
   TrackFeatureCollection,
   WsMessage,
@@ -62,6 +61,7 @@ const queryClient = new QueryClient({
 
 const APP_VERSION = '0.02'
 const DISCLAIMER_STORAGE_KEY = 'sentinel.evaluationDisclaimerAccepted'
+type WorkspaceView = 'map' | 'table'
 
 function SentinelApp() {
   const {
@@ -87,14 +87,13 @@ function SentinelApp() {
     viewportAssets,
     upsertViewportAssets,
     replaceDomainViewportAssets,
-    spaceAggregates,
-    setSpaceAggregates,
     selectedAssetDetail,
     setSelectedAssetDetail,
     clearSelectedAssetDetail,
   } = useLiveDataStore()
   const [annotationPos, setAnnotationPos] = useState<{ lon: number; lat: number } | null>(null)
   const [now, setNow] = useState(new Date())
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('map')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [disclaimerOpen, setDisclaimerOpen] = useState(false)
   const [spaceDashboardOpen, setSpaceDashboardOpen] = useState(false)
@@ -225,34 +224,6 @@ function SentinelApp() {
     staleTime: 5_000,
   })
 
-  const spaceAggregateQuery = useQuery({
-    queryKey: [
-      'space-aggregates',
-      viewportBbox,
-      layers.Space.visibility,
-    ],
-    enabled: layers.Space.visibility !== 'hidden',
-    queryFn: async (): Promise<SpaceAggregate[]> => {
-      const bbox = serializeBbox(viewportBounds)
-      const aggregateUrl = bbox
-        ? `/api/tracks/live?domain=Space&scope=aggregate&bbox=${encodeURIComponent(bbox)}`
-        : '/api/tracks/live?domain=Space&scope=aggregate'
-      const payload = await trackedFetchJson<SpaceAggregateFeatureCollection>('live-space-aggregates', aggregateUrl)
-      return payload.features
-        .filter((feature) => Array.isArray(feature.geometry?.coordinates))
-        .map((feature) => ({
-          constellation: feature.properties.constellation,
-          count: feature.properties.count,
-          lon: feature.geometry!.coordinates[0],
-          lat: feature.geometry!.coordinates[1],
-        }))
-    },
-    refetchOnWindowFocus: false,
-    refetchInterval: playback.mode === 'live' ? 20_000 : false,
-    staleTime: 5_000,
-    retry: false,
-  })
-
   useEffect(() => {
     const allViewportAssets = [
       ...(liveViewportQuery.data?.air ?? []),
@@ -267,9 +238,21 @@ function SentinelApp() {
     }
   }, [liveViewportQuery.data, replaceDomainViewportAssets, upsertAssets])
 
-  useEffect(() => {
-    setSpaceAggregates(spaceAggregateQuery.data ?? [])
-  }, [spaceAggregateQuery.data, setSpaceAggregates])
+  const browserAssetsQuery = useQuery({
+    queryKey: ['browser-assets-live'],
+    enabled: workspaceView === 'table',
+    queryFn: async (): Promise<TrackEventProperties[]> => {
+      const [air, maritime, space] = await Promise.all([
+        trackedFetchJson<TrackFeatureCollection>('browser-air-live', '/api/tracks/live?domain=Air').then(normalizeTrackFeatures),
+        trackedFetchJson<TrackFeatureCollection>('browser-maritime-live', '/api/tracks/live?domain=Maritime').then(normalizeTrackFeatures),
+        trackedFetchJson<TrackFeatureCollection>('browser-space-live', '/api/tracks/live?domain=Space').then(normalizeTrackFeatures),
+      ])
+      return [...air, ...maritime, ...space]
+    },
+    refetchOnWindowFocus: false,
+    refetchInterval: playback.mode === 'live' ? 30_000 : false,
+    staleTime: 10_000,
+  })
 
   const selectedAssetDetailQuery = useQuery({
     queryKey: ['selected-asset-detail', selectedDomain, selectedTrackId],
@@ -624,6 +607,22 @@ function SentinelApp() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'stretch', gap: 8, justifyContent: 'center', overflow: 'hidden' }}>
+            <button
+              type="button"
+              onClick={() => setWorkspaceView((current) => current === 'map' ? 'table' : 'map')}
+              style={{
+                ...headerCardStyle,
+                minWidth: 92,
+                cursor: 'pointer',
+                borderColor: workspaceView === 'table' ? 'rgba(94,234,212,0.4)' : 'rgba(255,255,255,0.08)',
+              }}
+            >
+              <span style={headerLabelStyle}>View</span>
+              <span style={{ ...headerValueStyle, color: workspaceView === 'table' ? '#5eead4' : '#e2e8f0', fontSize: 22 }}>
+                {workspaceView === 'table' ? 'Table' : 'Map'}
+              </span>
+              <span style={headerMetaStyle}>{workspaceView === 'table' ? 'Analyst browser' : 'Geospatial workspace'}</span>
+            </button>
             <div style={headerCardStyle}>
               <span style={headerLabelStyle}>Tracked</span>
               <span style={headerValueStyle}>{totalTracked.toLocaleString()}</span>
@@ -767,39 +766,39 @@ function SentinelApp() {
         </div>
       </div>
 
-      {/* ── Map canvas (fills everything) ─────────────────────── */}
-      {/* zIndex: 1 creates a stacking context so DeckGL's internal z-index:0
-          canvas stays contained within this layer, below the panels at z-20 */}
-      <div className="fixed inset-0" style={{ zIndex: 1, paddingTop: 72 }}>
-        <MapCanvas
-          liveAssets={assetsArray}
-          disruptions={disruptionEventsQuery.data?.items ?? []}
-          spaceAggregates={spaceAggregates}
-          onMapClick={(lon, lat) => setAnnotationPos({ lon, lat })}
-        />
-      </div>
+      {workspaceView === 'map' ? (
+        <>
+          {/* ── Map canvas (fills everything) ─────────────────────── */}
+          {/* zIndex: 1 creates a stacking context so DeckGL's internal z-index:0
+              canvas stays contained within this layer, below the panels at z-20 */}
+          <div className="fixed inset-0" style={{ zIndex: 1, paddingTop: 72 }}>
+            <MapCanvas
+              liveAssets={assetsArray}
+              disruptions={disruptionEventsQuery.data?.items ?? []}
+              onMapClick={(lon, lat) => setAnnotationPos({ lon, lat })}
+            />
+          </div>
 
-      {/* ── Left panel ─────────────────────────────────────────── */}
-      <SourcePanel />
-
-      {/* ── Bottom timeline panel ──────────────────────────────── */}
-      <TimelinePanel />
-
-      {/* ── Right asset detail panel ───────────────────────────── */}
-      <AssetCard />
-      <UnderseaLandingPointCard />
-
-      {/* ── Annotation modal ───────────────────────────────────── */}
-      {annotationPos && (
-        <AnnotationModal
-          lon={annotationPos.lon}
-          lat={annotationPos.lat}
-          onClose={() => setAnnotationPos(null)}
+          <SourcePanel />
+          <TimelinePanel />
+          <AssetCard />
+          <UnderseaLandingPointCard />
+          {annotationPos && (
+            <AnnotationModal
+              lon={annotationPos.lon}
+              lat={annotationPos.lat}
+              onClose={() => setAnnotationPos(null)}
+            />
+          )}
+          <AlertQueuePanel />
+        </>
+      ) : (
+        <TrackBrowserView
+          assets={browserAssetsQuery.data ?? []}
+          loading={browserAssetsQuery.isLoading}
         />
       )}
 
-      {/* ── Alert queue panel (bottom-right investigation workbench) ── */}
-      <AlertQueuePanel />
       <InvestigationPanel />
       <PerformancePanel />
 

@@ -1,0 +1,320 @@
+import { useMemo, useState } from 'react'
+import { formatDistanceToNowStrict } from 'date-fns'
+import { getAirlineGroup, getConstellation, getConstellationCategory, getMmsiCountry } from '@/data/grouping'
+import { useMapStore } from '@/store/useMapStore'
+import type { SourceDomain, TrackEventProperties } from '@/types/track'
+
+type SortKey = 'timestamp' | 'domain' | 'classification' | 'feed' | 'track'
+
+const DOMAIN_META: Record<SourceDomain, { color: string; icon: string }> = {
+  Air: { color: '#60a5fa', icon: '✈' },
+  Maritime: { color: '#22d3ee', icon: '⚓' },
+  Space: { color: '#c084fc', icon: '🛰' },
+  GPS: { color: '#f87171', icon: '📡' },
+  Infra: { color: '#f59e0b', icon: '🌐' },
+}
+
+const PAGE_SIZE = 100
+
+function assetGroupLabel(asset: TrackEventProperties): string {
+  if (asset.source_domain === 'Air') return getAirlineGroup(asset.callsign, asset.classification)
+  if (asset.source_domain === 'Maritime') return getMmsiCountry(asset.track_id)
+  if (asset.source_domain === 'Space') return getConstellation(asset.callsign)
+  return asset.classification ?? 'Unknown'
+}
+
+export function TrackBrowserView({ assets, loading }: { assets: TrackEventProperties[]; loading: boolean }) {
+  const { selectAsset, flyTo } = useMapStore()
+  const [search, setSearch] = useState('')
+  const [selectedDomain, setSelectedDomain] = useState<SourceDomain | 'All'>('All')
+  const [selectedClassification, setSelectedClassification] = useState<string>('All')
+  const [selectedFeed, setSelectedFeed] = useState<string>('All')
+  const [selectedSpaceCategory, setSelectedSpaceCategory] = useState<string>('All')
+  const [sortKey, setSortKey] = useState<SortKey>('timestamp')
+  const [page, setPage] = useState(0)
+
+  const classifications = useMemo(() => (
+    Array.from(new Set(assets.map((asset) => asset.classification ?? 'Unknown'))).sort()
+  ), [assets])
+
+  const feeds = useMemo(() => (
+    Array.from(new Set(assets.map((asset) => asset.source_feed))).sort()
+  ), [assets])
+
+  const spaceCategories = useMemo(() => (
+    Array.from(new Set(
+      assets
+        .filter((asset) => asset.source_domain === 'Space')
+        .map((asset) => getConstellationCategory(getConstellation(asset.callsign)))
+    ))
+  ), [assets])
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    const next = assets.filter((asset) => {
+      if (selectedDomain !== 'All' && asset.source_domain !== selectedDomain) return false
+      if (selectedClassification !== 'All' && (asset.classification ?? 'Unknown') !== selectedClassification) return false
+      if (selectedFeed !== 'All' && asset.source_feed !== selectedFeed) return false
+      if (
+        selectedSpaceCategory !== 'All' &&
+        (asset.source_domain !== 'Space' || getConstellationCategory(getConstellation(asset.callsign)) !== selectedSpaceCategory)
+      ) return false
+      if (!q) return true
+      return [
+        asset.track_id,
+        asset.callsign ?? '',
+        asset.source_feed,
+        asset.classification ?? '',
+        assetGroupLabel(asset),
+      ].some((value) => value.toLowerCase().includes(q))
+    })
+
+    next.sort((a, b) => {
+      if (sortKey === 'timestamp') return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      if (sortKey === 'domain') return a.source_domain.localeCompare(b.source_domain) || a.track_id.localeCompare(b.track_id)
+      if (sortKey === 'classification') return (a.classification ?? 'Unknown').localeCompare(b.classification ?? 'Unknown')
+      if (sortKey === 'feed') return a.source_feed.localeCompare(b.source_feed) || a.track_id.localeCompare(b.track_id)
+      return (a.callsign ?? a.track_id).localeCompare(b.callsign ?? b.track_id)
+    })
+    return next
+  }, [assets, search, selectedDomain, selectedClassification, selectedFeed, selectedSpaceCategory, sortKey])
+
+  const selectedAsset = filtered[0] ?? null
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const safePage = Math.min(page, pageCount - 1)
+  const paged = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE)
+
+  const correlation = useMemo(() => {
+    const byDomain = new Map<string, number>()
+    const byFeed = new Map<string, number>()
+    const byClass = new Map<string, number>()
+    const byGroup = new Map<string, number>()
+    for (const asset of filtered) {
+      byDomain.set(asset.source_domain, (byDomain.get(asset.source_domain) ?? 0) + 1)
+      byFeed.set(asset.source_feed, (byFeed.get(asset.source_feed) ?? 0) + 1)
+      const cls = asset.classification ?? 'Unknown'
+      byClass.set(cls, (byClass.get(cls) ?? 0) + 1)
+      const group = assetGroupLabel(asset)
+      byGroup.set(group, (byGroup.get(group) ?? 0) + 1)
+    }
+    const top = (map: Map<string, number>) => Array.from(map.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8)
+    return {
+      byDomain: top(byDomain),
+      byFeed: top(byFeed),
+      byClass: top(byClass),
+      byGroup: top(byGroup),
+    }
+  }, [filtered])
+
+  return (
+    <div style={{ position: 'fixed', inset: 72, display: 'grid', gridTemplateColumns: '280px 1fr 320px', background: '#0f172a' }}>
+      <div style={{ borderRight: '1px solid rgba(148,163,184,0.16)', padding: 18, overflowY: 'auto' }}>
+        <div style={{ fontSize: 11, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 12 }}>Browse</div>
+        <input
+          value={search}
+          onChange={(event) => {
+            setSearch(event.target.value)
+            setPage(0)
+          }}
+          placeholder="Search track, callsign, feed, constellation..."
+          style={{
+            width: '100%',
+            borderRadius: 10,
+            border: '1px solid rgba(100,116,139,0.3)',
+            background: 'rgba(15,23,42,0.8)',
+            color: '#e2e8f0',
+            padding: '10px 12px',
+            fontSize: 12,
+            marginBottom: 16,
+          }}
+        />
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
+          {(['All', 'Air', 'Maritime', 'Space'] as const).map((domain) => {
+            const selected = selectedDomain === domain
+            return (
+              <button
+                key={domain}
+                type="button"
+                onClick={() => {
+                  setSelectedDomain(domain)
+                  setPage(0)
+                }}
+                style={{
+                  borderRadius: 999,
+                  border: `1px solid ${selected ? 'rgba(94,234,212,0.4)' : 'rgba(100,116,139,0.25)'}`,
+                  background: selected ? 'rgba(20,184,166,0.16)' : 'rgba(15,23,42,0.7)',
+                  color: selected ? '#99f6e4' : '#cbd5e1',
+                  padding: '6px 10px',
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {domain}
+              </button>
+            )
+          })}
+        </div>
+        <FilterBlock label="Classification">
+          <select value={selectedClassification} onChange={(event) => { setSelectedClassification(event.target.value); setPage(0) }} style={selectStyle}>
+            <option value="All">All</option>
+            {classifications.map((classification) => <option key={classification} value={classification}>{classification}</option>)}
+          </select>
+        </FilterBlock>
+        <FilterBlock label="Source Feed">
+          <select value={selectedFeed} onChange={(event) => { setSelectedFeed(event.target.value); setPage(0) }} style={selectStyle}>
+            <option value="All">All</option>
+            {feeds.map((feed) => <option key={feed} value={feed}>{feed}</option>)}
+          </select>
+        </FilterBlock>
+        <FilterBlock label="Space Category">
+          <select value={selectedSpaceCategory} onChange={(event) => { setSelectedSpaceCategory(event.target.value); setPage(0) }} style={selectStyle}>
+            <option value="All">All</option>
+            {spaceCategories.map((category) => <option key={category} value={category}>{category}</option>)}
+          </select>
+        </FilterBlock>
+        <FilterBlock label="Sort">
+          <select value={sortKey} onChange={(event) => setSortKey(event.target.value as SortKey)} style={selectStyle}>
+            <option value="timestamp">Most recent</option>
+            <option value="domain">Domain</option>
+            <option value="classification">Classification</option>
+            <option value="feed">Feed</option>
+            <option value="track">Track / Callsign</option>
+          </select>
+        </FilterBlock>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 18px', borderBottom: '1px solid rgba(148,163,184,0.16)' }}>
+          <div>
+            <div style={{ fontSize: 11, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase' }}>Track Browser</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: '#f8fafc' }}>{loading ? 'Loading live track set…' : `${filtered.length.toLocaleString()} tracks in result set`}</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" disabled={safePage === 0} onClick={() => setPage((current) => Math.max(0, current - 1))} style={pagerStyle(safePage === 0)}>Prev</button>
+            <button type="button" disabled={safePage >= pageCount - 1} onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))} style={pagerStyle(safePage >= pageCount - 1)}>Next</button>
+          </div>
+        </div>
+        <div style={{ overflow: 'auto', flex: 1 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead style={{ position: 'sticky', top: 0, background: '#111827', zIndex: 1 }}>
+              <tr>
+                {['Track', 'Domain', 'Feed', 'Class', 'Group', 'Last Seen', 'Lat', 'Lon'].map((label) => (
+                  <th key={label} style={thStyle}>{label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {paged.map((asset) => (
+                <tr
+                  key={`${asset.source_domain}:${asset.track_id}`}
+                  onClick={() => {
+                    selectAsset(asset.track_id, asset.source_domain)
+                    if (typeof asset.lon === 'number' && typeof asset.lat === 'number') {
+                      flyTo(asset.lon, asset.lat, 6)
+                    }
+                  }}
+                  style={{ cursor: 'pointer', borderBottom: '1px solid rgba(148,163,184,0.08)' }}
+                >
+                  <td style={tdStyle}>
+                    <div style={{ color: '#f8fafc', fontWeight: 700 }}>{asset.callsign ?? asset.track_id}</div>
+                    <div style={{ color: '#64748b', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{asset.track_id}</div>
+                  </td>
+                  <td style={tdStyle}>
+                    <span style={{ color: DOMAIN_META[asset.source_domain].color }}>{DOMAIN_META[asset.source_domain].icon} {asset.source_domain}</span>
+                  </td>
+                  <td style={tdStyle}>{asset.source_feed}</td>
+                  <td style={tdStyle}>{asset.classification ?? 'Unknown'}</td>
+                  <td style={tdStyle}>{assetGroupLabel(asset)}</td>
+                  <td style={tdStyle}>{formatDistanceToNowStrict(new Date(asset.timestamp), { addSuffix: true })}</td>
+                  <td style={tdStyle}>{typeof asset.lat === 'number' ? asset.lat.toFixed(3) : '—'}</td>
+                  <td style={tdStyle}>{typeof asset.lon === 'number' ? asset.lon.toFixed(3) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style={{ borderLeft: '1px solid rgba(148,163,184,0.16)', padding: 18, overflowY: 'auto' }}>
+        <div style={{ fontSize: 11, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 12 }}>Correlation</div>
+        <SummaryBlock title="Domains" items={correlation.byDomain} />
+        <SummaryBlock title="Feeds" items={correlation.byFeed} />
+        <SummaryBlock title="Classifications" items={correlation.byClass} />
+        <SummaryBlock title="Groups" items={correlation.byGroup} />
+        {selectedAsset && (
+          <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid rgba(148,163,184,0.16)' }}>
+            <div style={{ fontSize: 11, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 8 }}>Lead Track</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#f8fafc', marginBottom: 6 }}>{selectedAsset.callsign ?? selectedAsset.track_id}</div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{selectedAsset.source_domain} · {selectedAsset.source_feed}</div>
+            <div style={{ fontSize: 12, color: '#cbd5e1' }}>{assetGroupLabel(selectedAsset)}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function FilterBlock({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 10, color: '#64748b', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 6 }}>{label}</div>
+      {children}
+    </div>
+  )
+}
+
+function SummaryBlock({ title, items }: { title: string; items: Array<[string, number]> }) {
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 10, color: '#64748b', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>{title}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {items.map(([label, count]) => (
+          <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12 }}>
+            <span style={{ color: '#cbd5e1' }}>{label}</span>
+            <span style={{ color: '#f8fafc', fontWeight: 700 }}>{count.toLocaleString()}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const selectStyle: React.CSSProperties = {
+  width: '100%',
+  borderRadius: 10,
+  border: '1px solid rgba(100,116,139,0.3)',
+  background: 'rgba(15,23,42,0.8)',
+  color: '#e2e8f0',
+  padding: '8px 10px',
+  fontSize: 12,
+}
+
+const thStyle: React.CSSProperties = {
+  textAlign: 'left',
+  fontSize: 10,
+  letterSpacing: '0.12em',
+  textTransform: 'uppercase',
+  color: '#94a3b8',
+  padding: '12px 14px',
+  borderBottom: '1px solid rgba(148,163,184,0.16)',
+}
+
+const tdStyle: React.CSSProperties = {
+  padding: '12px 14px',
+  color: '#cbd5e1',
+  verticalAlign: 'top',
+}
+
+function pagerStyle(disabled: boolean): React.CSSProperties {
+  return {
+    borderRadius: 8,
+    border: '1px solid rgba(100,116,139,0.28)',
+    background: disabled ? 'rgba(30,41,59,0.35)' : 'rgba(15,23,42,0.8)',
+    color: disabled ? '#64748b' : '#e2e8f0',
+    padding: '6px 10px',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: disabled ? 'default' : 'pointer',
+  }
+}
