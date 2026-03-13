@@ -278,6 +278,20 @@ class BaseCollector(ABC):
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS entity_assertions (
+                assertion_id UUID PRIMARY KEY,
+                entity_id UUID NOT NULL REFERENCES entities(entity_id),
+                attribute_key TEXT NOT NULL,
+                asserted_value JSONB NOT NULL,
+                source_feed TEXT NOT NULL,
+                asserted_at TIMESTAMPTZ NOT NULL,
+                confidence DOUBLE PRECISION,
+                source_trust_score DOUBLE PRECISION,
+                resolution_status TEXT NOT NULL DEFAULT 'active',
+                metadata JSONB DEFAULT '{}'::jsonb
+            )
+            """,
+            """
             CREATE TABLE IF NOT EXISTS asset_observations (
                 observation_id UUID PRIMARY KEY,
                 entity_id UUID REFERENCES entities(entity_id),
@@ -370,6 +384,8 @@ class BaseCollector(ABC):
             "CREATE INDEX IF NOT EXISTS idx_entities_type_domain ON entities (entity_type, source_domain, updated_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_entity_identifiers_entity ON entity_identifiers (entity_id, last_seen DESC)",
             "CREATE INDEX IF NOT EXISTS idx_source_runs_feed_started ON source_runs (source_feed, started_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_entity_assertions_entity_time ON entity_assertions (entity_id, asserted_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_entity_assertions_attr ON entity_assertions (attribute_key, asserted_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_entity_time ON asset_observations (entity_id, observed_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_feed_record ON asset_observations (source_feed, source_record_id, observed_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_position ON asset_observations USING GIST (position)",
@@ -509,6 +525,49 @@ class BaseCollector(ABC):
             NAMESPACE_URL,
             f"sentinel:observation:{event['source_feed']}:{event['source_domain']}:{event['track_id']}:{timestamp}:{source_record_id}",
         )
+
+    def _stable_assertion_rows_for_assets(self, events: list[dict]) -> list[tuple[UUID, UUID, str, str, str, datetime, float, float, str, str]]:
+        stable_keys = (
+            "registration",
+            "aircraft_type",
+            "origin_country",
+            "category",
+            "ship_type",
+            "destination",
+            "flag",
+            "object_type",
+            "orbit_class",
+            "norad_id",
+            "operator",
+            "purpose",
+            "contractor",
+            "launch_date",
+            "launch_site",
+            "intl_designator",
+        )
+        rows: list[tuple[UUID, UUID, str, str, str, datetime, float, float, str, str]] = []
+        for event in events:
+            metadata = _public_metadata(event.get("metadata"))
+            observed_at = event["timestamp"] if isinstance(event["timestamp"], datetime) else datetime.fromisoformat(str(event["timestamp"]).replace("Z", "+00:00"))
+            entity_id = self._asset_entity_id(event["source_domain"], str(event["track_id"]))
+            for key in stable_keys:
+                value = metadata.get(key)
+                if value in (None, "", []):
+                    continue
+                assertion_id = uuid5(NAMESPACE_URL, f"sentinel:assertion:{entity_id}:{key}:{event['source_feed']}:{observed_at.isoformat()}:{json.dumps(value, sort_keys=True, default=str)}")
+                rows.append((
+                    assertion_id,
+                    entity_id,
+                    key,
+                    json.dumps(value),
+                    event["source_feed"],
+                    observed_at,
+                    self._estimate_identity_confidence(event),
+                    self._estimate_source_trust_score(event),
+                    "active",
+                    json.dumps({"collector": self.FEED_NAME, "source_domain": event["source_domain"]}),
+                ))
+        return rows
 
     async def _register_source(self) -> None:
         async with self._db.acquire() as conn:
@@ -706,6 +765,17 @@ class BaseCollector(ABC):
                         last_seen = GREATEST(entity_identifiers.last_seen, EXCLUDED.last_seen),
                         metadata = entity_identifiers.metadata || EXCLUDED.metadata
                 """, identifier_rows)
+
+            assertion_rows = self._stable_assertion_rows_for_assets(current_state_events)
+            if assertion_rows:
+                await conn.executemany("""
+                    INSERT INTO entity_assertions (
+                        assertion_id, entity_id, attribute_key, asserted_value, source_feed,
+                        asserted_at, confidence, source_trust_score, resolution_status, metadata
+                    )
+                    VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb)
+                    ON CONFLICT (assertion_id) DO NOTHING
+                """, assertion_rows)
 
             if history_events:
                 await conn.executemany("""

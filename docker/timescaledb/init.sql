@@ -81,6 +81,32 @@ CREATE TABLE source_runs (
 CREATE INDEX idx_source_runs_feed_started
     ON source_runs (source_feed, started_at DESC);
 
+CREATE TABLE entity_assertions (
+    assertion_id        UUID            PRIMARY KEY,
+    entity_id           UUID            NOT NULL REFERENCES entities(entity_id),
+    attribute_key       TEXT            NOT NULL,
+    asserted_value      JSONB           NOT NULL,
+    source_feed         TEXT            NOT NULL,
+    asserted_at         TIMESTAMPTZ     NOT NULL,
+    confidence          DOUBLE PRECISION,
+    source_trust_score  DOUBLE PRECISION,
+    resolution_status   TEXT            NOT NULL DEFAULT 'active',
+    metadata            JSONB           DEFAULT '{}'::jsonb
+);
+
+SELECT create_hypertable(
+    'entity_assertions',
+    'asserted_at',
+    chunk_time_interval => INTERVAL '7 days',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX idx_entity_assertions_entity_time
+    ON entity_assertions (entity_id, asserted_at DESC);
+
+CREATE INDEX idx_entity_assertions_attr
+    ON entity_assertions (attribute_key, asserted_at DESC);
+
 -- ── Core track events table ───────────────────────────────────────
 -- Canonical historical track samples used for analyst replay/history.
 -- Linked back to the raw normalized observation that produced the sample.
