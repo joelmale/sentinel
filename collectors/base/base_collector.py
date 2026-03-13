@@ -221,6 +221,21 @@ class BaseCollector(ABC):
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS entity_identifiers (
+                id BIGSERIAL PRIMARY KEY,
+                entity_id UUID NOT NULL REFERENCES entities(entity_id),
+                id_type TEXT NOT NULL,
+                id_value TEXT NOT NULL,
+                source_feed TEXT NOT NULL DEFAULT '',
+                is_primary BOOLEAN DEFAULT FALSE,
+                confidence DOUBLE PRECISION DEFAULT 1.0,
+                first_seen TIMESTAMPTZ DEFAULT NOW(),
+                last_seen TIMESTAMPTZ DEFAULT NOW(),
+                metadata JSONB DEFAULT '{}'::jsonb,
+                UNIQUE (id_type, id_value, source_feed)
+            )
+            """,
             "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS entity_id UUID",
             "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS entity_id UUID",
             "ALTER TABLE disruption_events ADD COLUMN IF NOT EXISTS entity_id UUID",
@@ -278,6 +293,7 @@ class BaseCollector(ABC):
             END $$;
             """,
             "CREATE INDEX IF NOT EXISTS idx_entities_type_domain ON entities (entity_type, source_domain, updated_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_entity_identifiers_entity ON entity_identifiers (entity_id, last_seen DESC)",
             "CREATE INDEX IF NOT EXISTS idx_track_events_entity_ts ON track_events (entity_id, timestamp DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_states_entity ON asset_states (entity_id)",
             "CREATE INDEX IF NOT EXISTS idx_disruption_events_entity ON disruption_events (entity_id)",
@@ -318,6 +334,63 @@ class BaseCollector(ABC):
                 event.get("title") or event.get("callsign") or event["external_event_id"],
                 event.get("status") or "active",
                 json.dumps({"source_feed": event["source_feed"], "event_type": event["event_type"]}),
+            )
+        return list(rows.values())
+
+    def _identifier_type_for_domain(self, source_domain: str) -> str:
+        return {
+            "Air": "icao24",
+            "Maritime": "mmsi",
+            "Space": "norad_id",
+            "GPS": "cell_id",
+            "Infra": "entity_key",
+        }.get(source_domain, "track_id")
+
+    def _identifier_rows_for_assets(self, events: list[dict]) -> list[tuple[UUID, str, str, str, bool, float, datetime, datetime, str]]:
+        rows: dict[tuple[str, str, str], tuple[UUID, str, str, str, bool, float, datetime, datetime, str]] = {}
+        for event in events:
+            observed_at = event["timestamp"] if isinstance(event["timestamp"], datetime) else datetime.fromisoformat(str(event["timestamp"]).replace("Z", "+00:00"))
+            entity_id = self._asset_entity_id(event["source_domain"], str(event["track_id"]))
+            primary_id_type = self._identifier_type_for_domain(event["source_domain"])
+            rows[(primary_id_type, str(event["track_id"]), "")] = (
+                entity_id,
+                primary_id_type,
+                str(event["track_id"]),
+                "",
+                True,
+                1.0,
+                observed_at,
+                observed_at,
+                json.dumps({"source_domain": event["source_domain"]}),
+            )
+            rows[("feed_track_id", str(event["track_id"]), event["source_feed"])] = (
+                entity_id,
+                "feed_track_id",
+                str(event["track_id"]),
+                event["source_feed"],
+                False,
+                0.95,
+                observed_at,
+                observed_at,
+                json.dumps({"source_domain": event["source_domain"]}),
+            )
+        return list(rows.values())
+
+    def _identifier_rows_for_disruptions(self, events: list[dict]) -> list[tuple[UUID, str, str, str, bool, float, datetime, datetime, str]]:
+        rows: dict[tuple[str, str, str], tuple[UUID, str, str, str, bool, float, datetime, datetime, str]] = {}
+        for event in events:
+            observed_at = event["last_seen"] if isinstance(event["last_seen"], datetime) else datetime.fromisoformat(str(event["last_seen"]).replace("Z", "+00:00"))
+            entity_id = self._disruption_entity_id(event["source_feed"], event["external_event_id"])
+            rows[("external_event_id", event["external_event_id"], event["source_feed"])] = (
+                entity_id,
+                "external_event_id",
+                event["external_event_id"],
+                event["source_feed"],
+                True,
+                1.0,
+                observed_at,
+                observed_at,
+                json.dumps({"event_type": event["event_type"]}),
             )
         return list(rows.values())
 
@@ -436,6 +509,23 @@ class BaseCollector(ABC):
                         metadata = entities.metadata || EXCLUDED.metadata,
                         updated_at = NOW()
                 """, entity_rows)
+
+            identifier_rows = self._identifier_rows_for_assets(current_state_events) + self._identifier_rows_for_disruptions(disruption_events)
+            if identifier_rows:
+                await conn.executemany("""
+                    INSERT INTO entity_identifiers (
+                        entity_id, id_type, id_value, source_feed, is_primary,
+                        confidence, first_seen, last_seen, metadata
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                    ON CONFLICT (id_type, id_value, source_feed) DO UPDATE SET
+                        entity_id = EXCLUDED.entity_id,
+                        is_primary = EXCLUDED.is_primary,
+                        confidence = EXCLUDED.confidence,
+                        first_seen = LEAST(entity_identifiers.first_seen, EXCLUDED.first_seen),
+                        last_seen = GREATEST(entity_identifiers.last_seen, EXCLUDED.last_seen),
+                        metadata = entity_identifiers.metadata || EXCLUDED.metadata
+                """, identifier_rows)
 
             if history_events:
                 await conn.executemany("""

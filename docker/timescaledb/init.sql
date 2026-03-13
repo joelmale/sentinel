@@ -33,6 +33,23 @@ CREATE TABLE entities (
 CREATE INDEX idx_entities_type_domain
     ON entities (entity_type, source_domain, updated_at DESC);
 
+CREATE TABLE entity_identifiers (
+    id               BIGSERIAL       PRIMARY KEY,
+    entity_id        UUID            NOT NULL REFERENCES entities(entity_id),
+    id_type          TEXT            NOT NULL,
+    id_value         TEXT            NOT NULL,
+    source_feed      TEXT            NOT NULL DEFAULT '',
+    is_primary       BOOLEAN         DEFAULT FALSE,
+    confidence       DOUBLE PRECISION DEFAULT 1.0,
+    first_seen       TIMESTAMPTZ     DEFAULT NOW(),
+    last_seen        TIMESTAMPTZ     DEFAULT NOW(),
+    metadata         JSONB           DEFAULT '{}'::jsonb,
+    UNIQUE (id_type, id_value, source_feed)
+);
+
+CREATE INDEX idx_entity_identifiers_entity
+    ON entity_identifiers (entity_id, last_seen DESC);
+
 -- ── Core track events table ───────────────────────────────────────
 -- Every position report / state update from every domain lands here.
 -- This is a TimescaleDB hypertable partitioned by timestamp.
