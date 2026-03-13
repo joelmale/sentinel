@@ -119,3 +119,17 @@ jobs:
           build-args: |
             VCS_REF=${{ github.sha }}
             BUILD_TIME=${{ env.BUILD_TIME }}
+      - name: Connect to Tailnet
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Trigger Dockhand Redeploy
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # The runner now uses your Tailscale LXC as a gateway
+          curl -X POST "${{ secrets.DOCKHAND_WEBHOOK_URL }}" \
+               -H "Content-Type: application/json" \
+               -d '{"push_data": {"tag": "latest"}}'
