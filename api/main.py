@@ -11,11 +11,13 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
 from alert_evaluator import alert_evaluator_loop
 from db.connection import db_pool
+from perf import request_perf
 from redis_client import redis_pool
 from routers import alerts, annotations, disruptions, health, satellites, telemetry, tracks, ws
 from settings import Settings
@@ -57,6 +59,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def perf_timing_middleware(request: Request, call_next):
+    started = asyncio.get_running_loop().time()
+    response = await call_next(request)
+    duration_ms = (asyncio.get_running_loop().time() - started) * 1000
+    request_perf.record(request.url.path, request.method, response.status_code, duration_ms)
+    response.headers["X-Sentinel-Response-Time-Ms"] = f"{duration_ms:.2f}"
+    return response
 
 # ── Routers ───────────────────────────────────────────────────────
 app.include_router(health.router)

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { format } from 'date-fns'
+import { DragDots, PanelResizeHandles } from '@/components/FloatingPanelChrome'
 import { useDrag } from '@/hooks/useDrag'
+import { useResizePanel } from '@/hooks/useResizePanel'
 import { useMapStore } from '@/store/useMapStore'
 import type { DisruptionEvent, SourceDomain, TrackEventProperties } from '@/types/track'
 
@@ -69,41 +71,6 @@ function bboxAround(asset: TrackEventProperties, degrees: number): string | null
   return `${minLon},${minLat},${maxLon},${maxLat}`
 }
 
-function DragDots({ dragRef, isDragging }: { dragRef: React.Ref<HTMLDivElement>; isDragging: boolean }) {
-  return (
-    <div
-      ref={dragRef}
-      title="Drag to move panel"
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: '3px',
-        padding: '6px 8px',
-        cursor: isDragging ? 'grabbing' : 'grab',
-        flexShrink: 0,
-        borderRadius: 6,
-        background: 'transparent',
-        transition: 'background 0.15s',
-      }}
-      onMouseEnter={(e) => {
-        const handle = e.currentTarget as HTMLDivElement
-        handle.style.background = 'rgba(148,163,184,0.18)'
-      }}
-      onMouseLeave={(e) => {
-        const handle = e.currentTarget as HTMLDivElement
-        handle.style.background = 'transparent'
-      }}
-    >
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div
-          key={i}
-          style={{ width: 4, height: 4, borderRadius: '50%', background: '#64748b' }}
-        />
-      ))}
-    </div>
-  )
-}
-
 export function InvestigationPanel() {
   const {
     investigationContext,
@@ -121,6 +88,24 @@ export function InvestigationPanel() {
   } = useMapStore()
   const { offset, dragHandleRef, isDragging } = useDrag({
     storageKey: 'sentinel.investigationPanelPosition',
+  })
+  const {
+    width: panelWidth,
+    height: panelHeight,
+    rightHandleRef,
+    bottomHandleRef,
+    cornerHandleRef,
+    isDragging: isResizing,
+  } = useResizePanel({
+    defaultWidth: 340,
+    defaultHeight: 620,
+    minWidth: 300,
+    maxWidth: 680,
+    minHeight: 320,
+    maxHeight: Math.max(420, window.innerHeight - 110),
+    horizontalAnchor: 'right',
+    verticalAnchor: 'top',
+    storageKey: 'sentinel.investigationPanelSize',
   })
 
   const [nearbyDisruptions, setNearbyDisruptions] = useState<DisruptionEvent[]>([])
@@ -253,8 +238,8 @@ export function InvestigationPanel() {
         top: 88,
         right: assetCardOpen ? 352 : 12,
         transform: `translate(${offset.x}px, ${offset.y}px)`,
-        width: 340,
-        maxHeight: 'calc(100vh - 120px)',
+        width: panelWidth,
+        height: panelHeight,
         zIndex: 24,
         color: '#e2e8f0',
         background: 'rgba(10, 15, 30, 0.97)',
@@ -265,8 +250,16 @@ export function InvestigationPanel() {
         overflow: 'hidden',
         display: 'flex',
         flexDirection: 'column',
+        userSelect: isDragging || isResizing ? 'none' : undefined,
       }}
     >
+      <PanelResizeHandles
+        horizontalRef={rightHandleRef}
+        verticalRef={bottomHandleRef}
+        cornerRef={cornerHandleRef}
+        horizontalEdge="left"
+        verticalEdge="bottom"
+      />
       <div
         style={{
           display: 'flex',
@@ -293,7 +286,7 @@ export function InvestigationPanel() {
         </span>
       </div>
 
-      <div style={{ padding: '14px 14px 12px', display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
+      <div style={{ padding: '14px 14px 12px', display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto', minHeight: 0 }}>
         <div>
           <div style={{ fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#64748b', marginBottom: 4 }}>
             Trigger

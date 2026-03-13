@@ -9,6 +9,7 @@
  */
 
 import { useEffect, useRef, useCallback } from 'react'
+import { usePerfStore } from '@/store/usePerfStore'
 import type { WsMessage } from '@/types/track'
 
 interface UseLiveStreamOptions {
@@ -52,6 +53,7 @@ export function useLiveStream({
         return
       }
       console.log('[SENTINEL] WS connected')
+      usePerfStore.getState().recordWsOpen()
       openedRef.current = true
       attemptRef.current = 0
     }
@@ -61,6 +63,7 @@ export function useLiveStream({
       try {
         msg = JSON.parse(event.data) as WsMessage
       } catch (error) {
+        usePerfStore.getState().recordWsParseError()
         console.warn(
           '[SENTINEL] WS JSON parse failed',
           error,
@@ -68,6 +71,11 @@ export function useLiveStream({
         )
         return
       }
+
+      usePerfStore.getState().recordWsMessage(
+        typeof event.data === 'string' ? event.data.length : 0,
+        msg.type === 'track_events' ? msg.events.length : 0,
+      )
 
       try {
         onMessageRef.current(msg)
@@ -99,6 +107,8 @@ export function useLiveStream({
 
       const backoff = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attemptRef.current)
       attemptRef.current++
+      usePerfStore.getState().recordWsClose()
+      usePerfStore.getState().recordWsReconnect()
       console.log(`[SENTINEL] WS closed. Reconnecting in ${backoff}ms`)
       reconnectTimeoutRef.current = setTimeout(connect, backoff)
     }
@@ -117,6 +127,7 @@ export function useLiveStream({
           ws.onerror = null
           ws.onclose = null
         } else if (ws.readyState === WebSocket.OPEN) {
+          usePerfStore.getState().recordWsClose()
           ws.close(1000, 'component cleanup')
         }
       }

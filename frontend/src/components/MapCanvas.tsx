@@ -39,6 +39,7 @@ import type { MapViewState, Layer } from '@deck.gl/core'
 import MapLibreMap from 'react-map-gl/maplibre'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
+import { usePerfStore } from '@/store/usePerfStore'
 import { useMapStore } from '@/store/useMapStore'
 import { COCOM_GEOJSON_URL, COCOM_LABELS, getCocomColors } from '@/data/cocom'
 import { UNDERSEA_CABLES_GEOJSON_URL, UNDERSEA_CABLE_LANDING_POINTS_GEOJSON_URL } from '@/data/underseaCables'
@@ -71,11 +72,11 @@ const SIMPLE_MAP_STYLE = {
       type: 'raster' as const,
       source: 'osm',
       paint: {
-        'raster-saturation': -1,
-        'raster-contrast': 0.15,
-        'raster-brightness-min': 0.25,
-        'raster-brightness-max': 0.95,
-        'raster-opacity': 0.75,
+        'raster-saturation': -0.75,
+        'raster-contrast': 0.3,
+        'raster-brightness-min': 0.15,
+        'raster-brightness-max': 0.92,
+        'raster-opacity': 0.92,
       },
     },
   ],
@@ -83,7 +84,35 @@ const SIMPLE_MAP_STYLE = {
 
 // OSM tiles used when globe view is active (deck.gl TileLayer, not MapLibre)
 const GLOBE_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+const WORLD_BOUNDARIES_URL = 'https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json'
 const LANDING_POINT_INTERACTIVE_ZOOM = 4
+const OUTLINE_GRATICULE = {
+  type: 'FeatureCollection' as const,
+  features: [
+    ...Array.from({ length: 11 }, (_, index) => {
+      const lat = -75 + (index * 15)
+      return {
+        type: 'Feature' as const,
+        geometry: {
+          type: 'LineString' as const,
+          coordinates: Array.from({ length: 73 }, (_, step) => [-180 + (step * 5), lat]),
+        },
+        properties: { kind: 'parallel' },
+      }
+    }),
+    ...Array.from({ length: 24 }, (_, index) => {
+      const lon = -180 + (index * 15)
+      return {
+        type: 'Feature' as const,
+        geometry: {
+          type: 'LineString' as const,
+          coordinates: Array.from({ length: 37 }, (_, step) => [lon, -90 + (step * 5)]),
+        },
+        properties: { kind: 'meridian' },
+      }
+    }),
+  ],
+}
 const UNDERSEA_NETWORK_FOCUS_VIEW = {
   longitude: 18,
   latitude: 8,
@@ -165,7 +194,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     viewport,
     setViewport,
     layers,
-    simpleMap,
+    mapMode,
     showTrails,
     showCocom,
     showUnderseaCables,
@@ -301,8 +330,11 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     return ls.visibility === 'muted' ? ls.opacity * 0.25 : ls.opacity
   }, [layers])
 
-  const deckLayers = useMemo(() => {
+  const deckLayerBuild = useMemo(() => {
+    const buildStarted = performance.now()
     const ls: Layer<object>[] = []
+    let spaceAggregateCount = 0
+    let spaceBackgroundCount = 0
 
     // ── Globe base tiles (replaces MapLibre when globeView is active) ────────
     if (globeView) {
@@ -323,6 +355,45 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           })
         },
       }) as unknown as Layer<object>)
+    } else if (mapMode === 'outline') {
+      ls.push(new GeoJsonLayer({
+        id: 'outline-land',
+        data: WORLD_BOUNDARIES_URL,
+        stroked: true,
+        filled: true,
+        pickable: false,
+        lineWidthMinPixels: 1.2,
+        lineWidthMaxPixels: 2.5,
+        getLineColor: [148, 163, 184, 230],
+        getFillColor: [15, 23, 42, 45],
+        opacity: 0.95,
+      }))
+      ls.push(new GeoJsonLayer({
+        id: 'outline-graticule',
+        data: OUTLINE_GRATICULE,
+        stroked: true,
+        filled: false,
+        pickable: false,
+        lineWidthMinPixels: 1.2,
+        lineWidthMaxPixels: 2.2,
+        getLineColor: (feature: { properties?: { kind?: string } }) =>
+          feature.properties?.kind === 'parallel'
+            ? [71, 85, 105, 190]
+            : [51, 65, 85, 155],
+        opacity: 0.95,
+      }))
+    } else if (mapMode === 'simple') {
+      ls.push(new GeoJsonLayer({
+        id: 'simple-land-outline',
+        data: WORLD_BOUNDARIES_URL,
+        stroked: true,
+        filled: false,
+        pickable: false,
+        lineWidthMinPixels: 1,
+        lineWidthMaxPixels: 2,
+        getLineColor: [51, 65, 85, 165],
+        opacity: 0.85,
+      }))
     }
 
     // ── COCOM boundaries ────────────────────────────────────────
@@ -730,6 +801,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }
 
       const nonPriorityVisibleIndividuals = [...inlineBackgroundSpaceAssets, ...expandedSpaceAssets]
+      spaceAggregateCount = aggregateSpaceData.length
+      spaceBackgroundCount = nonPriorityVisibleIndividuals.length
       if (!spacePriorityOnly && nonPriorityVisibleIndividuals.length > 0) {
         ls.push(new TextLayer<TrackEventProperties>({
           id: 'space-background-icons',
@@ -921,7 +994,23 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }))
     }
 
-    return ls
+    const airCount = visibleAssets.filter((asset) => asset.source_domain === 'Air').length
+    const maritimeCount = visibleAssets.filter((asset) => asset.source_domain === 'Maritime').length
+    const deckBuildMs = performance.now() - buildStarted
+    return {
+      layers: ls,
+      stats: {
+        visibleAssets: visibleAssets.length,
+        visibleDisruptions: visibleDisruptions.length,
+        layerCount: ls.length,
+        deckBuildMs,
+        airCount,
+        maritimeCount,
+        spacePriorityCount: spacePriorityKeys.size,
+        spaceAggregateCount,
+        spaceBackgroundCount,
+      },
+    }
   }, [
     visibleAssets,
     visibleDisruptions,
@@ -945,10 +1034,15 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     showUnderseaCables,
     cocomFailed,
     globeView,
+    mapMode,
     declutterMode,
     searchMatchSet,
     viewport.zoom,
   ])
+
+  useEffect(() => {
+    usePerfStore.getState().recordMap(deckLayerBuild.stats)
+  }, [deckLayerBuild])
 
   useEffect(() => {
     function handleWindowError(event: ErrorEvent) {
@@ -1000,7 +1094,15 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
   const compassVisible = globeView || Math.abs(viewport.bearing) > 0.5 || Math.abs(viewport.pitch) > 0.5
 
   return (
-    <div className="relative w-full h-full" style={{ cursor: deckCursor }}>
+    <div
+      className="relative w-full h-full"
+      style={{
+        cursor: deckCursor,
+        background: !globeView && mapMode !== 'full' && mapMode !== 'simple'
+          ? 'radial-gradient(circle at top, rgba(30,41,59,0.92), rgba(2,6,23,1) 72%)'
+          : undefined,
+      }}
+    >
       {!rendererDisabled ? (
         <DeckGL
           views={globeView ? new GlobeView({ id: 'globe' }) : undefined}
@@ -1011,7 +1113,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           }
           getCursor={({ isDragging }) => (isDragging ? 'grabbing' : deckCursor)}
           controller={true}
-          layers={deckLayers}
+          layers={deckLayerBuild.layers}
           onError={(error) => {
             const message = String(error?.message ?? error ?? '')
             if (message.includes('cocom-fills') || message.includes(COCOM_GEOJSON_URL)) {
@@ -1039,10 +1141,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           getTooltip={() => null}
         >
           {/* MapLibre is only active in flat map modes — GlobeView uses TileLayer instead */}
-          {!globeView && (
+          {!globeView && mapMode !== 'outline' && mapMode !== 'none' && (
             <MapLibreMap
               cursor={deckCursor}
-              mapStyle={simpleMap ? SIMPLE_MAP_STYLE : MAP_STYLE}
+              mapStyle={mapMode === 'simple' ? SIMPLE_MAP_STYLE : MAP_STYLE}
               onLoad={(evt) => {
                 // Suppress "Image X could not be loaded" warnings for missing sprite
                 // images in the base map style (e.g. road-shield icons).
@@ -1060,10 +1162,12 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         </DeckGL>
       ) : (
         <div className="absolute inset-0">
-          <MapLibreMap
-            style={{ width: '100%', height: '100%' }}
-            mapStyle={simpleMap ? SIMPLE_MAP_STYLE : MAP_STYLE}
-          />
+          {mapMode !== 'outline' && mapMode !== 'none' && (
+            <MapLibreMap
+              style={{ width: '100%', height: '100%' }}
+              mapStyle={mapMode === 'simple' ? SIMPLE_MAP_STYLE : MAP_STYLE}
+            />
+          )}
         </div>
       )}
       <div

@@ -45,6 +45,8 @@ export interface UnderseaLandingPointSelection {
   lat: number
 }
 
+export type MapMode = 'full' | 'simple' | 'outline' | 'none'
+
 // ── Layer state ───────────────────────────────────────────────────
 // Three-state visibility — think of it like a monitor dimmer switch:
 //   active  = full brightness, in track list, in alerts (was: enabled=true)
@@ -174,12 +176,12 @@ interface MapStore {
   setAssetCardOpen: (open: boolean) => void
 
   // UI settings
-  simpleMap: boolean
+  mapMode: MapMode
   showTrails: boolean
   showCocom: boolean
   showUnderseaCables: boolean
   globeView: boolean
-  toggleSimpleMap: () => void
+  setMapMode: (mode: MapMode) => void
   toggleShowTrails: () => void
   toggleCocom: () => void
   toggleUnderseaCables: () => void
@@ -404,12 +406,12 @@ export const useMapStore = create<MapStore>()(
     setAssetCardOpen: (open) => set({ assetCardOpen: open }),
 
     // ── UI settings ────────────────────────────────────────────
-    simpleMap: false,
+    mapMode: 'full',
     showTrails: true,
     showCocom: false,
     showUnderseaCables: false,
     globeView: false,
-    toggleSimpleMap: () => set((s) => ({ simpleMap: !s.simpleMap })),
+    setMapMode: (mapMode) => set({ mapMode }),
     toggleShowTrails: () => set((s) => ({ showTrails: !s.showTrails })),
     toggleCocom: () => set((s) => ({ showCocom: !s.showCocom })),
     toggleUnderseaCables: () => set((s) => ({ showUnderseaCables: !s.showUnderseaCables })),

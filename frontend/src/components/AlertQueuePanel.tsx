@@ -20,7 +20,9 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { DragDots, PanelResizeHandles } from '@/components/FloatingPanelChrome'
 import { useDrag } from '@/hooks/useDrag'
+import { useResizePanel } from '@/hooks/useResizePanel'
 import { useMapStore } from '@/store/useMapStore'
 import type { AlertItem, AlertTriage } from '@/store/useMapStore'
 import type { SourceDomain } from '@/types/track'
@@ -199,41 +201,6 @@ function Tab({
   )
 }
 
-function DragDots({ dragRef, isDragging }: { dragRef: React.Ref<HTMLDivElement>; isDragging: boolean }) {
-  return (
-    <div
-      ref={dragRef}
-      title="Drag to move panel"
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: '3px',
-        padding: '6px 8px',
-        cursor: isDragging ? 'grabbing' : 'grab',
-        flexShrink: 0,
-        borderRadius: 6,
-        background: 'transparent',
-        transition: 'background 0.15s',
-      }}
-      onMouseEnter={(e) => {
-        const handle = e.currentTarget as HTMLDivElement
-        handle.style.background = 'rgba(148,163,184,0.18)'
-      }}
-      onMouseLeave={(e) => {
-        const handle = e.currentTarget as HTMLDivElement
-        handle.style.background = 'transparent'
-      }}
-    >
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div
-          key={i}
-          style={{ width: 4, height: 4, borderRadius: '50%', background: '#64748b' }}
-        />
-      ))}
-    </div>
-  )
-}
-
 // ── Main component ────────────────────────────────────────────────
 export function AlertQueuePanel() {
   const {
@@ -250,6 +217,24 @@ export function AlertQueuePanel() {
   } = useMapStore()
   const { offset, dragHandleRef, isDragging } = useDrag({
     storageKey: 'sentinel.alertQueuePosition',
+  })
+  const {
+    width: panelWidth,
+    height: panelHeight,
+    rightHandleRef,
+    bottomHandleRef,
+    cornerHandleRef,
+    isDragging: isResizing,
+  } = useResizePanel({
+    defaultWidth: 340,
+    defaultHeight: 500,
+    minWidth: 280,
+    maxWidth: 640,
+    minHeight: 260,
+    maxHeight: Math.max(360, window.innerHeight - 140),
+    horizontalAnchor: 'right',
+    verticalAnchor: 'bottom',
+    storageKey: 'sentinel.alertQueueSize',
   })
 
   const [open, setOpen] = useState(true)
@@ -401,7 +386,7 @@ export function AlertQueuePanel() {
     <div style={{
       position: 'fixed', bottom: 182, right: 12, zIndex: 25,
       transform: `translate(${offset.x}px, ${offset.y}px)`,
-      width: 340, maxHeight: 500,
+      width: panelWidth, height: panelHeight,
       background: 'rgba(10, 15, 30, 0.97)',
       border: '1px solid rgba(255,255,255,0.08)',
       borderRadius: 16,
@@ -409,7 +394,15 @@ export function AlertQueuePanel() {
       boxShadow: '0 20px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04)',
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden', color: 'white',
+      userSelect: isDragging || isResizing ? 'none' : undefined,
     }}>
+      <PanelResizeHandles
+        horizontalRef={rightHandleRef}
+        verticalRef={bottomHandleRef}
+        cornerRef={cornerHandleRef}
+        horizontalEdge="left"
+        verticalEdge="top"
+      />
 
       {/* ── Header ── */}
       <div style={{
@@ -491,7 +484,7 @@ export function AlertQueuePanel() {
       </div>
 
       {/* ── Alert list ── */}
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
         {filtered.length === 0 ? (
           <div style={{
             padding: '28px 16px', textAlign: 'center',

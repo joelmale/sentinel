@@ -21,10 +21,12 @@ import { UnderseaLandingPointCard } from '@/components/UnderseaLandingPointCard'
 import { AnnotationModal } from '@/components/AnnotationModal'
 import { AlertQueuePanel } from '@/components/AlertQueuePanel'
 import { InvestigationPanel } from '@/components/InvestigationPanel'
+import { PerformancePanel } from '@/components/PerformancePanel'
 import { SpaceWatchDashboard, type SpaceWatchDashboardPayload } from '@/components/SpaceWatchDashboard'
 import { DomainStatusDashboard, type DomainStatusDashboardPayload } from '@/components/DomainStatusDashboard'
 import { DisruptionDashboard, type DisruptionDashboardPayload } from '@/components/DisruptionDashboard'
 import { useLiveStream } from '@/hooks/useLiveStream'
+import { trackedFetchJson } from '@/lib/perf'
 import { useMapStore } from '@/store/useMapStore'
 import type { DisruptionEventResponse, TrackEventProperties, TrackFeatureCollection, WsMessage } from '@/types/track'
 
@@ -57,7 +59,7 @@ function SentinelApp() {
   const [domainDashboardOpen, setDomainDashboardOpen] = useState<'Air' | 'Maritime' | null>(null)
   const [disruptionDashboardOpen, setDisruptionDashboardOpen] = useState<'GPS' | 'Infra' | null>(null)
   const settingsRef = useRef<HTMLDivElement | null>(null)
-  const { simpleMap, toggleSimpleMap, showTrails, toggleShowTrails, globeView, toggleGlobeView } = useMapStore()
+  const { mapMode, setMapMode, showTrails, toggleShowTrails, globeView, toggleGlobeView } = useMapStore()
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000)
@@ -77,11 +79,7 @@ function SentinelApp() {
   const liveSnapshotQuery = useQuery({
     queryKey: ['live-assets'],
     queryFn: async (): Promise<TrackEventProperties[]> => {
-      const response = await fetch('/api/tracks/live')
-      if (!response.ok) {
-        throw new Error(`live snapshot failed: ${response.status}`)
-      }
-      const payload: TrackFeatureCollection = await response.json()
+      const payload = await trackedFetchJson<TrackFeatureCollection>('live-assets', '/api/tracks/live')
       return payload.features.map((feature) => ({
         ...feature.properties,
         lon: feature.geometry?.coordinates[0],
@@ -115,11 +113,7 @@ function SentinelApp() {
         t_end: playback.timeWindow.end.toISOString(),
         limit: '5000',
       })
-      const response = await fetch(`/api/tracks/history?${params.toString()}`)
-      if (!response.ok) {
-        throw new Error(`track history failed: ${response.status}`)
-      }
-      const payload: TrackFeatureCollection = await response.json()
+      const payload = await trackedFetchJson<TrackFeatureCollection>('track-history', `/api/tracks/history?${params.toString()}`)
       return payload.features
         .filter((feature) => Array.isArray(feature.geometry?.coordinates))
         .map((feature) => ({
@@ -156,11 +150,7 @@ function SentinelApp() {
         track_id: selectedTrackId!,
         duration: spaceTrackDuration,
       })
-      const response = await fetch(`/api/tracks/orbital?${params.toString()}`)
-      if (!response.ok) {
-        throw new Error(`orbital track failed: ${response.status}`)
-      }
-      const data = await response.json()
+      const data = await trackedFetchJson<{ points: Array<{ lon: number; lat: number; alt_km: number; timestamp: string }> }>('orbital-track', `/api/tracks/orbital?${params.toString()}`)
       return (data.points as Array<{ lon: number; lat: number; alt_km: number; timestamp: string }>)
         .map((p) => ({ ...p, timestamp: new Date(p.timestamp).getTime() }))
     },
@@ -171,11 +161,7 @@ function SentinelApp() {
     queryKey: ['space-watch-status'],
     enabled: spaceDashboardOpen,
     queryFn: async (): Promise<SpaceWatchDashboardPayload> => {
-      const response = await fetch('/api/satellites/watchlist/status')
-      if (!response.ok) {
-        throw new Error(`space watch status failed: ${response.status}`)
-      }
-      return response.json()
+      return trackedFetchJson<SpaceWatchDashboardPayload>('space-watch-status', '/api/satellites/watchlist/status')
     },
     refetchOnWindowFocus: false,
     staleTime: 30_000,
@@ -184,11 +170,7 @@ function SentinelApp() {
   const spaceWatchPriorityQuery = useQuery({
     queryKey: ['space-watch-priority'],
     queryFn: async (): Promise<SpaceWatchDashboardPayload> => {
-      const response = await fetch('/api/satellites/watchlist/status')
-      if (!response.ok) {
-        throw new Error(`space watch priority failed: ${response.status}`)
-      }
-      return response.json()
+      return trackedFetchJson<SpaceWatchDashboardPayload>('space-watch-priority', '/api/satellites/watchlist/status')
     },
     refetchOnWindowFocus: false,
     staleTime: 5 * 60_000,
@@ -200,14 +182,14 @@ function SentinelApp() {
     enabled: Boolean(domainDashboardOpen),
     queryFn: async (): Promise<DomainStatusDashboardPayload> => {
       const params = new URLSearchParams({ domain: domainDashboardOpen! })
-      let response = await fetch(`/api/telemetry/dashboard?${params.toString()}`)
-      if (response.status === 404) {
-        response = await fetch(`/api/tracks/domain-status?${params.toString()}`)
+      try {
+        return await trackedFetchJson<DomainStatusDashboardPayload>('domain-status', `/api/telemetry/dashboard?${params.toString()}`)
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.endsWith(': 404')) {
+          throw error
+        }
       }
-      if (!response.ok) {
-        throw new Error(`domain status failed: ${response.status}`)
-      }
-      return response.json()
+      return trackedFetchJson<DomainStatusDashboardPayload>('domain-status-fallback', `/api/tracks/domain-status?${params.toString()}`)
     },
     refetchOnWindowFocus: false,
     staleTime: 30_000,
@@ -217,14 +199,14 @@ function SentinelApp() {
     enabled: Boolean(disruptionDashboardOpen),
     queryFn: async (): Promise<DisruptionDashboardPayload> => {
       const params = new URLSearchParams({ domain: disruptionDashboardOpen!, hours: '72' })
-      let response = await fetch(`/api/telemetry/dashboard?${params.toString()}`)
-      if (response.status === 404) {
-        response = await fetch(`/api/disruptions/dashboard?${params.toString()}`)
+      try {
+        return await trackedFetchJson<DisruptionDashboardPayload>('disruption-dashboard', `/api/telemetry/dashboard?${params.toString()}`)
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.endsWith(': 404')) {
+          throw error
+        }
       }
-      if (!response.ok) {
-        throw new Error(`disruption dashboard failed: ${response.status}`)
-      }
-      return response.json()
+      return trackedFetchJson<DisruptionDashboardPayload>('disruption-dashboard-fallback', `/api/disruptions/dashboard?${params.toString()}`)
     },
     refetchOnWindowFocus: false,
     staleTime: 30_000,
@@ -254,11 +236,7 @@ function SentinelApp() {
         t_end: disruptionWindowEnd.toISOString(),
         limit: '5000',
       })
-      const response = await fetch(`/api/disruptions/events?${params.toString()}`)
-      if (!response.ok) {
-        throw new Error(`disruption events failed: ${response.status}`)
-      }
-      return response.json()
+      return trackedFetchJson<DisruptionEventResponse>('disruption-events', `/api/disruptions/events?${params.toString()}`)
     },
     refetchOnWindowFocus: false,
     refetchInterval: playback.mode === 'live' ? 60_000 : false,
@@ -468,15 +446,31 @@ function SentinelApp() {
                     <span>Globe view (3D)</span>
                     <input type="checkbox" checked={globeView} onChange={toggleGlobeView} />
                   </label>
-                  <label style={settingsRowStyle}>
-                    <span>Simple map</span>
-                    <input type="checkbox" checked={simpleMap} onChange={toggleSimpleMap} />
-                  </label>
+                  <div style={{ ...settingsRowStyle, alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
+                    <span>Map mode</span>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, width: '100%' }}>
+                      {([
+                        ['full', 'Full'],
+                        ['simple', 'Simple'],
+                        ['outline', 'Outline'],
+                        ['none', 'None'],
+                      ] as const).map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setMapMode(value)}
+                          style={mapModeButtonStyle(mapMode === value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <label style={settingsRowStyle}>
                     <span>Show trails</span>
                     <input type="checkbox" checked={showTrails} onChange={toggleShowTrails} />
                   </label>
-                  <div style={settingsHintStyle}>Globe view best shows satellite orbital paths. Simple map uses raster OSM tiles.</div>
+                  <div style={settingsHintStyle}>Globe view best shows orbital paths. Outline and None minimize tile and label overhead.</div>
                 </div>
               )}
             </div>
@@ -517,6 +511,7 @@ function SentinelApp() {
       {/* ── Alert queue panel (bottom-right investigation workbench) ── */}
       <AlertQueuePanel />
       <InvestigationPanel />
+      <PerformancePanel />
 
       <SpaceWatchDashboard
         open={spaceDashboardOpen}
@@ -622,6 +617,16 @@ const settingsHintStyle: React.CSSProperties = {
   lineHeight: 1.45,
   color: '#94a3b8',
 }
+
+const mapModeButtonStyle = (active: boolean): React.CSSProperties => ({
+  padding: '7px 8px',
+  borderRadius: '8px',
+  border: active ? '1px solid rgba(94,234,212,0.45)' : '1px solid rgba(148,163,184,0.22)',
+  background: active ? 'rgba(20,184,166,0.14)' : 'rgba(30,41,59,0.55)',
+  color: active ? '#ccfbf1' : '#cbd5e1',
+  fontSize: '11px',
+  cursor: 'pointer',
+})
 
 export default function App() {
   return (

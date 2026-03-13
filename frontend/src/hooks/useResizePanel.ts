@@ -23,6 +23,8 @@ interface UseResizePanelOptions {
   maxWidth?: number
   minHeight?: number
   maxHeight?: number
+  horizontalAnchor?: 'left' | 'right'
+  verticalAnchor?: 'top' | 'bottom'
   storageKey?: string
 }
 
@@ -38,6 +40,8 @@ export function useResizePanel({
   maxWidth = 800,
   minHeight = 200,
   maxHeight = 1200,
+  horizontalAnchor = 'left',
+  verticalAnchor = 'top',
   storageKey,
 }: UseResizePanelOptions): {
   width: number
@@ -96,7 +100,9 @@ export function useResizePanel({
       document.body.style.userSelect = 'none'
 
       const onMove = (ev: MouseEvent) => {
-        const newW = Math.max(minWidth, Math.min(maxWidth, startW + (ev.clientX - startX)))
+        const dx = ev.clientX - startX
+        const nextW = horizontalAnchor === 'left' ? startW + dx : startW - dx
+        const newW = Math.max(minWidth, Math.min(maxWidth, nextW))
         setWidth(newW)
         persist(newW, heightRef.current)
       }
@@ -113,7 +119,7 @@ export function useResizePanel({
 
     el.addEventListener('mousedown', onMouseDown)
     return () => el.removeEventListener('mousedown', onMouseDown)
-  }, [minWidth, maxWidth, persist])
+  }, [horizontalAnchor, minWidth, maxWidth, persist])
 
   // ── Bottom edge — height only ─────────────────────────────────────
   useEffect(() => {
@@ -129,7 +135,9 @@ export function useResizePanel({
       document.body.style.userSelect = 'none'
 
       const onMove = (ev: MouseEvent) => {
-        const newH = Math.max(minHeight, Math.min(maxHeight, startH + (ev.clientY - startY)))
+        const dy = ev.clientY - startY
+        const nextH = verticalAnchor === 'top' ? startH + dy : startH - dy
+        const newH = Math.max(minHeight, Math.min(maxHeight, nextH))
         setHeight(newH)
         persist(widthRef.current, newH)
       }
@@ -146,7 +154,7 @@ export function useResizePanel({
 
     el.addEventListener('mousedown', onMouseDown)
     return () => el.removeEventListener('mousedown', onMouseDown)
-  }, [minHeight, maxHeight, persist])
+  }, [verticalAnchor, minHeight, maxHeight, persist])
 
   // ── Bottom-right corner — width + height simultaneously ───────────
   useEffect(() => {
@@ -164,8 +172,12 @@ export function useResizePanel({
       document.body.style.userSelect = 'none'
 
       const onMove = (ev: MouseEvent) => {
-        const newW = Math.max(minWidth,  Math.min(maxWidth,  startW + (ev.clientX - startX)))
-        const newH = Math.max(minHeight, Math.min(maxHeight, startH + (ev.clientY - startY)))
+        const dx = ev.clientX - startX
+        const dy = ev.clientY - startY
+        const nextW = horizontalAnchor === 'left' ? startW + dx : startW - dx
+        const nextH = verticalAnchor === 'top' ? startH + dy : startH - dy
+        const newW = Math.max(minWidth, Math.min(maxWidth, nextW))
+        const newH = Math.max(minHeight, Math.min(maxHeight, nextH))
         setWidth(newW)
         setHeight(newH)
         persist(newW, newH)
@@ -183,7 +195,7 @@ export function useResizePanel({
 
     el.addEventListener('mousedown', onMouseDown)
     return () => el.removeEventListener('mousedown', onMouseDown)
-  }, [minWidth, maxWidth, minHeight, maxHeight, persist])
+  }, [horizontalAnchor, verticalAnchor, minWidth, maxWidth, minHeight, maxHeight, persist])
 
   return { width, height, rightHandleRef, bottomHandleRef, cornerHandleRef, isDragging }
 }

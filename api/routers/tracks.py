@@ -50,6 +50,27 @@ def _sanitize_json_value(value: Any) -> Any:
     return value
 
 
+def _live_metadata_subset(domain: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    safe = _sanitize_json_value(metadata)
+    if not isinstance(safe, dict):
+        return {}
+
+    common_keys = set()
+    if domain == "Space":
+        common_keys = {
+            "object_type",
+            "orbit_class",
+            "orbital_period_min",
+            "orbital_period",
+            "inclination_deg",
+            "inclination",
+            "country_code",
+            "norad_id",
+        }
+
+    return {key: safe[key] for key in common_keys if key in safe}
+
+
 @router.get("/tracks/domain-status", summary="Operational status summary for a domain")
 async def get_domain_status(
     domain: SourceDomain = Query(..., description="Domain to summarize"),
@@ -428,18 +449,70 @@ async def get_live_assets(
             "geometry": geometry,
             "properties": {
                 "source_domain": row["source_domain"],
+                "source_feed": row["source_feed"],
                 "track_id": row["track_id"],
                 "callsign": row["callsign"],
                 "altitude_m": _sanitize_json_value(row["altitude_m"]),
                 "heading_deg": _sanitize_json_value(row["heading_deg"]),
                 "speed_mps": _sanitize_json_value(row["speed_mps"]),
+                "timestamp": last_seen.isoformat() if last_seen else None,
                 "last_seen": last_seen.isoformat() if last_seen else None,
                 "classification": row["classification"],
-                **_sanitize_json_value(row["metadata"] or {}),
+                **_live_metadata_subset(row["source_domain"], row["metadata"] or {}),
             },
         })
 
     return {"type": "FeatureCollection", "features": features}
+
+
+@router.get("/tracks/detail", summary="Full current-state detail for a single asset")
+async def get_asset_detail(
+    domain: SourceDomain = Query(..., description="Asset domain"),
+    track_id: str = Query(..., max_length=128, description="Track identifier"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    sql = text("""
+        SELECT
+            source_domain, source_feed, track_id, callsign,
+            ST_X(position) AS lon, ST_Y(position) AS lat,
+            altitude_m, heading_deg, speed_mps, last_seen,
+            metadata, classification
+        FROM asset_states
+        WHERE source_domain = :domain
+          AND track_id = :track_id
+        ORDER BY last_seen DESC
+        LIMIT 1
+    """)
+    result = await db.execute(sql, {"domain": domain.value, "track_id": track_id})
+    row = result.mappings().first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    lon = row["lon"]
+    lat = row["lat"]
+    last_seen = _ensure_tz(row["last_seen"])
+    geometry = None
+    if isinstance(lon, (int, float)) and isinstance(lat, (int, float)) and math.isfinite(lon) and math.isfinite(lat):
+        geometry = {"type": "Point", "coordinates": [lon, lat]}
+
+    return {
+        "type": "Feature",
+        "geometry": geometry,
+        "properties": {
+            "source_domain": row["source_domain"],
+            "source_feed": row["source_feed"],
+            "track_id": row["track_id"],
+            "callsign": row["callsign"],
+            "altitude_m": _sanitize_json_value(row["altitude_m"]),
+            "heading_deg": _sanitize_json_value(row["heading_deg"]),
+            "speed_mps": _sanitize_json_value(row["speed_mps"]),
+            "timestamp": last_seen.isoformat() if last_seen else None,
+            "last_seen": last_seen.isoformat() if last_seen else None,
+            "classification": row["classification"],
+            **_sanitize_json_value(row["metadata"] or {}),
+        },
+    }
 
 
 @router.get("/tracks/activity", summary="Bucketed track activity density by domain")

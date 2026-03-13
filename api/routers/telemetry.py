@@ -7,10 +7,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.connection import get_db
 from models.track_event import SourceDomain
+from perf import request_perf
 from routers.disruptions import get_disruption_dashboard
 from routers.tracks import get_domain_status
 
 router = APIRouter(prefix="/telemetry", tags=["Telemetry"])
+
+
+@router.get("/performance", summary="In-memory API request timing snapshot")
+async def get_performance_snapshot() -> dict[str, Any]:
+    return request_perf.snapshot()
 
 
 @router.get("/dashboard", summary="Unified telemetry dashboard payload")
