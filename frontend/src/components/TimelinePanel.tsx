@@ -269,6 +269,9 @@ if (typeof document !== 'undefined' && !document.getElementById('sentinel-scrubb
 export function TimelinePanel() {
   const {
     playback,
+    pendingAlerts,
+    investigationContext,
+    layers,
     setPlaybackMode, setCurrentTime, setTimeWindow, setSpeedMultiplier, tickPlayback,
   } = useMapStore()
   const { uiViewportAssets } = useLiveDataStore()
@@ -308,6 +311,30 @@ export function TimelinePanel() {
     }
     return counts
   }, [uiViewportAssets])
+
+  const windowAlerts = useMemo(() => {
+    const startMs = playback.timeWindow.start.getTime()
+    const endMs = playback.timeWindow.end.getTime()
+    if (endMs <= startMs) return []
+
+    return pendingAlerts
+      .filter((alert) => {
+        if (layers[alert.domain]?.visibility === 'hidden') return false
+        const ts = new Date(alert.triggeredAt).getTime()
+        return ts >= startMs && ts <= endMs
+      })
+      .sort((a, b) => new Date(a.triggeredAt).getTime() - new Date(b.triggeredAt).getTime())
+      .map((alert) => {
+        const timestampMs = new Date(alert.triggeredAt).getTime()
+        const pct = ((timestampMs - startMs) / (endMs - startMs)) * 100
+        return {
+          ...alert,
+          timestampMs,
+          pct: Math.max(0, Math.min(100, pct)),
+          isActive: alert.alertId === investigationContext?.alertId,
+        }
+      })
+  }, [pendingAlerts, investigationContext, layers, playback.timeWindow.end, playback.timeWindow.start])
 
   function enterReplay(presetMs?: number) {
     const end   = new Date()
@@ -484,6 +511,28 @@ export function TimelinePanel() {
           <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
             <div style={{ position:'relative', padding:'4px 0' }}>
               <div style={{ position:'absolute', left:0, right:0, top:'50%', height:4, borderRadius:4, marginTop:-2, background:scrubBg, pointerEvents:'none' }} />
+              {windowAlerts.map((alert) => (
+                <div
+                  key={alert.alertId}
+                  title={`${alert.domain} · ${alert.ruleName ?? alert.ruleId} · ${fmtUtc(new Date(alert.triggeredAt))}`}
+                  style={{
+                    position: 'absolute',
+                    left: `calc(${alert.pct}% - 5px)`,
+                    top: '50%',
+                    width: alert.isActive ? 10 : 8,
+                    height: alert.isActive ? 10 : 8,
+                    marginTop: alert.isActive ? -5 : -4,
+                    borderRadius: 999,
+                    background: DOMAIN_COLORS[alert.domain],
+                    border: alert.isActive ? '2px solid rgba(248,250,252,0.95)' : '1px solid rgba(15,23,42,0.85)',
+                    boxShadow: alert.isActive
+                      ? `0 0 0 3px ${DOMAIN_COLORS[alert.domain]}33`
+                      : `0 0 0 2px ${DOMAIN_COLORS[alert.domain]}1F`,
+                    pointerEvents: 'none',
+                    zIndex: alert.isActive ? 2 : 1,
+                  }}
+                />
+              ))}
               <input type="range" className="s-scrubber" min={0} max={1} step={0.0001} value={scrubPct}
                 onChange={e => { const pct=parseFloat(e.target.value); setCurrentTime(new Date(playback.timeWindow.start.getTime()+pct*windowMs)) }} />
             </div>
@@ -495,6 +544,40 @@ export function TimelinePanel() {
                 {format(playback.timeWindow.end,'HH:mm dd MMM')}
               </span>
             </div>
+            {windowAlerts.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minHeight: 16 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: '#475569', textTransform: 'uppercase' }}>
+                  Alerts
+                </span>
+                {windowAlerts.slice(0, 5).map((alert) => (
+                  <span
+                    key={alert.alertId}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      fontSize: 10,
+                      color: alert.isActive ? '#e2e8f0' : '#94a3b8',
+                    }}
+                    title={`${alert.domain} · ${alert.ruleName ?? alert.ruleId}`}
+                  >
+                    <span
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: 999,
+                        background: DOMAIN_COLORS[alert.domain],
+                        boxShadow: alert.isActive ? `0 0 0 2px ${DOMAIN_COLORS[alert.domain]}33` : undefined,
+                      }}
+                    />
+                    {alert.ruleName ?? alert.ruleId}
+                  </span>
+                ))}
+                {windowAlerts.length > 5 && (
+                  <span style={{ fontSize: 10, color: '#64748b' }}>+{windowAlerts.length - 5} more</span>
+                )}
+              </div>
+            )}
           </div>
 
           {/* ROW 3: Transport + speed + back to live */}
