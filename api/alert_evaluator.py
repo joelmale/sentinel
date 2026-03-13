@@ -1,7 +1,7 @@
 """
 Alert Evaluator — background task that runs every 30 seconds.
 
-Queries asset_states against active alert_rules and fires alert_events.
+Queries asset_current_state against active alert_rules and fires alert_events.
 Publishes alerts to the Redis Stream for WebSocket delivery to browsers.
 
 Rule evaluation logic:
@@ -42,7 +42,7 @@ async def _evaluate_once(pool: asyncpg.Pool) -> None:
             classification = conditions.get("classification")
 
             # Query matching assets
-            query = "SELECT track_id, classification, lon, lat, last_seen FROM asset_states WHERE source_domain = $1"
+            query = "SELECT track_id, classification, ST_X(position) AS lon, ST_Y(position) AS lat, last_seen FROM asset_current_state WHERE source_domain = $1"
             args = [domain]
             p = 2
 

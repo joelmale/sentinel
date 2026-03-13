@@ -876,7 +876,7 @@ class SpaceCollector(BaseCollector):
                 rows = await conn.fetch(
                     """
                     SELECT track_id, last_seen
-                    FROM asset_states
+                    FROM asset_current_state
                     WHERE source_domain = 'Space'
                       AND track_id = ANY($1::text[])
                     """,

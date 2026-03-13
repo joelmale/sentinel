@@ -341,14 +341,14 @@ async def get_domain_status(
 
     asset_sql = text("""
         SELECT
-            winning_source_feed AS source_feed,
+            source_feed,
             track_id,
             callsign,
             altitude_m,
             speed_mps,
             last_seen,
             classification
-        FROM asset_current_state
+        FROM asset_source_states
         WHERE source_domain = :domain
         ORDER BY last_seen DESC
     """)
@@ -387,7 +387,7 @@ async def get_domain_status(
         asset_result = await db.execute(asset_sql, {"domain": domain.value})
         assets = list(asset_result.mappings().all())
     except Exception:
-        logger.exception("[tracks.domain-status] asset_states query failed for %s", domain.value)
+        logger.exception("[tracks.domain-status] asset_source_states query failed for %s", domain.value)
 
     try:
         event_result = await db.execute(
@@ -843,6 +843,53 @@ async def get_asset_detail(
     if not row:
         raise HTTPException(status_code=404, detail="Asset not found")
 
+    source_state_sql = text("""
+        SELECT
+            source_feed,
+            track_id,
+            callsign,
+            ST_X(position) AS lon,
+            ST_Y(position) AS lat,
+            altitude_m,
+            heading_deg,
+            speed_mps,
+            first_seen,
+            last_seen,
+            source_trust_score,
+            identity_confidence,
+            state_confidence,
+            winning_event_id,
+            provenance,
+            metadata,
+            classification
+        FROM asset_source_states
+        WHERE entity_id = :entity_id::uuid
+        ORDER BY last_seen DESC
+    """)
+    source_result = await db.execute(source_state_sql, {"entity_id": row["entity_id"]})
+    source_states = []
+    for source_row in source_result.mappings().all():
+        source_last_seen = _ensure_tz(source_row["last_seen"])
+        source_states.append({
+            "source_feed": source_row["source_feed"],
+            "track_id": source_row["track_id"],
+            "callsign": source_row["callsign"],
+            "lon": _sanitize_json_value(source_row["lon"]),
+            "lat": _sanitize_json_value(source_row["lat"]),
+            "altitude_m": _sanitize_json_value(source_row["altitude_m"]),
+            "heading_deg": _sanitize_json_value(source_row["heading_deg"]),
+            "speed_mps": _sanitize_json_value(source_row["speed_mps"]),
+            "first_seen": _ensure_tz(source_row["first_seen"]).isoformat() if source_row.get("first_seen") else None,
+            "last_seen": source_last_seen.isoformat() if source_last_seen else None,
+            "source_trust_score": _sanitize_json_value(source_row.get("source_trust_score")),
+            "identity_confidence": _sanitize_json_value(source_row.get("identity_confidence")),
+            "state_confidence": _sanitize_json_value(source_row.get("state_confidence")),
+            "winning_event_id": str(source_row["winning_event_id"]) if source_row.get("winning_event_id") else None,
+            "classification": source_row["classification"],
+            "provenance": _sanitize_json_value(source_row.get("provenance") or {}),
+            "metadata": _sanitize_json_value(source_row["metadata"] or {}),
+        })
+
     lon = row["lon"]
     lat = row["lat"]
     last_seen = _ensure_tz(row["last_seen"])
@@ -871,6 +918,7 @@ async def get_asset_detail(
             "state_confidence": _sanitize_json_value(row.get("state_confidence")),
             "winning_event_id": str(row["winning_event_id"]) if row.get("winning_event_id") else None,
             "provenance": _sanitize_json_value(row.get("provenance") or {}),
+            "source_states": source_states,
             **_sanitize_json_value(row["metadata"] or {}),
         },
     }

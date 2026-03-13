@@ -301,9 +301,43 @@ CREATE INDEX idx_asset_current_state_position
 CREATE INDEX idx_asset_current_state_domain
     ON asset_current_state (source_domain, last_seen DESC);
 
--- ── Current asset state cache ─────────────────────────────────────
--- Feed-scoped latest state cache. This preserves the latest report as
--- seen from a particular feed-local identity before fusion.
+-- ── Feed-scoped latest source state cache ────────────────────────
+CREATE TABLE asset_source_states (
+    id                 BIGSERIAL       PRIMARY KEY,
+    entity_id          UUID            REFERENCES entities(entity_id),
+    source_domain      source_domain   NOT NULL,
+    source_feed        TEXT            NOT NULL,
+    track_id           TEXT            NOT NULL,
+    callsign           TEXT,
+    position           GEOMETRY(Point, 4326),
+    altitude_m         DOUBLE PRECISION,
+    heading_deg        DOUBLE PRECISION,
+    speed_mps          DOUBLE PRECISION,
+    first_seen         TIMESTAMPTZ,
+    last_seen          TIMESTAMPTZ     NOT NULL,
+    source_trust_score DOUBLE PRECISION,
+    identity_confidence DOUBLE PRECISION,
+    state_confidence   DOUBLE PRECISION,
+    winning_event_id   UUID,
+    provenance         JSONB           DEFAULT '{}'::jsonb,
+    metadata           JSONB           DEFAULT '{}'::jsonb,
+    classification     TEXT,
+    UNIQUE (source_domain, source_feed, track_id)
+);
+
+CREATE INDEX idx_asset_source_states_position
+    ON asset_source_states USING GIST (position);
+
+CREATE INDEX idx_asset_source_states_domain
+    ON asset_source_states (source_domain, source_feed, last_seen DESC);
+
+CREATE INDEX idx_asset_source_states_entity
+    ON asset_source_states (entity_id, last_seen DESC);
+
+-- ── Legacy current asset state cache ─────────────────────────────
+-- Retained for compatibility during migration. New code should use
+-- asset_current_state for fused state and asset_source_states for
+-- feed-scoped latest source state.
 CREATE TABLE asset_states (
     id              BIGSERIAL       PRIMARY KEY,
     entity_id       UUID            REFERENCES entities(entity_id),

@@ -324,7 +324,7 @@ class GPSJamCollector(BaseCollector):
                     SELECT
                         (
                             SELECT COUNT(*)
-                            FROM asset_states, cell
+                            FROM asset_current_state, cell
                             WHERE source_domain = 'Air'
                               AND last_seen >= NOW() - INTERVAL '20 minutes'
                               AND position IS NOT NULL
