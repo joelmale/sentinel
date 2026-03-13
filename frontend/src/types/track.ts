@@ -86,6 +86,7 @@ export interface LiveSummaryResponse {
   generated_at: string
   total: number
   domains: Record<SourceDomain, number>
+  domain_windows: Record<SourceDomain, string>
   stale_total: number
   stale_domains: Record<SourceDomain, number>
 }

@@ -39,6 +39,15 @@ LIVE_FRESHNESS_WINDOWS: dict[SourceDomain, timedelta] = {
 }
 
 
+def _format_window_label(window: timedelta) -> str:
+    minutes = int(window.total_seconds() // 60)
+    if minutes % (24 * 60) == 0:
+        return f"{minutes // (24 * 60)}d"
+    if minutes % 60 == 0:
+        return f"{minutes // 60}h"
+    return f"{minutes}m"
+
+
 def _ensure_tz(dt: datetime | None) -> datetime | None:
     """Guard against timezone-naive datetimes from some asyncpg configurations."""
     if dt is None:
@@ -546,31 +555,47 @@ async def get_live_assets(
     freshness_condition, freshness_params = _live_freshness_condition(now=now)
 
     if scope == "summary" or (scope == "detail" and domain is None and bbox is None):
-        summary_sql = text("""
+        unique_sql = text("""
+            SELECT
+                COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Air' AND timestamp >= :fresh_air_cutoff) AS air_unique_tracks,
+                COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Maritime' AND timestamp >= :fresh_maritime_cutoff) AS maritime_unique_tracks,
+                COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Space' AND timestamp >= :fresh_space_cutoff) AS space_unique_tracks,
+                COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'GPS' AND timestamp >= :fresh_gps_cutoff) AS gps_unique_tracks,
+                COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Infra' AND timestamp >= :fresh_infra_cutoff) AS infra_unique_tracks
+            FROM track_events
+            WHERE timestamp >= :summary_min_cutoff
+        """)
+        stale_sql = text("""
             SELECT
                 source_domain,
-                COUNT(*) FILTER (WHERE """ + freshness_condition + """) AS live_asset_count,
                 COUNT(*) FILTER (WHERE NOT """ + freshness_condition + """) AS stale_asset_count
             FROM asset_states
             GROUP BY source_domain
         """)
-        result = await db.execute(summary_sql, freshness_params)
-        rows = result.mappings().all()
+        min_cutoff = min(freshness_params.values())
+        unique_result = await db.execute(unique_sql, {**freshness_params, "summary_min_cutoff": min_cutoff})
+        stale_result = await db.execute(stale_sql, freshness_params)
+        unique_row = unique_result.mappings().first() or {}
+        stale_rows = stale_result.mappings().all()
         domains = {d.value: 0 for d in SourceDomain}
         stale_domains = {d.value: 0 for d in SourceDomain}
-        total = 0
+        domain_windows = {d.value: _format_window_label(LIVE_FRESHNESS_WINDOWS[d]) for d in SourceDomain}
+        domains["Air"] = int(unique_row.get("air_unique_tracks") or 0)
+        domains["Maritime"] = int(unique_row.get("maritime_unique_tracks") or 0)
+        domains["Space"] = int(unique_row.get("space_unique_tracks") or 0)
+        domains["GPS"] = int(unique_row.get("gps_unique_tracks") or 0)
+        domains["Infra"] = int(unique_row.get("infra_unique_tracks") or 0)
+        total = sum(domains.values())
         stale_total = 0
-        for row in rows:
-            live_count = int(row["live_asset_count"] or 0)
+        for row in stale_rows:
             stale_count = int(row["stale_asset_count"] or 0)
-            domains[row["source_domain"]] = live_count
             stale_domains[row["source_domain"]] = stale_count
-            total += live_count
             stale_total += stale_count
         return {
             "generated_at": now.isoformat(),
             "total": total,
             "domains": domains,
+            "domain_windows": domain_windows,
             "stale_total": stale_total,
             "stale_domains": stale_domains,
         }

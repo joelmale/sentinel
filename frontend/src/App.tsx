@@ -552,6 +552,13 @@ function SentinelApp() {
     GPS: 0,
     Infra: 0,
   }
+  const domainWindows = uiGlobalSummary?.domain_windows ?? globalSummary?.domain_windows ?? {
+    Air: '30m',
+    Maritime: '12h',
+    Space: '24h',
+    GPS: '20m',
+    Infra: '24h',
+  }
 
   const totalTracked = uiGlobalSummary?.total ?? globalSummary?.total ?? 0
   const staleTracked = uiGlobalSummary?.stale_total ?? globalSummary?.stale_total ?? 0
@@ -620,7 +627,7 @@ function SentinelApp() {
             <div style={headerCardStyle}>
               <span style={headerLabelStyle}>Tracked</span>
               <span style={headerValueStyle}>{totalTracked.toLocaleString()}</span>
-              <span style={headerMetaStyle}>{staleTracked > 0 ? `Fresh live · ${staleTracked.toLocaleString()} stale hidden` : 'Fresh live assets'}</span>
+              <span style={headerMetaStyle}>{staleTracked > 0 ? `Unique seen in live windows · ${staleTracked.toLocaleString()} stale hidden` : 'Unique seen in live windows'}</span>
             </div>
             {statItems.map(({ icon, key, color }) => (
               <div
@@ -661,7 +668,7 @@ function SentinelApp() {
                   <span style={{ ...headerValueStyle, color }}>{(counts[key] ?? 0).toLocaleString()}</span>
                 </div>
                 <span style={headerMetaStyle}>
-                  {key === 'GPS' ? 'Interference' : 'Tracks'}
+                  {key === 'GPS' ? `Unique cells · ${domainWindows[key]}` : `Unique tracks · ${domainWindows[key]}`}
                   {(staleCounts[key] ?? 0) > 0 ? ` · ${(staleCounts[key] ?? 0).toLocaleString()} stale` : ''}
                 </span>
               </div>
