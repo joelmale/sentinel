@@ -11,7 +11,7 @@ gateway sits at the whiteboard and relays each new headline to all
 the journalists (browser sessions) watching it.
 """
 
-import redis.asyncio as aioredis
+import redis.asyncio as aioredis  # type: ignore[import]
 
 from settings import Settings
 
@@ -53,4 +53,6 @@ redis_pool = RedisPool()
 
 # FastAPI dependency
 async def get_redis() -> aioredis.Redis:
+    if redis_pool.client is None:
+        raise RuntimeError("Redis client not initialized")
     return redis_pool.client

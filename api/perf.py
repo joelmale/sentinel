@@ -2,7 +2,25 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Any
+from typing import Any, TypedDict
+
+
+class RecentRequestEntry(TypedDict):
+    path: str
+    method: str
+    status_code: int
+    duration_ms: float
+    ts: float
+
+
+class RoutePerfEntry(TypedDict):
+    path: str
+    count: int
+    errors: int
+    avg_ms: float
+    max_ms: float
+    last_ms: float
+    last_status: int
 
 
 @dataclass
@@ -21,7 +39,7 @@ class RequestPerfRecorder:
     max_samples: int = 200
     started_at: float = field(default_factory=time.time)
     routes: dict[str, RoutePerfStats] = field(default_factory=dict)
-    recent: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=200))
+    recent: deque[RecentRequestEntry] = field(default_factory=lambda: deque(maxlen=200))
     _lock: Lock = field(default_factory=Lock)
 
     def record(self, path: str, method: str, status_code: int, duration_ms: float) -> None:
@@ -44,25 +62,22 @@ class RequestPerfRecorder:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            routes = sorted(
-                (
-                    {
-                        "path": route.path,
-                        "count": route.count,
-                        "errors": route.errors,
-                        "avg_ms": round(route.avg_ms, 2),
-                        "max_ms": round(route.max_ms, 2),
-                        "last_ms": round(route.last_ms, 2),
-                        "last_status": route.last_status,
-                    }
-                    for route in self.routes.values()
-                ),
-                key=lambda item: item["avg_ms"],
-                reverse=True,
-            )
+            route_entries: list[RoutePerfEntry] = [
+                {
+                    "path": route.path,
+                    "count": route.count,
+                    "errors": route.errors,
+                    "avg_ms": round(route.avg_ms, 2),
+                    "max_ms": round(route.max_ms, 2),
+                    "last_ms": round(route.last_ms, 2),
+                    "last_status": route.last_status,
+                }
+                for route in self.routes.values()
+            ]
+            route_entries.sort(key=lambda item: item["avg_ms"], reverse=True)
             return {
                 "started_at": self.started_at,
-                "routes": routes,
+                "routes": route_entries,
                 "recent": list(self.recent),
             }
 

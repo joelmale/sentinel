@@ -53,12 +53,12 @@ app = FastAPI(
 
 # CORS — restrict in production to your actual frontend origin
 app.add_middleware(
-    CORSMiddleware,
+    CORSMiddleware,  # type: ignore[arg-type]
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
+)  # type: ignore[call-arg]
 
 
 @app.middleware("http")

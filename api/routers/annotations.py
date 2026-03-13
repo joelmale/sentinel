@@ -103,6 +103,7 @@ async def delete_annotation(
         {"id": str(annotation_id)},
     )
     await db.commit()
-    if not result.rowcount:
+    row = result.first()
+    if row is None:
         raise HTTPException(status_code=404, detail="Annotation not found")
     return {"status": "deleted"}
