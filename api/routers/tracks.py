@@ -315,6 +315,12 @@ def _serialize_live_row(row: Any) -> dict[str, Any]:
             "timestamp": last_seen.isoformat() if last_seen else None,
             "last_seen": last_seen.isoformat() if last_seen else None,
             "classification": row["classification"],
+            "first_seen": _ensure_tz(row["first_seen"]).isoformat() if row.get("first_seen") else None,
+            "source_trust_score": _sanitize_json_value(row.get("source_trust_score")),
+            "identity_confidence": _sanitize_json_value(row.get("identity_confidence")),
+            "state_confidence": _sanitize_json_value(row.get("state_confidence")),
+            "winning_event_id": str(row["winning_event_id"]) if row.get("winning_event_id") else None,
+            "provenance": _sanitize_json_value(row.get("provenance") or {}),
             **_live_metadata_subset(row["source_domain"], row["metadata"] or {}),
         },
     }
@@ -739,7 +745,8 @@ async def get_live_assets(
             source_domain, source_feed, track_id, callsign,
             ST_X(position) AS lon, ST_Y(position) AS lat,
             altitude_m, heading_deg, speed_mps, last_seen,
-            metadata, classification
+            first_seen, source_trust_score, identity_confidence, state_confidence,
+            winning_event_id, provenance, metadata, classification
         FROM asset_states
         WHERE {where_clause}
         ORDER BY last_seen DESC
@@ -857,6 +864,12 @@ async def get_asset_detail(
             "timestamp": last_seen.isoformat() if last_seen else None,
             "last_seen": last_seen.isoformat() if last_seen else None,
             "classification": row["classification"],
+            "first_seen": _ensure_tz(row["first_seen"]).isoformat() if row.get("first_seen") else None,
+            "source_trust_score": _sanitize_json_value(row.get("source_trust_score")),
+            "identity_confidence": _sanitize_json_value(row.get("identity_confidence")),
+            "state_confidence": _sanitize_json_value(row.get("state_confidence")),
+            "winning_event_id": str(row["winning_event_id"]) if row.get("winning_event_id") else None,
+            "provenance": _sanitize_json_value(row.get("provenance") or {}),
             **_sanitize_json_value(row["metadata"] or {}),
         },
     }

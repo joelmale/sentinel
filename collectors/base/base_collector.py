@@ -111,6 +111,7 @@ def _sanitize_json_value(value):
 class BaseCollector(ABC):
     DOMAIN: str = "Unknown"
     FEED_NAME: str = "Unknown"
+    DEFAULT_SOURCE_TRUST_SCORE: float = 0.7
 
     def __init__(self, db_url: str, redis_url: str, poll_interval: float = 10.0):
         self.db_url = db_url
@@ -238,7 +239,15 @@ class BaseCollector(ABC):
             """,
             "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS entity_id UUID",
             "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS entity_id UUID",
+            "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS first_seen TIMESTAMPTZ",
+            "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS source_trust_score DOUBLE PRECISION",
+            "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS identity_confidence DOUBLE PRECISION",
+            "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS state_confidence DOUBLE PRECISION",
+            "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS winning_event_id UUID",
+            "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS provenance JSONB DEFAULT '{}'::jsonb",
             "ALTER TABLE disruption_events ADD COLUMN IF NOT EXISTS entity_id UUID",
+            "ALTER TABLE disruption_events ADD COLUMN IF NOT EXISTS entity_confidence DOUBLE PRECISION",
+            "ALTER TABLE disruption_events ADD COLUMN IF NOT EXISTS provenance JSONB DEFAULT '{}'::jsonb",
             "ALTER TABLE disruption_observations ADD COLUMN IF NOT EXISTS entity_id UUID",
             """
             DO $$
@@ -393,6 +402,35 @@ class BaseCollector(ABC):
                 json.dumps({"event_type": event["event_type"]}),
             )
         return list(rows.values())
+
+    def _estimate_source_trust_score(self, event: dict) -> float:
+        metadata = event.get("metadata") or {}
+        for key in ("source_trust_score", "_source_trust_score"):
+            value = metadata.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+        return float(self.DEFAULT_SOURCE_TRUST_SCORE)
+
+    def _estimate_identity_confidence(self, event: dict) -> float:
+        if event.get("track_id"):
+            return 0.95
+        return 0.5
+
+    def _estimate_state_confidence(self, event: dict) -> float:
+        has_position = event.get("lon") is not None and event.get("lat") is not None
+        has_motion = any(event.get(key) is not None for key in ("heading_deg", "speed_mps", "altitude_m"))
+        if has_position and has_motion:
+            return 0.9
+        if has_position:
+            return 0.8
+        return 0.6
+
+    def _asset_provenance(self, event: dict) -> dict:
+        return {
+            "source_feed": event["source_feed"],
+            "collector": self.FEED_NAME,
+            "observed_at": event["timestamp"] if isinstance(event["timestamp"], str) else event["timestamp"].isoformat(),
+        }
 
     def _events_for_track_history(self, events: list[dict]) -> list[dict]:
         return events
@@ -560,7 +598,8 @@ class BaseCollector(ABC):
                     INSERT INTO asset_states
                         (entity_id, source_domain, source_feed, track_id, callsign,
                          position, altitude_m, heading_deg, speed_mps,
-                         last_seen, metadata, classification)
+                         first_seen, last_seen, source_trust_score, identity_confidence, state_confidence,
+                         winning_event_id, provenance, metadata, classification)
                     VALUES
                         ($1, $2, $3, $4, $5,
                          CASE
@@ -568,7 +607,8 @@ class BaseCollector(ABC):
                               THEN ST_SetSRID(ST_MakePoint($6::double precision, $7::double precision), 4326)
                               ELSE NULL::geometry(Point, 4326)
                          END,
-                         $8, $9, $10, $11, $12::jsonb, $13)
+                         $8, $9, $10, $11, $12, $13,
+                         $14::uuid, $15::jsonb, $16::jsonb, $17)
                     ON CONFLICT (source_domain, track_id) DO UPDATE SET
                         entity_id       = EXCLUDED.entity_id,
                         callsign       = EXCLUDED.callsign,
@@ -576,7 +616,13 @@ class BaseCollector(ABC):
                         altitude_m     = EXCLUDED.altitude_m,
                         heading_deg    = EXCLUDED.heading_deg,
                         speed_mps      = EXCLUDED.speed_mps,
+                        first_seen     = LEAST(COALESCE(asset_states.first_seen, EXCLUDED.first_seen), EXCLUDED.first_seen),
                         last_seen      = EXCLUDED.last_seen,
+                        source_trust_score = EXCLUDED.source_trust_score,
+                        identity_confidence = EXCLUDED.identity_confidence,
+                        state_confidence = EXCLUDED.state_confidence,
+                        winning_event_id = EXCLUDED.winning_event_id,
+                        provenance = COALESCE(asset_states.provenance, '{}'::jsonb) || EXCLUDED.provenance,
                         metadata       = EXCLUDED.metadata,
                         classification = EXCLUDED.classification
                 """, [
@@ -587,6 +633,12 @@ class BaseCollector(ABC):
                         e.get("lon"), e.get("lat"),
                         e.get("altitude_m"), e.get("heading_deg"), e.get("speed_mps"),
                         db_timestamp(e["timestamp"]),
+                        db_timestamp(e["timestamp"]),
+                        self._estimate_source_trust_score(e),
+                        self._estimate_identity_confidence(e),
+                        self._estimate_state_confidence(e),
+                        uuid4(),
+                        json.dumps(self._asset_provenance(e)),
                         json.dumps(_public_metadata(e.get("metadata"))),
                         e.get("classification"),
                     )
@@ -598,25 +650,25 @@ class BaseCollector(ABC):
                     INSERT INTO disruption_events
                         (entity_id, source_domain, source_feed, external_event_id, track_id, callsign,
                          event_type, category, title, status, severity, confidence,
-                         source_trust_score, first_seen, last_seen, start_time, end_time,
+                         source_trust_score, entity_confidence, first_seen, last_seen, start_time, end_time,
                          geometry, centroid, h3_cell, measurement_value, measurement_unit,
-                         affected_assets_count, correlation_id, metadata, classification)
+                         affected_assets_count, correlation_id, provenance, metadata, classification)
                     VALUES
                         ($1, $2, $3, $4, $5, $6,
                          $7, $8, $9, $10, $11, $12,
-                         $13, $14, $15, $16, $17,
-                         CASE
-                              WHEN $18::text IS NOT NULL
-                              THEN ST_SetSRID(ST_GeomFromGeoJSON($18::text), 4326)
-                              ELSE NULL::geometry(Geometry, 4326)
-                         END,
+                         $13, $14, $15, $16, $17, $18,
                          CASE
                               WHEN $19::text IS NOT NULL
                               THEN ST_SetSRID(ST_GeomFromGeoJSON($19::text), 4326)
+                              ELSE NULL::geometry(Geometry, 4326)
+                         END,
+                         CASE
+                              WHEN $20::text IS NOT NULL
+                              THEN ST_SetSRID(ST_GeomFromGeoJSON($20::text), 4326)
                               ELSE NULL::geometry(Point, 4326)
                          END,
-                         $20, $21, $22,
-                         0, $23::uuid, $24::jsonb, $25)
+                         $21, $22, $23,
+                         0, $24::uuid, $25::jsonb, $26::jsonb, $27)
                     ON CONFLICT (source_feed, external_event_id) DO UPDATE SET
                         entity_id = EXCLUDED.entity_id,
                         track_id = EXCLUDED.track_id,
@@ -628,6 +680,7 @@ class BaseCollector(ABC):
                         severity = EXCLUDED.severity,
                         confidence = EXCLUDED.confidence,
                         source_trust_score = EXCLUDED.source_trust_score,
+                        entity_confidence = EXCLUDED.entity_confidence,
                         last_seen = GREATEST(disruption_events.last_seen, EXCLUDED.last_seen),
                         first_seen = LEAST(disruption_events.first_seen, EXCLUDED.first_seen),
                         start_time = COALESCE(disruption_events.start_time, EXCLUDED.start_time),
@@ -638,6 +691,7 @@ class BaseCollector(ABC):
                         measurement_value = COALESCE(EXCLUDED.measurement_value, disruption_events.measurement_value),
                         measurement_unit = COALESCE(EXCLUDED.measurement_unit, disruption_events.measurement_unit),
                         correlation_id = EXCLUDED.correlation_id,
+                        provenance = COALESCE(disruption_events.provenance, '{}'::jsonb) || EXCLUDED.provenance,
                         metadata = disruption_events.metadata || EXCLUDED.metadata,
                         classification = COALESCE(EXCLUDED.classification, disruption_events.classification),
                         updated_at = NOW(),
@@ -659,10 +713,10 @@ class BaseCollector(ABC):
                         self._disruption_entity_id(e["source_feed"], e["external_event_id"]),
                         e["source_domain"], e["source_feed"], e["external_event_id"], e["track_id"], e.get("callsign"),
                         e["event_type"], e["category"], e.get("title"), e["status"], e.get("severity"), e.get("confidence"),
-                        e.get("source_trust_score"), db_timestamp(e["first_seen"]), db_timestamp(e["last_seen"]),
+                        e.get("source_trust_score"), e.get("confidence"), db_timestamp(e["first_seen"]), db_timestamp(e["last_seen"]),
                         db_timestamp(e["start_time"]), db_timestamp(e["end_time"]) if e.get("end_time") else None,
                         e.get("geometry_geojson"), e.get("centroid_geojson"), e.get("h3_cell"), e.get("measurement_value"),
-                        e.get("measurement_unit"), e["correlation_id"], json.dumps(e.get("metadata", {})),
+                        e.get("measurement_unit"), e["correlation_id"], json.dumps({"collector": self.FEED_NAME, "source_feed": e["source_feed"]}), json.dumps(e.get("metadata", {})),
                         e.get("classification"),
                     )
                     for e in disruption_events

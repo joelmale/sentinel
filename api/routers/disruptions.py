@@ -77,6 +77,7 @@ async def list_disruption_events(
             severity,
             confidence,
             source_trust_score,
+            entity_confidence,
             first_seen,
             last_seen,
             start_time,
@@ -87,6 +88,7 @@ async def list_disruption_events(
             affected_assets_count,
             correlation_id::text,
             classification,
+            provenance,
             metadata,
             ST_AsGeoJSON(geometry)::jsonb AS geometry,
             ST_AsGeoJSON(centroid)::jsonb AS centroid
