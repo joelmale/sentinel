@@ -528,7 +528,7 @@ export const useMapStore = create<MapStore>()(
     // ── Space track duration ─────────────────────────────────────
     spaceTrackDuration: '1h',
     setSpaceTrackDuration: (spaceTrackDuration) => set({ spaceTrackDuration }),
-    spacePriorityOnly: true,
+    spacePriorityOnly: false,
     toggleSpacePriorityOnly: () => set((s) => ({ spacePriorityOnly: !s.spacePriorityOnly })),
     expandedSpaceConstellations: new Set<string>(),
     toggleExpandedSpaceConstellation: (constellation) =>

@@ -203,20 +203,42 @@ function normalizeLongitude(lon: number): number {
   return ((((lon + 180) % 360) + 360) % 360) - 180
 }
 
+function getLongitudeSpan(bounds: ViewBounds): number {
+  if (!Number.isFinite(bounds.west) || !Number.isFinite(bounds.east)) return 360
+  const rawSpan = bounds.east - bounds.west
+  if (Math.abs(rawSpan) >= 360) return 360
+  const normalized = ((rawSpan % 360) + 360) % 360
+  return normalized === 0 ? 360 : normalized
+}
+
 function expandBounds(bounds: ViewBounds, ratio: number): ViewBounds {
-  const lonSpan = ((bounds.east - bounds.west + 360) % 360) || 360
+  const lonSpan = getLongitudeSpan(bounds)
   const latSpan = Math.max(0.1, bounds.north - bounds.south)
   const lonMargin = Math.min(160, Math.max(8, lonSpan * ratio))
   const latMargin = Math.min(45, Math.max(4, latSpan * ratio))
+  const expandedLonSpan = Math.min(360, lonSpan + (lonMargin * 2))
+  const south = Math.max(-90, bounds.south - latMargin)
+  const north = Math.min(90, bounds.north + latMargin)
+
+  if (expandedLonSpan >= 355) {
+    return {
+      west: -180,
+      east: 180,
+      south,
+      north,
+    }
+  }
+
   return {
     west: normalizeLongitude(bounds.west - lonMargin),
     east: normalizeLongitude(bounds.east + lonMargin),
-    south: Math.max(-90, bounds.south - latMargin),
-    north: Math.min(90, bounds.north + latMargin),
+    south,
+    north,
   }
 }
 
 function isLonInBounds(lon: number, bounds: ViewBounds): boolean {
+  if (getLongitudeSpan(bounds) >= 355) return true
   const normalizedLon = normalizeLongitude(lon)
   const west = normalizeLongitude(bounds.west)
   const east = normalizeLongitude(bounds.east)
@@ -301,11 +323,20 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
     pitch:     localViewport.pitch,
   }
 
+  const effectiveContainerSize = useMemo(() => {
+    if (containerSize.width >= 240 && containerSize.height >= 180) return containerSize
+    if (typeof window === 'undefined') return containerSize
+    return {
+      width: Math.max(containerSize.width, window.innerWidth),
+      height: Math.max(containerSize.height, window.innerHeight),
+    }
+  }, [containerSize])
+
   const cullBounds = useMemo(() => {
     try {
       const mercator = new WebMercatorViewport({
-        width: containerSize.width,
-        height: containerSize.height,
+        width: effectiveContainerSize.width,
+        height: effectiveContainerSize.height,
         longitude: localViewport.longitude,
         latitude: localViewport.latitude,
         zoom: localViewport.zoom,
@@ -317,7 +348,7 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
     } catch {
       return null
     }
-  }, [containerSize.height, containerSize.width, localViewport])
+  }, [effectiveContainerSize.height, effectiveContainerSize.width, localViewport])
 
   useEffect(() => {
     setViewportBounds(cullBounds)
@@ -667,17 +698,20 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
         id: 'ais-live-points',
         data: maritimeAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
-        getRadius: 4,
+        getRadius: localViewport.zoom < 3 ? 2.4 : localViewport.zoom < 5 ? 3.2 : 4,
         radiusUnits: 'pixels',
-        getLineWidth: 1,
+        getLineWidth: 0.5,
         lineWidthUnits: 'pixels',
         stroked: true,
         filled: true,
-        getLineColor: [241, 245, 249, 120],
-        getFillColor: (d: TrackEventProperties) => [10, 10, 10, getAlpha(d)],
-        updateTriggers: { getFillColor: [declutterMode, searchMatchSet] },
+        getLineColor: [226, 232, 240, 70],
+        getFillColor: (d: TrackEventProperties) => [34, 211, 238, Math.max(30, Math.round(getAlpha(d) * 0.42))],
+        updateTriggers: {
+          getFillColor: [declutterMode, searchMatchSet],
+          getRadius: [localViewport.zoom],
+        },
         pickable: true,
-        opacity: domainOpacity('Maritime'),
+        opacity: domainOpacity('Maritime') * 0.9,
         onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
           setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
         onClick: ({ object }) =>
@@ -765,20 +799,23 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
         id: 'adsb-live-points',
         data: airAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
-        getRadius: 4.5,
+        getRadius: localViewport.zoom < 3 ? 2.8 : localViewport.zoom < 5 ? 3.6 : 4.5,
         radiusUnits: 'pixels',
         stroked: true,
         filled: true,
         lineWidthUnits: 'pixels',
-        getLineWidth: 1,
-        getLineColor: [226, 232, 240, 110],
+        getLineWidth: 0.75,
+        getLineColor: [226, 232, 240, 80],
         getFillColor: (d: TrackEventProperties) => {
           const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
-          return [base[0], base[1], base[2], getAlpha(d)] as [number, number, number, number]
+          return [base[0], base[1], base[2], Math.max(36, Math.round(getAlpha(d) * 0.55))] as [number, number, number, number]
         },
-        updateTriggers: { getFillColor: [declutterMode, searchMatchSet] },
+        updateTriggers: {
+          getFillColor: [declutterMode, searchMatchSet],
+          getRadius: [localViewport.zoom],
+        },
         pickable: true,
-        opacity: domainOpacity('Air'),
+        opacity: domainOpacity('Air') * 0.9,
         onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
           setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
         onClick: ({ object }) =>
