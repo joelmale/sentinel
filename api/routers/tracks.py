@@ -588,7 +588,7 @@ async def get_live_assets(
             entry["lon_sum"] += lon
             entry["lat_sum"] += lat
 
-        features = []
+        features: list[dict[str, Any]] = []
         for constellation, entry in grouped.items():
             count = entry["count"]
             lon = entry["lon_sum"] / count
