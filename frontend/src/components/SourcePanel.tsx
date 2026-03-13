@@ -199,6 +199,37 @@ function GroupByChips({
   )
 }
 
+function PanelTab({
+  label,
+  active,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        flex: 1,
+        padding: '7px 10px',
+        border: 'none',
+        borderBottom: active ? '2px solid #5eead4' : '2px solid transparent',
+        background: active ? 'rgba(20,184,166,0.10)' : 'transparent',
+        color: active ? '#e2e8f0' : '#64748b',
+        fontSize: 10,
+        fontWeight: 800,
+        letterSpacing: '0.14em',
+        textTransform: 'uppercase',
+        cursor: 'pointer',
+      }}
+    >
+      {label}
+    </button>
+  )
+}
+
 // ── Group header row ──────────────────────────────────────────────
 // Collapsible section header used inside the grouped track tree.
 // indent=0 is a primary group (e.g. object type), indent=1 is a
@@ -488,6 +519,7 @@ export function SourcePanel() {
   // Per-domain "show all" toggle (when count > MAX_VISIBLE_PER_DOMAIN)
   const MAX_VISIBLE = 12
   const [showAll, setShowAll] = useState<Set<SourceDomain>>(new Set())
+  const [panelMode, setPanelMode] = useState<'browse' | 'workspace'>('browse')
 
   // ── Grouping state ────────────────────────────────────────────────
   // Per-domain grouping mode. Defaults: Air=airline, Maritime=flag, Space=grouped.
@@ -639,6 +671,39 @@ export function SourcePanel() {
       .sort((a, b) => (a.callsign || a.track_id).localeCompare(b.callsign || b.track_id))
       .slice(0, 200)
   }, [liveAssets, workspaceSearch, layers])
+
+  const visibleDomains = useMemo(
+    () => DOMAIN_ORDER.filter((domain) => layers[domain]?.visibility === 'active'),
+    [layers]
+  )
+  const mutedDomains = useMemo(
+    () => DOMAIN_ORDER.filter((domain) => layers[domain]?.visibility === 'muted'),
+    [layers]
+  )
+  const hiddenDomains = useMemo(
+    () => DOMAIN_ORDER.filter((domain) => layers[domain]?.visibility === 'hidden'),
+    [layers]
+  )
+  const workspaceTrackCount = useMemo(
+    () => DOMAIN_ORDER.reduce((total, domain) => (
+      layers[domain]?.visibility === 'hidden'
+        ? total
+        : total + (assetsByDomain.get(domain)?.length ?? 0)
+    ), 0),
+    [assetsByDomain, layers]
+  )
+  const hiddenClassCount = useMemo(
+    () => Object.values(classFilter).reduce((total, values) => total + (values?.length ?? 0), 0),
+    [classFilter]
+  )
+  const hiddenGroupCount = useMemo(
+    () => Object.values(hiddenGroupFilters).reduce((total, values) => total + (values?.length ?? 0), 0),
+    [hiddenGroupFilters]
+  )
+  const excludedGroupCount = useMemo(
+    () => Object.values(groupFilters).reduce((total, values) => total + (values?.size ?? 0), 0),
+    [groupFilters]
+  )
 
   const toggleExpanded = (d: SourceDomain) => {
     setExpanded((prev) => {
@@ -850,7 +915,7 @@ export function SourcePanel() {
             TRACK PANEL
           </div>
           <div style={{ fontSize: 10, color: '#64748b', marginTop: 1 }}>
-            {liveAssets.size.toLocaleString()} assets live
+            {workspaceTrackCount.toLocaleString()} tracks in workspace
           </div>
         </div>
         {/* Declutter toggle — dims non-matching tracks on the map when search is active */}
@@ -923,89 +988,89 @@ export function SourcePanel() {
             >×</button>
           )}
         </div>
-        {/* Active constraints summary — shows when any filters are set */}
-        {(() => {
-          const mutedDomains  = DOMAIN_ORDER.filter(d => layers[d]?.visibility === 'muted')
-          const hiddenDomains = DOMAIN_ORDER.filter(d => layers[d]?.visibility === 'hidden')
-          const totalFiltered = Object.values(classFilter).reduce((n, arr) => n + (arr?.length ?? 0), 0)
-          if (!mutedDomains.length && !hiddenDomains.length && !totalFiltered && !declutterMode) return null
-          return (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
-              {hiddenDomains.map(d => (
-                <span key={d} style={{
-                  fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-                  color: '#ef4444', background: 'rgba(239,68,68,0.1)',
-                  border: '1px solid rgba(239,68,68,0.3)',
-                  borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
-                }} title={`${d} is hidden — click to cycle`}>
-                  {d} hidden
-                </span>
-              ))}
-              {mutedDomains.map(d => (
-                <span key={d} style={{
-                  fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-                  color: '#f59e0b', background: 'rgba(245,158,11,0.1)',
-                  border: '1px solid rgba(245,158,11,0.3)',
-                  borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
-                }}>
-                  {d} muted
-                </span>
-              ))}
-              {totalFiltered > 0 && (
-                <span style={{
-                  fontSize: 9, fontWeight: 700,
-                  color: '#94a3b8', background: 'rgba(148,163,184,0.1)',
-                  border: '1px solid rgba(148,163,184,0.25)',
-                  borderRadius: 4, padding: '1px 6px',
-                }}>
-                  {totalFiltered} class filter{totalFiltered > 1 ? 's' : ''}
-                </span>
-              )}
-              {declutterMode && (
-                <span style={{
-                  fontSize: 9, fontWeight: 700,
-                  color: '#5eead4', background: 'rgba(20,184,166,0.1)',
-                  border: '1px solid rgba(20,184,166,0.3)',
-                  borderRadius: 4, padding: '1px 6px',
-                }}>
-                  ◎ declutter
-                </span>
-              )}
-            </div>
-          )
-        })()}
+        <div style={{ fontSize: 9, color: '#64748b', marginTop: 6, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+          Workspace constraints
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 5 }}>
+          {workspaceSearch && (
+            <span style={constraintChipStyle('#3b82f6')}>
+              Query active
+            </span>
+          )}
+          {declutterMode && (
+            <span style={constraintChipStyle('#14b8a6')}>
+              Declutter on
+            </span>
+          )}
+          {mutedDomains.length > 0 && (
+            <span style={constraintChipStyle('#f59e0b')}>
+              {mutedDomains.length} muted domain{mutedDomains.length > 1 ? 's' : ''}
+            </span>
+          )}
+          {hiddenDomains.length > 0 && (
+            <span style={constraintChipStyle('#ef4444')}>
+              {hiddenDomains.length} hidden domain{hiddenDomains.length > 1 ? 's' : ''}
+            </span>
+          )}
+          {hiddenClassCount > 0 && (
+            <span style={constraintChipStyle('#94a3b8')}>
+              {hiddenClassCount} class constraint{hiddenClassCount > 1 ? 's' : ''}
+            </span>
+          )}
+          {hiddenGroupCount > 0 && (
+            <span style={constraintChipStyle('#a78bfa')}>
+              {hiddenGroupCount} group hide rule{hiddenGroupCount > 1 ? 's' : ''}
+            </span>
+          )}
+          {excludedGroupCount > 0 && (
+            <span style={constraintChipStyle('#f87171')}>
+              {excludedGroupCount} exclusion{excludedGroupCount > 1 ? 's' : ''}
+            </span>
+          )}
+          {!workspaceSearch && !declutterMode && mutedDomains.length === 0 && hiddenDomains.length === 0 && hiddenClassCount === 0 && hiddenGroupCount === 0 && excludedGroupCount === 0 && (
+            <span style={{ fontSize: 10, color: '#475569' }}>
+              No active constraints
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', borderBottom: '1px solid rgba(148,163,184,0.14)', flexShrink: 0 }}>
+        <PanelTab label="Browse" active={panelMode === 'browse'} onClick={() => setPanelMode('browse')} />
+        <PanelTab label="Workspace" active={panelMode === 'workspace'} onClick={() => setPanelMode('workspace')} />
       </div>
 
       {/* ── Body ── */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
-
-        {/* ── SEARCH RESULTS (flat list when query is active) ── */}
-        {filteredAssets !== null ? (
+        {panelMode === 'browse' ? (
           <>
-            <SectionLabel label={`${filteredAssets.length} result${filteredAssets.length !== 1 ? 's' : ''}`} />
-            {filteredAssets.length === 0 ? (
-              <div style={{ padding: '16px 14px', fontSize: 12, color: '#475569', textAlign: 'center' }}>
-                No matches
-              </div>
-            ) : (
-              filteredAssets.map((a) => {
-                const isSelected = a.track_id === selectedTrackId && a.source_domain === selectedDomain
-                return (
-                  <div key={`${a.source_domain}:${a.track_id}`}>
-                    <TrackRow
-                      asset={a}
-                      isSelected={isSelected}
-                      onSelect={() => handleSelectTrack(a)}
-                    />
+            {/* ── SEARCH RESULTS (flat list when query is active) ── */}
+            {filteredAssets !== null ? (
+              <>
+                <SectionLabel label={`${filteredAssets.length} result${filteredAssets.length !== 1 ? 's' : ''}`} />
+                {filteredAssets.length === 0 ? (
+                  <div style={{ padding: '16px 14px', fontSize: 12, color: '#475569', textAlign: 'center' }}>
+                    No matches
                   </div>
-                )
-              })
-            )}
-          </>
-        ) : (
-          <>
+                ) : (
+                  filteredAssets.map((a) => {
+                    const isSelected = a.track_id === selectedTrackId && a.source_domain === selectedDomain
+                    return (
+                      <div key={`${a.source_domain}:${a.track_id}`}>
+                        <TrackRow
+                          asset={a}
+                          isSelected={isSelected}
+                          onSelect={() => handleSelectTrack(a)}
+                        />
+                      </div>
+                    )
+                  })
+                )}
+              </>
+            ) : (
+              <>
             {/* ── DOMAIN ROWS (grouped, collapsible) ── */}
-            <SectionLabel label="Layers" />
+            <SectionLabel label="Track Domains" />
             {DOMAIN_ORDER.map((domain) => {
               const meta = DOMAIN_META[domain]
               const layerVisibility = layers[domain]?.visibility ?? 'active'
@@ -1558,101 +1623,168 @@ export function SourcePanel() {
               )
             })}
 
-            {/* ── MAP OVERLAYS ── */}
-            <SectionLabel label="Map Overlays" />
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            <SectionLabel label="Workspace Scope" />
+            {DOMAIN_ORDER.map((domain) => {
+              const meta = DOMAIN_META[domain]
+              const visibility = layers[domain]?.visibility ?? 'hidden'
+              const domainCount = assetsByDomain.get(domain)?.length ?? 0
+              const hiddenClasses = classFilter[domain] ?? []
+              const groupHides = hiddenGroupFilters[domain] ?? []
+              const exclusions = groupFilters[domain]?.size ?? 0
 
-            {/* COCOM boundaries */}
+              return (
+                <div
+                  key={domain}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '8px 12px 8px 10px',
+                    borderBottom: '1px solid rgba(148,163,184,0.08)',
+                  }}
+                >
+                  <TriStateToggle
+                    visibility={visibility}
+                    onCycle={() => cycleLayerVisibility(domain)}
+                    colorHex={meta.colorHex}
+                  />
+                  <span style={{ fontSize: 14, flexShrink: 0 }}>{meta.icon}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0' }}>{domain}</div>
+                    <div style={{ fontSize: 10, color: '#64748b' }}>
+                      {visibility === 'active' ? 'Active in workspace' : visibility === 'muted' ? 'Context only' : 'Hidden from workspace'}
+                      {' · '}
+                      {domainCount.toLocaleString()} track{domainCount !== 1 ? 's' : ''}
+                    </div>
+                  </div>
+                  {(hiddenClasses.length + groupHides.length + exclusions) > 0 && (
+                    <span style={{
+                      fontSize: 9,
+                      fontWeight: 700,
+                      color: '#f59e0b',
+                      background: 'rgba(245,158,11,0.14)',
+                      border: '1px solid rgba(245,158,11,0.30)',
+                      borderRadius: 8,
+                      padding: '1px 6px',
+                    }}>
+                      {hiddenClasses.length + groupHides.length + exclusions} constraints
+                    </span>
+                  )}
+                </div>
+              )
+            })}
+
+            <SectionLabel label="Context Layers" />
+
             <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '7px 12px 7px 10px',
-                borderBottom: '1px solid rgba(148,163,184,0.08)',
-                cursor: 'pointer',
-              }}
+              style={workspaceRowStyle}
               onClick={toggleCocom}
             >
               <TriStateToggle visibility={showCocom ? 'active' : 'hidden'} onCycle={toggleCocom} colorHex="#14b8a6" />
               <span style={{ fontSize: 14, flexShrink: 0 }}>🗺</span>
-              <span
-                style={{
-                  flex: 1,
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: showCocom ? '#e2e8f0' : '#475569',
-                  transition: 'color 0.15s',
-                }}
-              >
-                COCOM Boundaries
-              </span>
-              <span style={{ fontSize: 9, color: '#64748b', letterSpacing: '0.06em', flexShrink: 0 }}>
-                AOR
-              </span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: showCocom ? '#e2e8f0' : '#64748b' }}>COCOM Boundaries</div>
+                <div style={{ fontSize: 10, color: '#64748b' }}>Area-of-responsibility context</div>
+              </div>
             </div>
 
-            {/* Undersea cable context */}
             <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '7px 12px 7px 10px',
-                borderBottom: '1px solid rgba(148,163,184,0.08)',
-                cursor: 'pointer',
-              }}
+              style={workspaceRowStyle}
               onClick={toggleUnderseaCables}
             >
               <TriStateToggle visibility={showUnderseaCables ? 'active' : 'hidden'} onCycle={toggleUnderseaCables} colorHex="#f59e0b" />
               <span style={{ fontSize: 14, flexShrink: 0 }}>🪢</span>
-              <span
-                style={{
-                  flex: 1,
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: showUnderseaCables ? '#e2e8f0' : '#475569',
-                  transition: 'color 0.15s',
-                }}
-              >
-                Undersea Cables
-              </span>
-              <span style={{ fontSize: 9, color: '#64748b', letterSpacing: '0.06em', flexShrink: 0 }}>
-                INFRA
-              </span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: showUnderseaCables ? '#e2e8f0' : '#64748b' }}>Undersea Cables</div>
+                <div style={{ fontSize: 10, color: '#64748b' }}>Infrastructure and landing-point context</div>
+              </div>
             </div>
 
-            {/* Globe View toggle */}
             <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '7px 12px 7px 10px',
-                borderBottom: '1px solid rgba(148,163,184,0.08)',
-                cursor: 'pointer',
-              }}
+              style={workspaceRowStyle}
               onClick={toggleGlobeView}
             >
               <TriStateToggle visibility={globeView ? 'active' : 'hidden'} onCycle={toggleGlobeView} colorHex="#38bdf8" />
               <span style={{ fontSize: 14, flexShrink: 0 }}>🌍</span>
-              <span
-                style={{
-                  flex: 1,
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: globeView ? '#e2e8f0' : '#475569',
-                  transition: 'color 0.15s',
-                }}
-              >
-                Globe View
-              </span>
-              <span style={{ fontSize: 9, color: '#64748b', letterSpacing: '0.06em', flexShrink: 0 }}>
-                3D
-              </span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: globeView ? '#e2e8f0' : '#64748b' }}>Globe View</div>
+                <div style={{ fontSize: 10, color: '#64748b' }}>3D context for global monitoring</div>
+              </div>
+            </div>
+
+            <SectionLabel label="Workspace Summary" />
+            <div style={{ padding: '8px 12px 14px', display: 'grid', gap: 8 }}>
+              <div style={summaryBlockStyle}>
+                <div style={summaryLabelStyle}>Search</div>
+                <div style={summaryValueStyle}>
+                  {workspaceSearch ? `"${workspaceSearch}"` : 'No active query'}
+                </div>
+              </div>
+              <div style={summaryBlockStyle}>
+                <div style={summaryLabelStyle}>Domain scope</div>
+                <div style={summaryValueStyle}>
+                  {visibleDomains.length} active · {mutedDomains.length} muted · {hiddenDomains.length} hidden
+                </div>
+              </div>
+              <div style={summaryBlockStyle}>
+                <div style={summaryLabelStyle}>Filter pressure</div>
+                <div style={summaryValueStyle}>
+                  {hiddenClassCount + hiddenGroupCount + excludedGroupCount > 0
+                    ? `${hiddenClassCount} class, ${hiddenGroupCount} group-hide, ${excludedGroupCount} exclusion`
+                    : 'No additional filter pressure'}
+                </div>
+              </div>
             </div>
           </>
         )}
       </div>
     </div>
   )
+}
+
+const constraintChipStyle = (color: string): React.CSSProperties => ({
+  fontSize: 9,
+  fontWeight: 700,
+  color,
+  background: `${color}14`,
+  border: `1px solid ${color}35`,
+  borderRadius: 4,
+  padding: '1px 6px',
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+})
+
+const workspaceRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '8px 12px 8px 10px',
+  borderBottom: '1px solid rgba(148,163,184,0.08)',
+  cursor: 'pointer',
+}
+
+const summaryBlockStyle: React.CSSProperties = {
+  padding: '8px 10px',
+  borderRadius: 10,
+  background: 'rgba(15,23,42,0.5)',
+  border: '1px solid rgba(148,163,184,0.10)',
+}
+
+const summaryLabelStyle: React.CSSProperties = {
+  fontSize: 9,
+  fontWeight: 700,
+  letterSpacing: '0.1em',
+  textTransform: 'uppercase',
+  color: '#64748b',
+  marginBottom: 3,
+}
+
+const summaryValueStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: '#cbd5e1',
 }
