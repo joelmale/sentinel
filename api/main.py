@@ -25,6 +25,18 @@ from settings import Settings
 settings = Settings()
 
 
+def perf_route_label(request: Request) -> str:
+    path = request.url.path
+
+    if path == "/api/tracks/live":
+        scope = request.query_params.get("scope", "detail")
+        domain = request.query_params.get("domain", "all")
+        has_bbox = "1" if request.query_params.get("bbox") else "0"
+        return f"{path}?scope={scope}&domain={domain}&bbox={has_bbox}"
+
+    return path
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator:
     """Manage startup / shutdown of shared resources."""
@@ -64,9 +76,15 @@ app.add_middleware(
 @app.middleware("http")
 async def perf_timing_middleware(request: Request, call_next):
     started = asyncio.get_running_loop().time()
-    response = await call_next(request)
+    label = perf_route_label(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (asyncio.get_running_loop().time() - started) * 1000
+        request_perf.record(label, request.method, 500, duration_ms)
+        raise
     duration_ms = (asyncio.get_running_loop().time() - started) * 1000
-    request_perf.record(request.url.path, request.method, response.status_code, duration_ms)
+    request_perf.record(label, request.method, response.status_code, duration_ms)
     response.headers["X-Sentinel-Response-Time-Ms"] = f"{duration_ms:.2f}"
     return response
 
