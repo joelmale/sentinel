@@ -3,6 +3,7 @@ import { format } from 'date-fns'
 import { DragDots, PanelResizeHandles } from '@/components/FloatingPanelChrome'
 import { useDrag } from '@/hooks/useDrag'
 import { useResizePanel } from '@/hooks/useResizePanel'
+import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import type { DisruptionEvent, SourceDomain, TrackEventProperties } from '@/types/track'
 
@@ -75,7 +76,6 @@ export function InvestigationPanel() {
   const {
     investigationContext,
     pendingAlerts,
-    liveAssets,
     playback,
     assetCardOpen,
     openInvestigation,
@@ -86,6 +86,7 @@ export function InvestigationPanel() {
     selectAsset,
     flyTo,
   } = useMapStore()
+  const { viewportAssets, selectedAssetDetail } = useLiveDataStore()
   const { offset, dragHandleRef, isDragging } = useDrag({
     storageKey: 'sentinel.investigationPanelPosition',
   })
@@ -118,12 +119,16 @@ export function InvestigationPanel() {
     [pendingAlerts, investigationContext]
   )
 
-  const asset = useMemo(
-    () => (investigationContext
-      ? liveAssets.get(`${investigationContext.domain}:${investigationContext.trackId}`)
-      : undefined),
-    [investigationContext, liveAssets]
-  )
+  const asset = useMemo(() => {
+    if (!investigationContext) return undefined
+    if (
+      selectedAssetDetail?.track_id === investigationContext.trackId &&
+      selectedAssetDetail.source_domain === investigationContext.domain
+    ) {
+      return selectedAssetDetail
+    }
+    return viewportAssets.get(`${investigationContext.domain}:${investigationContext.trackId}`)
+  }, [investigationContext, viewportAssets, selectedAssetDetail])
 
   const severity = investigationContext
     ? severityLabel(investigationContext.domain, investigationContext.ruleName)
@@ -131,7 +136,7 @@ export function InvestigationPanel() {
 
   const nearbyAssets = useMemo(() => {
     if (!investigationContext || !asset) return []
-    return Array.from(liveAssets.values())
+    return Array.from(viewportAssets.values())
       .filter((candidate) => `${candidate.source_domain}:${candidate.track_id}` !== `${investigationContext.domain}:${investigationContext.trackId}`)
       .map((candidate) => ({
         asset: candidate,
@@ -140,7 +145,7 @@ export function InvestigationPanel() {
       .filter((row) => row.distanceKm !== null && row.distanceKm <= 900)
       .sort((a, b) => (a.distanceKm as number) - (b.distanceKm as number))
       .slice(0, 6)
-  }, [investigationContext, asset, liveAssets])
+  }, [investigationContext, asset, viewportAssets])
 
   useEffect(() => {
     if (!investigationContext) return

@@ -95,6 +95,13 @@ export interface SpaceAggregateProperties {
   count: number
 }
 
+export interface SpaceAggregate {
+  constellation: string
+  count: number
+  lon: number
+  lat: number
+}
+
 export interface SpaceAggregateFeature {
   type: 'Feature'
   geometry: {

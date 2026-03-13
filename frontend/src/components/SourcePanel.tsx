@@ -16,6 +16,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
+import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import type { LayerVisibility } from '@/store/useMapStore'
 import { useResizePanel } from '@/hooks/useResizePanel'
@@ -485,7 +486,6 @@ export function SourcePanel() {
   const {
     sourcePanelOpen,
     toggleSourcePanel,
-    liveAssets,
     selectAsset,
     selectedTrackId,
     selectedDomain,
@@ -515,6 +515,7 @@ export function SourcePanel() {
     expandedSpaceConstellations,
     toggleExpandedSpaceConstellation,
   } = useMapStore()
+  const { viewportAssets } = useLiveDataStore()
 
   // Which domains have their track list expanded
   const [expanded, setExpanded] = useState<Set<SourceDomain>>(
@@ -588,7 +589,7 @@ export function SourcePanel() {
   // analogous to a SQL JOIN between the exclusion keys and the live track table.
   useEffect(() => {
     const excluded = new Set<string>()
-    for (const a of liveAssets.values()) {
+    for (const a of viewportAssets.values()) {
       const domain = a.source_domain as SourceDomain
       const filters = groupFilters[domain]
       if (!filters?.size) continue
@@ -613,7 +614,7 @@ export function SourcePanel() {
       }
     }
     setGroupExcludedTracks(excluded)
-  }, [groupFilters, liveAssets, setGroupExcludedTracks])
+  }, [groupFilters, viewportAssets, setGroupExcludedTracks])
 
   // 2-D resize — right edge (width), bottom edge (height), corner (both)
   const {
@@ -642,7 +643,7 @@ export function SourcePanel() {
   const assetsByDomain = useMemo(() => {
     const map = new Map<SourceDomain, TrackEventProperties[]>()
     for (const d of DOMAIN_ORDER) map.set(d, [])
-    for (const a of liveAssets.values()) {
+    for (const a of viewportAssets.values()) {
       const domain = a.source_domain as SourceDomain
       if (map.has(domain)) map.get(domain)!.push(a)
     }
@@ -656,13 +657,13 @@ export function SourcePanel() {
       })
     }
     return map
-  }, [liveAssets, selectedTrackId, selectedDomain])
+  }, [viewportAssets, selectedTrackId, selectedDomain])
 
   // Flat filtered list for search mode — driven by workspace-wide search in store
   const filteredAssets = useMemo(() => {
     const q = workspaceSearch.trim().toLowerCase()
     if (!q) return null
-    return Array.from(liveAssets.values())
+    return Array.from(viewportAssets.values())
       .filter((a) => {
         // Exclude hidden domains from search results
         if (layers[a.source_domain as keyof typeof layers]?.visibility === 'hidden') return false
@@ -674,7 +675,7 @@ export function SourcePanel() {
       })
       .sort((a, b) => (a.callsign || a.track_id).localeCompare(b.callsign || b.track_id))
       .slice(0, 200)
-  }, [liveAssets, workspaceSearch, layers])
+  }, [viewportAssets, workspaceSearch, layers])
 
   const visibleDomains = useMemo(
     () => DOMAIN_ORDER.filter((domain) => layers[domain]?.visibility === 'active'),

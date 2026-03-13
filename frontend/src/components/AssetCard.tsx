@@ -18,10 +18,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatDistanceToNow } from 'date-fns'
+import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import { useResize } from '@/hooks/useResize'
 import { useDrag } from '@/hooks/useDrag'
-import { trackedFetchJson } from '@/lib/perf'
 import type { SourceDomain } from '@/types/track'
 
 // ── Domain colour/icon config ─────────────────────────────────────
@@ -412,9 +412,10 @@ function AircraftHero({ registration, typeCode }: { registration: string | null 
 export function AssetCard() {
   const {
     assetCardOpen, setAssetCardOpen, selectedTrackId, selectedDomain,
-    liveAssets, clearSelection, flyTo, setTimeWindow, setCurrentTime,
+    clearSelection, flyTo, setTimeWindow, setCurrentTime,
     setPlaybackMode, playback,
   } = useMapStore()
+  const { viewportAssets, selectedAssetDetail } = useLiveDataStore()
 
   const { size: cardWidth, handleRef: resizeHandleRef, isDragging: isResizing } = useResize({
     direction: 'left', defaultSize: 380, minSize: 320, maxSize: 580,
@@ -423,38 +424,17 @@ export function AssetCard() {
 
   const { offset, dragHandleRef, isDragging } = useDrag({ storageKey: 'sentinel.assetCardPosition' })
 
-  const liveAsset = selectedTrackId && selectedDomain
-    ? liveAssets.get(`${selectedDomain}:${selectedTrackId}`)
+  const viewportAsset = selectedTrackId && selectedDomain
+    ? viewportAssets.get(`${selectedDomain}:${selectedTrackId}`)
     : null
-  const [detailAsset, setDetailAsset] = useState<Record<string, unknown> | null>(null)
-
-  useEffect(() => {
-    if (!selectedTrackId || !selectedDomain) {
-      setDetailAsset(null)
-      return
-    }
-
-    let cancelled = false
-    const params = new URLSearchParams({
-      domain: selectedDomain,
-      track_id: selectedTrackId,
-    })
-
-    trackedFetchJson<{ properties: Record<string, unknown> }>('asset-detail', `/api/tracks/detail?${params.toString()}`)
-      .then((payload) => {
-        if (!cancelled) setDetailAsset(payload.properties)
-      })
-      .catch(() => {
-        if (!cancelled) setDetailAsset(null)
-      })
-
-    return () => { cancelled = true }
-  }, [selectedTrackId, selectedDomain])
 
   const asset = useMemo(() => {
-    if (!liveAsset) return null
-    return detailAsset ? { ...liveAsset, ...detailAsset } : liveAsset
-  }, [liveAsset, detailAsset])
+    if (!selectedTrackId || !selectedDomain) return null
+    if (selectedAssetDetail?.track_id === selectedTrackId && selectedAssetDetail.source_domain === selectedDomain) {
+      return selectedAssetDetail
+    }
+    return viewportAsset ?? null
+  }, [selectedTrackId, selectedDomain, selectedAssetDetail, viewportAsset])
 
   const handleFocus = useCallback(() => {
     if (asset?.lon != null && asset?.lat != null) flyTo(asset.lon, asset.lat)

@@ -9,6 +9,7 @@
 
 import { create } from 'zustand'
 import { devtools } from 'zustand/middleware'
+import { useLiveDataStore } from '@/store/useLiveDataStore'
 import type { PlaybackMode, SourceDomain, TimeWindow, TrackEventProperties } from '@/types/track'
 
 // ── Alert model ───────────────────────────────────────────────────
@@ -393,10 +394,13 @@ export const useMapStore = create<MapStore>()(
     // ── Investigation context ─────────────────────────────────────
     investigationContext: null,
     openInvestigation: (alert) => {
-      const { liveAssets, flyTo, selectAsset, setTimeWindow, setCurrentTime, setPlaybackMode, triageAlert } = get()
+      const { flyTo, selectAsset, setTimeWindow, setCurrentTime, setPlaybackMode, triageAlert } = get()
+      const { viewportAssets, selectedAssetDetail } = useLiveDataStore.getState()
       // Fly to the track's last known position
       const assetKey = `${alert.domain}:${alert.trackId}`
-      const asset = liveAssets.get(assetKey)
+      const asset = selectedAssetDetail?.track_id === alert.trackId && selectedAssetDetail.source_domain === alert.domain
+        ? selectedAssetDetail
+        : viewportAssets.get(assetKey)
       if (asset && typeof asset.lon === 'number' && typeof asset.lat === 'number') {
         flyTo(asset.lon, asset.lat, 9)
       }

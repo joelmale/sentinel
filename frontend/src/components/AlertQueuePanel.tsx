@@ -23,6 +23,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { DragDots, PanelResizeHandles } from '@/components/FloatingPanelChrome'
 import { useDrag } from '@/hooks/useDrag'
 import { useResizePanel } from '@/hooks/useResizePanel'
+import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import type { AlertItem, AlertTriage } from '@/store/useMapStore'
 import type { SourceDomain } from '@/types/track'
@@ -210,11 +211,11 @@ export function AlertQueuePanel() {
     investigationContext,
     openInvestigation,
     layers,
-    liveAssets,
     selectedTrackId,
     selectedDomain,
     setLayerEnabled,
   } = useMapStore()
+  const { viewportAssets, selectedAssetDetail } = useLiveDataStore()
   const { offset, dragHandleRef, isDragging } = useDrag({
     storageKey: 'sentinel.alertQueuePosition',
   })
@@ -317,12 +318,16 @@ export function AlertQueuePanel() {
 
   const injectDemoAlert = () => {
     const selectedAsset = selectedTrackId && selectedDomain
-      ? liveAssets.get(`${selectedDomain}:${selectedTrackId}`)
+      ? (
+        (selectedAssetDetail?.track_id === selectedTrackId && selectedAssetDetail.source_domain === selectedDomain)
+          ? selectedAssetDetail
+          : viewportAssets.get(`${selectedDomain}:${selectedTrackId}`)
+      )
       : null
 
-    const fallbackAsset = Array.from(liveAssets.values()).find(
+    const fallbackAsset = Array.from(viewportAssets.values()).find(
       (asset) => layers[asset.source_domain as keyof typeof layers]?.visibility !== 'hidden'
-    ) ?? Array.from(liveAssets.values())[0]
+    ) ?? Array.from(viewportAssets.values())[0]
 
     const asset = selectedAsset ?? fallbackAsset
     const fallbackDomain = DOMAIN_ORDER.find((candidate) => layers[candidate]?.visibility !== 'hidden') ?? 'Air'

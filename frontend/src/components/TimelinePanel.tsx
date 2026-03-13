@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { format, intervalToDuration } from 'date-fns'
+import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import type { PlaybackState } from '@/store/useMapStore'
 import type { SourceDomain } from '@/types/track'
@@ -267,9 +268,10 @@ if (typeof document !== 'undefined' && !document.getElementById('sentinel-scrubb
 // ── Main component ─────────────────────────────────────────────────
 export function TimelinePanel() {
   const {
-    playback, liveAssets,
+    playback,
     setPlaybackMode, setCurrentTime, setTimeWindow, setSpeedMultiplier, tickPlayback,
   } = useMapStore()
+  const { viewportAssets } = useLiveDataStore()
 
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [activePreset, setActivePreset] = useState<number | null>(null)
@@ -300,12 +302,12 @@ export function TimelinePanel() {
 
   const domainCounts = useMemo(() => {
     const counts: Partial<Record<SourceDomain, number>> = {}
-    for (const a of liveAssets.values()) {
+    for (const a of viewportAssets.values()) {
       const d = a.source_domain as SourceDomain
       counts[d] = (counts[d] ?? 0) + 1
     }
     return counts
-  }, [liveAssets])
+  }, [viewportAssets])
 
   function enterReplay(presetMs?: number) {
     const end   = new Date()

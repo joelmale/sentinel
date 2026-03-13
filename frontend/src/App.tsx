@@ -27,22 +27,17 @@ import { DomainStatusDashboard, type DomainStatusDashboardPayload } from '@/comp
 import { DisruptionDashboard, type DisruptionDashboardPayload } from '@/components/DisruptionDashboard'
 import { useLiveStream } from '@/hooks/useLiveStream'
 import { trackedFetchJson } from '@/lib/perf'
+import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import type {
   DisruptionEventResponse,
   LiveSummaryResponse,
+  SpaceAggregate,
   SpaceAggregateFeatureCollection,
   TrackEventProperties,
   TrackFeatureCollection,
   WsMessage,
 } from '@/types/track'
-
-type SpaceAggregate = {
-  constellation: string
-  count: number
-  lon: number
-  lat: number
-}
 
 function serializeBbox(bounds: { west: number; south: number; east: number; north: number } | null): string | null {
   if (!bounds) return null
@@ -68,8 +63,6 @@ function SentinelApp() {
   const {
     playback,
     upsertAssets,
-    replaceDomainAssets,
-    liveAssets,
     addAlert,
     selectedTrackId,
     selectedDomain,
@@ -83,6 +76,18 @@ function SentinelApp() {
     clearSelectedOrbitPoints,
     layers,
   } = useMapStore()
+  const {
+    globalSummary,
+    setGlobalSummary,
+    viewportAssets,
+    upsertViewportAssets,
+    replaceDomainViewportAssets,
+    spaceAggregates,
+    setSpaceAggregates,
+    selectedAssetDetail,
+    setSelectedAssetDetail,
+    clearSelectedAssetDetail,
+  } = useLiveDataStore()
   const [annotationPos, setAnnotationPos] = useState<{ lon: number; lat: number } | null>(null)
   const [now, setNow] = useState(new Date())
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -124,6 +129,10 @@ function SentinelApp() {
     refetchInterval: 30_000,
     staleTime: 15_000,
   })
+
+  useEffect(() => {
+    setGlobalSummary(liveSummaryQuery.data ?? null)
+  }, [liveSummaryQuery.data, setGlobalSummary])
 
   const viewportBbox = serializeBbox(viewportBounds)
   const shouldLoadSpaceDetails = (
@@ -212,10 +221,59 @@ function SentinelApp() {
   })
 
   useEffect(() => {
-    replaceDomainAssets('Air', liveViewportQuery.data?.air ?? [])
-    replaceDomainAssets('Maritime', liveViewportQuery.data?.maritime ?? [])
-    replaceDomainAssets('Space', liveViewportQuery.data?.space ?? [])
-  }, [liveViewportQuery.data, replaceDomainAssets])
+    const allViewportAssets = [
+      ...(liveViewportQuery.data?.air ?? []),
+      ...(liveViewportQuery.data?.maritime ?? []),
+      ...(liveViewportQuery.data?.space ?? []),
+    ]
+    replaceDomainViewportAssets('Air', liveViewportQuery.data?.air ?? [])
+    replaceDomainViewportAssets('Maritime', liveViewportQuery.data?.maritime ?? [])
+    replaceDomainViewportAssets('Space', liveViewportQuery.data?.space ?? [])
+    setSpaceAggregates(liveViewportQuery.data?.spaceAggregates ?? [])
+    if (allViewportAssets.length > 0) {
+      upsertAssets(allViewportAssets)
+    }
+  }, [liveViewportQuery.data, replaceDomainViewportAssets, setSpaceAggregates, upsertAssets])
+
+  const selectedAssetDetailQuery = useQuery({
+    queryKey: ['selected-asset-detail', selectedDomain, selectedTrackId],
+    enabled: Boolean(selectedDomain && selectedTrackId),
+    queryFn: async (): Promise<TrackEventProperties> => {
+      const params = new URLSearchParams({
+        domain: selectedDomain!,
+        track_id: selectedTrackId!,
+      })
+      const payload = await trackedFetchJson<{ properties: TrackEventProperties; geometry: { coordinates?: [number, number] } | null }>(
+        'selected-asset-detail',
+        `/api/tracks/detail?${params.toString()}`,
+      )
+      return {
+        ...payload.properties,
+        lon: payload.geometry?.coordinates?.[0],
+        lat: payload.geometry?.coordinates?.[1],
+        timestamp: payload.properties.last_seen ?? payload.properties.timestamp,
+      }
+    },
+    refetchOnWindowFocus: false,
+    refetchInterval: playback.mode === 'live' ? 15_000 : false,
+    staleTime: 5_000,
+  })
+
+  useEffect(() => {
+    if (!selectedTrackId || !selectedDomain) {
+      clearSelectedAssetDetail()
+      return
+    }
+    const viewportAsset = viewportAssets.get(`${selectedDomain}:${selectedTrackId}`) ?? null
+    setSelectedAssetDetail(selectedAssetDetailQuery.data ?? viewportAsset)
+  }, [
+    selectedTrackId,
+    selectedDomain,
+    viewportAssets,
+    selectedAssetDetailQuery.data,
+    setSelectedAssetDetail,
+    clearSelectedAssetDetail,
+  ])
 
   const selectedTrackHistoryQuery = useQuery({
     queryKey: [
@@ -396,8 +454,21 @@ function SentinelApp() {
       latestByKey.set(`${event.source_domain}:${event.track_id}`, event)
     }
     wsBatchRef.current = []
-    upsertAssets(Array.from(latestByKey.values()))
-  }, [upsertAssets])
+    const latest = Array.from(latestByKey.values())
+    upsertAssets(latest)
+    upsertViewportAssets(latest)
+
+    if (selectedTrackId && selectedDomain) {
+      const selectedKey = `${selectedDomain}:${selectedTrackId}`
+      const selectedEvent = latestByKey.get(selectedKey)
+      if (selectedEvent) {
+        setSelectedAssetDetail({
+          ...(selectedAssetDetail ?? {}),
+          ...selectedEvent,
+        } as TrackEventProperties)
+      }
+    }
+  }, [upsertAssets, upsertViewportAssets, selectedTrackId, selectedDomain, selectedAssetDetail, setSelectedAssetDetail])
 
   const scheduleWsFlush = useCallback(() => {
     if (wsFrameRef.current !== null) return
@@ -427,10 +498,10 @@ function SentinelApp() {
     onMessage: handleWsMessage,
   })
 
-  const assetsArray = Array.from(liveAssets.values())
+  const assetsArray = Array.from(viewportAssets.values())
 
   // Domain counts for the header
-  const counts = liveSummaryQuery.data?.domains ?? {
+  const counts = globalSummary?.domains ?? {
     Air: 0,
     Maritime: 0,
     Space: 0,
@@ -438,7 +509,7 @@ function SentinelApp() {
     Infra: 0,
   }
 
-  const totalTracked = liveSummaryQuery.data?.total ?? 0
+  const totalTracked = globalSummary?.total ?? 0
   const statItems = [
     { icon: '✈', key: 'Air', color: '#60a5fa' },
     { icon: '⚓', key: 'Maritime', color: '#22d3ee' },
@@ -627,7 +698,7 @@ function SentinelApp() {
         <MapCanvas
           liveAssets={assetsArray}
           disruptions={disruptionEventsQuery.data?.items ?? []}
-          spaceAggregates={liveViewportQuery.data?.spaceAggregates ?? []}
+          spaceAggregates={spaceAggregates}
           onMapClick={(lon, lat) => setAnnotationPos({ lon, lat })}
         />
       </div>
