@@ -567,7 +567,7 @@ async def get_live_assets(
     rows = result.mappings().all()
 
     if scope == "aggregate":
-        if domain != SourceDomain.Space:
+        if domain != SourceDomain.SPACE:
             raise HTTPException(status_code=400, detail="Aggregate live scope currently supports Space only.")
 
         grouped: dict[str, dict[str, Any]] = {}
