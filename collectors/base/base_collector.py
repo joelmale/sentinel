@@ -23,8 +23,8 @@ import logging
 import math
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime
-from uuid import NAMESPACE_URL, UUID, uuid5
+from datetime import date, datetime
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -307,6 +307,30 @@ class BaseCollector(ABC):
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS entity_enrichments (
+                entity_id UUID PRIMARY KEY REFERENCES entities(entity_id),
+                source_domain source_domain NOT NULL,
+                registration TEXT,
+                aircraft_type TEXT,
+                ship_type TEXT,
+                flag TEXT,
+                destination TEXT,
+                operator TEXT,
+                owner TEXT,
+                platform_type TEXT,
+                country_code TEXT,
+                object_type TEXT,
+                orbit_class TEXT,
+                purpose TEXT,
+                contractor TEXT,
+                launch_date DATE,
+                launch_site TEXT,
+                intl_designator TEXT,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """,
+            """
             CREATE TABLE IF NOT EXISTS asset_observations (
                 observation_id UUID PRIMARY KEY,
                 entity_id UUID REFERENCES entities(entity_id),
@@ -403,6 +427,7 @@ class BaseCollector(ABC):
             "CREATE INDEX IF NOT EXISTS idx_entity_assertions_attr ON entity_assertions (attribute_key, asserted_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_entity_impacts_source ON entity_impacts (source_entity_id, relationship_type, updated_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_entity_impacts_target ON entity_impacts (target_entity_id, relationship_type, updated_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_entity_enrichments_domain ON entity_enrichments (source_domain, updated_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_entity_time ON asset_observations (entity_id, observed_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_feed_record ON asset_observations (source_feed, source_record_id, observed_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_position ON asset_observations USING GIST (position)",
@@ -585,6 +610,101 @@ class BaseCollector(ABC):
                     json.dumps({"collector": self.FEED_NAME, "source_domain": event["source_domain"]}),
                 ))
         return rows
+
+    def _parse_date_value(self, value: object) -> date | None:
+        if value in (None, "", []):
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+            except ValueError:
+                try:
+                    return date.fromisoformat(text[:10])
+                except ValueError:
+                    return None
+        return None
+
+    def _stable_enrichment_rows_for_assets(
+        self,
+        events: list[dict],
+    ) -> list[tuple[UUID, str, str | None, str | None, str | None, str | None, str | None, str | None, str | None, str | None, str | None, str | None, str | None, str | None, date | None, str | None, str | None, str]]:
+        rows: dict[
+            UUID,
+            tuple[
+                UUID,
+                str,
+                str | None,
+                str | None,
+                str | None,
+                str | None,
+                str | None,
+                str | None,
+                str | None,
+                str | None,
+                str | None,
+                str | None,
+                str | None,
+                str | None,
+                date | None,
+                str | None,
+                str | None,
+                str,
+            ],
+        ] = {}
+        structured_keys = {
+            "registration",
+            "aircraft_type",
+            "ship_type",
+            "flag",
+            "destination",
+            "operator",
+            "owner",
+            "platform_type",
+            "country_code",
+            "object_type",
+            "orbit_class",
+            "purpose",
+            "contractor",
+            "launch_date",
+            "launch_site",
+            "intl_designator",
+        }
+        for event in events:
+            metadata = _public_metadata(event.get("metadata"))
+            entity_id = self._asset_entity_id(event["source_domain"], str(event["track_id"]))
+            rows[entity_id] = (
+                entity_id,
+                event["source_domain"],
+                metadata.get("registration"),
+                metadata.get("aircraft_type"),
+                metadata.get("ship_type"),
+                metadata.get("flag"),
+                metadata.get("destination"),
+                metadata.get("operator"),
+                metadata.get("owner"),
+                metadata.get("platform_type"),
+                metadata.get("country_code"),
+                metadata.get("object_type"),
+                metadata.get("orbit_class"),
+                metadata.get("purpose"),
+                metadata.get("contractor"),
+                self._parse_date_value(metadata.get("launch_date")),
+                metadata.get("launch_site"),
+                metadata.get("intl_designator"),
+                json.dumps({
+                    key: metadata[key]
+                    for key in sorted(metadata.keys())
+                    if key not in structured_keys
+                }),
+            )
+        return list(rows.values())
 
     async def _register_source(self) -> None:
         async with self._db.acquire() as conn:
@@ -793,6 +913,43 @@ class BaseCollector(ABC):
                     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb)
                     ON CONFLICT (assertion_id) DO NOTHING
                 """, assertion_rows)
+
+            enrichment_rows = self._stable_enrichment_rows_for_assets(current_state_events)
+            if enrichment_rows:
+                await conn.executemany("""
+                    INSERT INTO entity_enrichments (
+                        entity_id, source_domain, registration, aircraft_type, ship_type, flag,
+                        destination, operator, owner, platform_type, country_code, object_type,
+                        orbit_class, purpose, contractor, launch_date, launch_site,
+                        intl_designator, metadata
+                    )
+                    VALUES (
+                        $1, $2::source_domain, $3, $4, $5, $6,
+                        $7, $8, $9, $10, $11, $12,
+                        $13, $14, $15, $16, $17,
+                        $18, $19::jsonb
+                    )
+                    ON CONFLICT (entity_id) DO UPDATE SET
+                        source_domain = EXCLUDED.source_domain,
+                        registration = COALESCE(EXCLUDED.registration, entity_enrichments.registration),
+                        aircraft_type = COALESCE(EXCLUDED.aircraft_type, entity_enrichments.aircraft_type),
+                        ship_type = COALESCE(EXCLUDED.ship_type, entity_enrichments.ship_type),
+                        flag = COALESCE(EXCLUDED.flag, entity_enrichments.flag),
+                        destination = COALESCE(EXCLUDED.destination, entity_enrichments.destination),
+                        operator = COALESCE(EXCLUDED.operator, entity_enrichments.operator),
+                        owner = COALESCE(EXCLUDED.owner, entity_enrichments.owner),
+                        platform_type = COALESCE(EXCLUDED.platform_type, entity_enrichments.platform_type),
+                        country_code = COALESCE(EXCLUDED.country_code, entity_enrichments.country_code),
+                        object_type = COALESCE(EXCLUDED.object_type, entity_enrichments.object_type),
+                        orbit_class = COALESCE(EXCLUDED.orbit_class, entity_enrichments.orbit_class),
+                        purpose = COALESCE(EXCLUDED.purpose, entity_enrichments.purpose),
+                        contractor = COALESCE(EXCLUDED.contractor, entity_enrichments.contractor),
+                        launch_date = COALESCE(EXCLUDED.launch_date, entity_enrichments.launch_date),
+                        launch_site = COALESCE(EXCLUDED.launch_site, entity_enrichments.launch_site),
+                        intl_designator = COALESCE(EXCLUDED.intl_designator, entity_enrichments.intl_designator),
+                        metadata = COALESCE(entity_enrichments.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+                        updated_at = NOW()
+                """, enrichment_rows)
 
             if history_events:
                 await conn.executemany("""

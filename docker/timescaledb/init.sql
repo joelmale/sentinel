@@ -127,6 +127,32 @@ CREATE INDEX idx_entity_impacts_source
 CREATE INDEX idx_entity_impacts_target
     ON entity_impacts (target_entity_id, relationship_type, updated_at DESC);
 
+CREATE TABLE entity_enrichments (
+    entity_id           UUID            PRIMARY KEY REFERENCES entities(entity_id),
+    source_domain       source_domain   NOT NULL,
+    registration        TEXT,
+    aircraft_type       TEXT,
+    ship_type           TEXT,
+    flag                TEXT,
+    destination         TEXT,
+    operator            TEXT,
+    owner               TEXT,
+    platform_type       TEXT,
+    country_code        TEXT,
+    object_type         TEXT,
+    orbit_class         TEXT,
+    purpose             TEXT,
+    contractor          TEXT,
+    launch_date         DATE,
+    launch_site         TEXT,
+    intl_designator     TEXT,
+    metadata            JSONB           DEFAULT '{}'::jsonb,
+    updated_at          TIMESTAMPTZ     DEFAULT NOW()
+);
+
+CREATE INDEX idx_entity_enrichments_domain
+    ON entity_enrichments (source_domain, updated_at DESC);
+
 -- ── Core track events table ───────────────────────────────────────
 -- Canonical historical track samples used for analyst replay/history.
 -- Linked back to the raw normalized observation that produced the sample.
