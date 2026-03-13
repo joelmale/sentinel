@@ -32,7 +32,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import DeckGL from '@deck.gl/react'
 // GlobeView is an experimental API in deck.gl v9 — prefixed with underscore
-import { _GlobeView as GlobeView } from '@deck.gl/core'
+import { _GlobeView as GlobeView, WebMercatorViewport } from '@deck.gl/core'
 import { ScatterplotLayer, PathLayer, TextLayer, GeoJsonLayer, BitmapLayer } from '@deck.gl/layers'
 import { TileLayer } from '@deck.gl/geo-layers'
 import type { MapViewState, Layer } from '@deck.gl/core'
@@ -142,6 +142,14 @@ type SpaceAggregate = {
 }
 
 const LARGE_CONSTELLATION_THRESHOLD = 50
+const VIEWPORT_CULL_MARGIN_RATIO = 0.18
+
+type ViewBounds = {
+  west: number
+  south: number
+  east: number
+  north: number
+}
 
 function circularMeanLongitude(longitudes: number[]): number {
   if (longitudes.length === 0) return 0
@@ -189,6 +197,37 @@ function formatScaleDistance(meters: number): string {
   return `${Math.round(meters)} m`
 }
 
+function normalizeLongitude(lon: number): number {
+  if (!Number.isFinite(lon)) return lon
+  return ((((lon + 180) % 360) + 360) % 360) - 180
+}
+
+function expandBounds(bounds: ViewBounds, ratio: number): ViewBounds {
+  const lonSpan = ((bounds.east - bounds.west + 360) % 360) || 360
+  const latSpan = Math.max(0.1, bounds.north - bounds.south)
+  const lonMargin = Math.min(160, Math.max(8, lonSpan * ratio))
+  const latMargin = Math.min(45, Math.max(4, latSpan * ratio))
+  return {
+    west: normalizeLongitude(bounds.west - lonMargin),
+    east: normalizeLongitude(bounds.east + lonMargin),
+    south: Math.max(-90, bounds.south - latMargin),
+    north: Math.min(90, bounds.north + latMargin),
+  }
+}
+
+function isLonInBounds(lon: number, bounds: ViewBounds): boolean {
+  const normalizedLon = normalizeLongitude(lon)
+  const west = normalizeLongitude(bounds.west)
+  const east = normalizeLongitude(bounds.east)
+  if (west <= east) return normalizedLon >= west && normalizedLon <= east
+  return normalizedLon >= west || normalizedLon <= east
+}
+
+function isPointInBounds(lon: number | undefined, lat: number | undefined, bounds: ViewBounds | null): boolean {
+  if (!bounds || typeof lon !== 'number' || typeof lat !== 'number') return false
+  return lat >= bounds.south && lat <= bounds.north && isLonInBounds(lon, bounds)
+}
+
 export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProps) {
   const {
     viewport,
@@ -223,6 +262,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
   const [rendererDisabled, setRendererDisabled] = useState(false)
   const [cocomFailed, setCocomFailed] = useState(false)
   const [localViewport, setLocalViewport] = useState(viewport)
+  const [containerSize, setContainerSize] = useState({ width: 1, height: 1 })
+  const containerRef = useRef<HTMLDivElement | null>(null)
   const faultHandledRef = useRef(false)
   const resizeFaultSeenRef = useRef(false)
   const interactionActiveRef = useRef(false)
@@ -232,6 +273,24 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     setLocalViewport(viewport)
   }, [viewport])
 
+  useEffect(() => {
+    const node = containerRef.current
+    if (!node) return
+
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect()
+      setContainerSize({
+        width: Math.max(1, Math.round(rect.width)),
+        height: Math.max(1, Math.round(rect.height)),
+      })
+    }
+
+    updateSize()
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
   const viewState: MapViewState = {
     longitude: localViewport.longitude,
     latitude:  localViewport.latitude,
@@ -240,9 +299,27 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     pitch:     localViewport.pitch,
   }
 
+  const cullBounds = useMemo(() => {
+    try {
+      const mercator = new WebMercatorViewport({
+        width: containerSize.width,
+        height: containerSize.height,
+        longitude: localViewport.longitude,
+        latitude: localViewport.latitude,
+        zoom: localViewport.zoom,
+        bearing: localViewport.bearing,
+        pitch: localViewport.pitch,
+      })
+      const [west, south, east, north] = mercator.getBounds() as [number, number, number, number]
+      return expandBounds({ west, south, east, north }, VIEWPORT_CULL_MARGIN_RATIO)
+    } catch {
+      return null
+    }
+  }, [containerSize.height, containerSize.width, localViewport])
+
   // Filter assets: hidden layers and filtered classifications are excluded entirely.
   // Muted layers pass through (rendered dimmed). Think of hidden=off, muted=context.
-  const visibleAssets = useMemo(() => {
+  const filteredAssets = useMemo(() => {
     const isHiddenByGroup = (asset: TrackEventProperties): boolean => {
       const domain = asset.source_domain
       const hidden = hiddenGroupFilters[domain] ?? []
@@ -278,9 +355,18 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     })
   }, [liveAssets, layers, classFilter, hiddenGroupFilters])
 
+  const viewportAssets = useMemo(() => (
+    filteredAssets.filter((asset) => isPointInBounds(asset.lon, asset.lat, cullBounds))
+  ), [filteredAssets, cullBounds])
+
   const visibleDisruptions = useMemo(() => (
-    disruptions.filter((event) => layers[event.source_domain]?.visibility !== 'hidden')
-  ), [disruptions, layers])
+    disruptions.filter((event) => {
+      if (layers[event.source_domain]?.visibility === 'hidden') return false
+      const centroid = event.centroid?.coordinates
+      if (centroid) return isPointInBounds(centroid[0], centroid[1], cullBounds)
+      return true
+    })
+  ), [disruptions, layers, cullBounds])
 
   // Workspace search match set — drives declutter opacity on map.
   // Like a spotlight: when declutter mode is on, non-matching tracks dim to ~10%.
@@ -288,7 +374,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     const q = workspaceSearch.trim().toLowerCase()
     if (!q) return null
     const set = new Set<string>()
-    for (const a of visibleAssets) {
+    for (const a of filteredAssets) {
       if (
         a.track_id.toLowerCase().includes(q) ||
         (a.callsign ?? '').toLowerCase().includes(q) ||
@@ -298,7 +384,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }
     }
     return set
-  }, [visibleAssets, workspaceSearch])
+  }, [filteredAssets, workspaceSearch])
 
   const spacePriorityKeys = useMemo(() => {
     const keys = new Set<string>()
@@ -557,20 +643,23 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
 
     // ── Maritime: live positions ─────────────────────────────────
     if (layers.Maritime.visibility !== 'hidden') {
-      const selectedMaritimeAsset = visibleAssets.find(
+      const maritimeAssets = viewportAssets.filter(
+        (a) => a.source_domain === 'Maritime' && typeof a.lon === 'number' && typeof a.lat === 'number',
+      )
+      const maritimeTrails = Array.from(trailBuffer.entries())
+        .filter(([key]) => key.startsWith('Maritime:'))
+        .map(([key, positions]) => ({ key, positions }))
+        .filter((d) => d.positions.length >= 2 && d.positions.some((p) => isPointInBounds(p.lon, p.lat, cullBounds)))
+
+      const selectedMaritimeAsset = maritimeAssets.find(
         (a) =>
-          a.source_domain === 'Maritime' &&
           a.track_id === selectedTrackId &&
-          selectedDomain === 'Maritime' &&
-          typeof a.lon === 'number' &&
-          typeof a.lat === 'number',
+          selectedDomain === 'Maritime',
       )
 
       ls.push(new TextLayer<TrackEventProperties>({
         id: 'ais-live-icons',
-        data: visibleAssets.filter(
-          (a) => a.source_domain === 'Maritime' && typeof a.lon === 'number' && typeof a.lat === 'number',
-        ),
+        data: maritimeAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
         getText: () => '⚓',
         // Black anchors — high contrast; alpha dims when declutter search is active
@@ -625,10 +714,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       if (showTrails) {
         ls.push(new PathLayer({
           id: 'maritime-trails',
-          data: Array.from(trailBuffer.entries())
-            .filter(([key]) => key.startsWith('Maritime:'))
-            .map(([key, positions]) => ({ key, positions }))
-            .filter(d => d.positions.length >= 2),
+          data: maritimeTrails,
           getPath: (d: { positions: Array<{ lon: number; lat: number; timestamp: number }> }) =>
             d.positions.map(p => [p.lon, p.lat] as [number, number]),
           getColor: [80, 80, 80, 100],
@@ -642,20 +728,23 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
 
     // ── Air: live positions ──────────────────────────────────────
     if (layers.Air.visibility !== 'hidden') {
-      const selectedAirAsset = visibleAssets.find(
+      const airAssets = viewportAssets.filter(
+        (a) => a.source_domain === 'Air' && typeof a.lon === 'number' && typeof a.lat === 'number',
+      )
+      const airTrails = Array.from(trailBuffer.entries())
+        .filter(([key]) => key.startsWith('Air:'))
+        .map(([key, positions]) => ({ key, positions }))
+        .filter((d) => d.positions.length >= 2 && d.positions.some((p) => isPointInBounds(p.lon, p.lat, cullBounds)))
+
+      const selectedAirAsset = airAssets.find(
         (a) =>
-          a.source_domain === 'Air' &&
           a.track_id === selectedTrackId &&
-          selectedDomain === 'Air' &&
-          typeof a.lon === 'number' &&
-          typeof a.lat === 'number',
+          selectedDomain === 'Air',
       )
 
       ls.push(new TextLayer<TrackEventProperties>({
         id: 'adsb-live-icons',
-        data: visibleAssets.filter(
-          (a) => a.source_domain === 'Air' && typeof a.lon === 'number' && typeof a.lat === 'number',
-        ),
+        data: airAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
         getText: () => '✈',
         getColor: (d: TrackEventProperties) => {
@@ -715,10 +804,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       if (showTrails) {
         ls.push(new PathLayer({
           id: 'air-trails',
-          data: Array.from(trailBuffer.entries())
-            .filter(([key]) => key.startsWith('Air:'))
-            .map(([key, positions]) => ({ key, positions }))
-            .filter(d => d.positions.length >= 2),
+          data: airTrails,
           getPath: (d: { positions: Array<{ lon: number; lat: number; timestamp: number }> }) =>
             d.positions.map(p => [p.lon, p.lat] as [number, number]),
           getColor: [100, 181, 246, 120],
@@ -732,7 +818,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
 
     // ── Space / Satellites: live positions ───────────────────────
     if (layers.Space.visibility !== 'hidden') {
-      const spaceAssets = visibleAssets.filter(
+      const spaceAssets = viewportAssets.filter(
         (a) => a.source_domain === 'Space' && typeof a.lon === 'number' && typeof a.lat === 'number',
       )
 
@@ -1001,13 +1087,13 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }))
     }
 
-    const airCount = visibleAssets.filter((asset) => asset.source_domain === 'Air').length
-    const maritimeCount = visibleAssets.filter((asset) => asset.source_domain === 'Maritime').length
+    const airCount = viewportAssets.filter((asset) => asset.source_domain === 'Air').length
+    const maritimeCount = viewportAssets.filter((asset) => asset.source_domain === 'Maritime').length
     const deckBuildMs = performance.now() - buildStarted
     return {
       layers: ls,
       stats: {
-        visibleAssets: visibleAssets.length,
+        visibleAssets: viewportAssets.length,
         visibleDisruptions: visibleDisruptions.length,
         layerCount: ls.length,
         deckBuildMs,
@@ -1019,7 +1105,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       },
     }
   }, [
-    visibleAssets,
+    viewportAssets,
     visibleDisruptions,
     layers,
     domainOpacity,
@@ -1045,6 +1131,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     declutterMode,
     searchMatchSet,
     localViewport.zoom,
+    cullBounds,
   ])
 
   useEffect(() => {
@@ -1102,6 +1189,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
 
   return (
     <div
+      ref={containerRef}
       className="relative w-full h-full"
       style={{
         cursor: deckCursor,
