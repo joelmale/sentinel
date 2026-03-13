@@ -1,195 +1,98 @@
 Overall UX Assessment
-  Sentinel is a strong visualization prototype, but it is not yet a strong operational workflow. The current UX centers the map as the primary object
-  and treats analysis as secondary. That works for situational awareness demos, but it breaks down for real monitoring, investigation, and incident
-  reconstruction.
+  Sentinel has moved meaningfully closer to an operational workflow since this feedback was first written. The UI is no longer just a map with a few
+  controls attached to it: it now has a real alert queue, an investigation context, tri-state layer visibility, and timeline activity density.
 
-  The current structure suggests this operator loop: watch the map, click a track, inspect a detail card, scrub time, toggle a few layers. That is
-  useful for seeing activity, but too shallow for answering harder ISR questions such as: what changed, why does this matter, what is abnormal, what
-  is correlated across domains, and what should I act on next.
+  The remaining gap is not basic capability. It is workflow discipline. The app still leans too heavily on a track-browser mental model, especially in
+  the left panel and the selected asset card. The next round of UX work should focus on reducing generic browsing behavior and strengthening the
+  analyst loop: detect, focus, correlate, decide, preserve.
 
-  The prototype is visually coherent and already has the right basic primitives, but it needs to evolve from “map with supporting widgets” into
-  “analyst workspace with a map as one instrument.” The current composition in App.tsx, SourcePanel.tsx, TimelinePanel.tsx, and AssetCard.tsx shows
-  good intent, but still prioritizes display over investigation.
+Current State Versus Earlier Feedback
 
-  What The Current Prototype Gets Right
+  Completed since the original critique:
 
-  - The product already thinks in operational domains rather than one generic asset list. That is the correct frame for ISR/C2.
-  - The header and timeline establish live vs replay as first-class modes. That is essential and correctly directional in TimelinePanel.tsx.
-  - The left-side source panel is denser than a typical consumer map UI and already supports per-domain toggles, search, and classification filters in
-    SourcePanel.tsx.
-  - The right-side asset card is not just a tooltip. It is moving toward an object dossier, which is the right pattern in AssetCard.tsx.
-  - The map rendering stack already distinguishes live positions, history, trails, and orbital paths in MapCanvas.tsx. That is analytically useful.
-  - The new Space watch dashboard direction is good because it introduces monitored system state rather than only plotted tracks.
+  - alert queue as a first-class panel now exists
+  - alert triage and investigation context now exist
+  - legacy alert toasts have been removed from the primary workflow
+  - a distinct investigation context panel now exists beside the queue and asset card
+  - tri-state domain visibility exists
+  - timeline activity density by domain already exists
 
-  Top Workflow Problems
+  Still true from the original critique:
 
-  - The information architecture is track-centric, not task-centric. Operators investigate incidents, regions, anomalies, and alert queues, not just
-    individual tracks.
-  - The map is doing too much conceptual work. It is the default entry point for everything, but many analytical tasks should begin from alerts,
-    watchlists, event clusters, or temporal changes.
-  - The source panel mixes layer control, search, filtering, and entity browsing in one vertical surface. That is workable at prototype scale, but it
-    will collapse under real data volume.
-  - Filtering is too local and too passive. Current classification chips are basically visibility masks. They do not feel like analytical filters that
-    reshape the whole workspace.
-  - Live and replay modes exist, but they are not operational modes yet. They are time states, not workflow states.
-  - The selected asset card is useful once an operator already knows what to click, but the system does not help operators discover what is worth
-    clicking.
-  - Alerts appear to be notifications rather than investigation objects. A serious ISR workflow needs alert triage, grouping, acknowledgment, context,
-    and escalation.
-  - The current UI still answers “where is it?” better than “what changed?”, “what is unusual?”, and “what should I look at next?”
+  - the information architecture is still more track-centric than task-centric
+  - the source panel still mixes too many responsibilities
+  - filters still read more like local visibility controls than workspace constraints
+  - the timeline is stronger, but still needs event-aware investigation actions
+  - investigation context exists, but it is not yet persistent or collaborative
 
-  Recommended Primary Screens/Panels
-  Sentinel should evolve toward five primary operational surfaces.
+What The Current Prototype Gets Right
 
-  - 1. Live Operations View
-    Purpose: continuous monitoring, active alert triage, watchlist status, current anomalies.
-    Keep the map, but make alert queue and watchlist state equal peers to it.
-  - 2. Incident Review View
-    Purpose: understand a detected event in a bounded time window and geography.
-    This should pivot around the event, not around whichever track was clicked first.
-  - 3. Historical Analysis View
-    Purpose: replay, compare time windows, correlate multi-domain activity, and inspect before/during/after patterns.
-    This needs stronger event density and temporal summarization than the current scrubber-centric replay.
-  - 4. Watchlist / Collection Health View
-    Purpose: curated assets, source freshness, source coverage, stale tracks, missing feeds, degraded pipelines.
-    The new Space dashboard is the start of this pattern and should generalize.
-  - 5. Alert Queue / Investigation Workbench
-    Purpose: triage alerts, assign severity, inspect linked assets, save annotations, and build an evidence trail.
+  - Operational domains remain the right organizing principle.
+  - Live and replay are first-class modes in the timeline.
+  - Alert triage now behaves more like a work surface than a notification stream.
+  - Investigation can now pivot the workspace and hold bounded context.
+  - The timeline already provides cross-domain activity density, which is the right foundation for time-based analysis.
+  - Health/dashboard surfaces are starting to expand beyond “just draw more tracks.”
 
-  In the current UI, I would add these panels before adding more map ornamentation:
+What Was Just Changed
 
-  - a left-center alert queue panel
-  - a bottom-center event density lane above the timeline
-  - a right-side investigation panel distinct from the asset card
-  - a top or side watchlist/health strip for source confidence and stale feeds
+  - Removed the old toast-style alert notifications so the alert queue is the single primary alert surface.
+  - Added a compact investigation context panel so an active case is explicit and remains visible apart from the asset card.
 
-  Recommended Map / Layer / Filter Behavior
-  The map should remain central, but it should become a controlled viewport into analysis, not the only analytic surface.
+Recommended Changes Still Remaining
 
-  - Layers should be grouped by function, not just by domain.
-    Use groups such as:
-      - live tracks
-      - trails/history
-      - disruption overlays
-      - areas/ROIs
-      - alerts/incidents
-      - infrastructure/context
-  - Filters should be global analytical constraints, not local row toggles.
-    A filter action should affect:
-      - map
-      - track list
-      - alert list
-      - timeline
-      - stats
-      - detail panel
-  - Domain toggles should support three states:
-      - visible and active
-      - muted/context-only
-      - hidden
-        Right now the behavior is too binary.
-  - Layer priority and decluttering need stronger control.
-    In dense areas the system should support:
-      - aggregate mode
-      - symbol thinning
-      - anomaly-first rendering
-      - “selected entities only” overlays
-  - Disruption layers should not sit beside normal layers as equal visual decorations.
-    They should be analytical modifiers with threshold controls, opacity controls, and event correlation hooks.
-  - The map needs explicit analytical modes:
-      - monitor
-      - investigate
-      - compare
-      - annotate
-        The same map should behave differently in each mode.
+  Highest impact for relatively small or moderate effort:
 
-  Recommended Timeline And Playback Behavior
-  The current timeline is more mature than the rest of the workflow, but it still behaves like a media player more than an analysis instrument.
+  - Split the current source panel into clearer analytical sections or tabs so it is not simultaneously acting as layer control, search, filter hub,
+    and entity browser.
+  - Reframe filters as workspace constraints that visibly affect map, list, queue, timeline, and detail views together.
+  - Add alert markers to the timeline and make “jump to event” a first-class action.
+  - Add bookmarkable investigation windows such as before, during, and after.
+  - Surface source freshness and confidence more explicitly at object and investigation level.
 
-  - The timeline should show activity density by domain, not just a scrubber.
-  - Alerts and annotations should be visible on the time axis as markers.
-  - Playback should support “jump to event” and “jump to next anomaly,” not only manual scrub.
-  - Analysts need bookmarkable time slices:
-      - before event
-      - event window
-      - after event
-  - Historical analysis should support side-by-side or overlaid comparison of two windows.
-  - Replay should preserve filters and selected investigation context, not reset the user into generic browsing.
-  - Time controls should support linked map behavior:
-      - freeze selected tracks
-      - show last-known positions
-      - ghost prior states
-      - highlight entrants/exits to a region
+  Higher effort but strategically important:
 
-  The current replay bar in TimelinePanel.tsx is strong as a foundation, but it needs event density and correlation overlays to become operationally
-  credible.
+  - Alert grouping and deduplication beyond raw alert IDs.
+  - Region-of-interest workflows with saved operational areas.
+  - Cross-domain correlation hints and anomaly explanations.
+  - Saved investigations, saved views, annotations, and evidence persistence.
 
-  Recommended Alert And Investigation Workflow
-  This is the biggest missing operational layer.
+Phased Plan
 
-  A serious workflow should be:
+  Phase 1: Filter And Panel Discipline
 
-  1. Alert appears in a queue with severity, source, confidence, affected domains, and region.
-  2. Operator opens the alert into an investigation context.
-  3. System pivots the map, timeline, filters, and related asset list to that alert automatically.
-  4. Operator sees:
-      - triggering conditions
-      - related assets
-      - nearby correlated events
-      - disruption overlays active at that time
-      - recent annotations in the same region
-  5. Operator acknowledges, annotates, escalates, or dismisses.
-  6. The investigation state becomes persistent and shareable.
+  - Break the source panel into clearer modes or tabs.
+  - Turn the current filter summary into explicit workspace constraints language.
+  - Reduce generic counts that are not tied to change, anomaly, or threshold.
+  - Keep the asset card focused on decision-relevant information rather than accumulating more badges.
 
-  What is missing today:
+  Phase 2: Time-As-Investigation
 
-  - alert queue as a first-class panel
-  - alert grouping and deduplication
-  - investigation state
-  - saved views / saved queries
-  - correlation suggestions
-  - explicit severity/confidence treatment
+  - Add alert markers directly to the timeline.
+  - Add jump-to-alert and jump-to-next-anomaly controls.
+  - Add quick investigation window bookmarks such as before, event window, and after.
+  - Preserve investigation context more explicitly when moving through replay.
 
-  Right now alerts appear closer to toast notifications than case objects. That is fine for a prototype, but it is not enough for operations.
+  Phase 3: Operational Context
 
-  What To Remove Or Simplify
+  - Add source freshness and confidence indicators to asset and investigation views.
+  - Add a watchlist and collection-health strip spanning all domains, not just space.
+  - Add region-of-interest workflows for saved areas and entry/exit monitoring.
 
-  - Do not keep adding domain-specific visual badges in the asset card unless they support decision-making. Some of the current card richness is
-    informative but not operationally essential.
-  - Do not let the source panel become the place where every control goes. It already risks becoming a vertical junk drawer.
-  - Avoid consumer-style “everything visible at once” behavior on the map. Dense ISR tools need controlled suppression and prioritization.
-  - Reduce the number of places where counts are shown without context. Counts are useful only if tied to change, anomaly, or threshold.
-  - Do not over-invest in decorative map polish before adding investigation structure.
+  Phase 4: Correlation
 
-  What To Add Next
+  - Group related alerts into case-like clusters instead of flat rows.
+  - Add cross-domain correlation cues linking disruptions, tracks, and temporal anomalies.
+  - Improve escalation logic so operators see why the system thinks something matters.
 
-  - A real alert queue panel with triage state.
-  - A multi-domain event strip above the timeline.
-  - A region-of-interest panel with saved operational areas and entry/exit logic.
-  - A watchlist panel that spans all domains, not just space.
-  - Investigation mode with a bounded context:
-      - selected incident
-      - related assets
-      - time window
-      - overlays
-      - notes
-  - Cross-domain correlation cues:
-      - “GPS jamming increase overlaps with vessel loitering and ADS-B thinning”
-      - “satellite pass coincides with RF event”
-  - Source confidence and freshness indicators at the object level, not only in health dashboards.
+  Phase 5: Persistence
 
-  Near-Term UX Roadmap
+  - Save investigations and restore them later.
+  - Add shared views and pinned investigative context.
+  - Persist annotations, notes, and evidence trails so the system supports handoff and review.
 
-  - Phase 1: Operational Structure
-    Add alert queue, event markers on timeline, and a proper investigation context panel. This is the highest-value change.
-  - Phase 2: Filter And Layer Discipline
-    Convert filters into workspace-wide analytical constraints and add tri-state layer behavior plus decluttering modes.
-  - Phase 3: Time-As-Analysis
-    Upgrade replay with event density, bookmarks, jump-to-event, and before/during/after comparison.
-  - Phase 4: Watchlists And Collection Health
-    Expand the new watch dashboard pattern across domains and connect watchlists to alerting and incident review.
-  - Phase 5: Analyst Persistence
-    Add saved investigations, shared views, pinned objects, and persistent hypotheses/annotations.
+Current Recommendation
 
-  My blunt assessment: the prototype is already beyond a demo-grade map toy, but it is still optimized more for seeing tracks than for conducting
-  analysis. The next step is not “more layers.” It is building the workflows that help an operator decide what matters, investigate it quickly, and
-  preserve that work.
+  Do not spend the next cycle adding more visual overlays or richer badges to existing cards. The highest-value path is to make the current workflow
+  surfaces feel more intentional: alert queue, investigation context, source/filter discipline, and time-based navigation. That is the shortest path
+  from a strong visualization prototype to a genuinely usable analyst workspace.

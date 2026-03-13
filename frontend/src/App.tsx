@@ -19,8 +19,8 @@ import { TimelinePanel } from '@/components/TimelinePanel'
 import { AssetCard } from '@/components/AssetCard'
 import { UnderseaLandingPointCard } from '@/components/UnderseaLandingPointCard'
 import { AnnotationModal } from '@/components/AnnotationModal'
-import { AlertNotification } from '@/components/AlertNotification'
 import { AlertQueuePanel } from '@/components/AlertQueuePanel'
+import { InvestigationPanel } from '@/components/InvestigationPanel'
 import { SpaceWatchDashboard, type SpaceWatchDashboardPayload } from '@/components/SpaceWatchDashboard'
 import { DomainStatusDashboard, type DomainStatusDashboardPayload } from '@/components/DomainStatusDashboard'
 import { DisruptionDashboard, type DisruptionDashboardPayload } from '@/components/DisruptionDashboard'
@@ -492,9 +492,7 @@ function SentinelApp() {
 
       {/* ── Alert queue panel (bottom-right investigation workbench) ── */}
       <AlertQueuePanel />
-
-      {/* ── Alert notifications (legacy toast — still shows for quick flash) ── */}
-      <AlertNotification />
+      <InvestigationPanel />
 
       <SpaceWatchDashboard
         open={spaceDashboardOpen}
