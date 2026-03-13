@@ -233,6 +233,8 @@ interface MapStore {
   hiddenGroupFilters: Partial<Record<SourceDomain, string[]>>
   toggleHiddenGroupFilter: (domain: SourceDomain, key: string) => void
   clearHiddenGroupFilters: (domain: SourceDomain) => void
+  demoFilterSelection: Partial<Record<SourceDomain, string | null>>
+  setDemoFilterSelection: (domain: SourceDomain, key: string | null) => void
 
   // Group exclusion — set of 'domain:track_id' keys that should be dimmed on the map.
   // Unlike hiddenGroupFilters (which removes tracks entirely), these remain visible but
@@ -520,6 +522,9 @@ export const useMapStore = create<MapStore>()(
       }),
     clearHiddenGroupFilters: (domain) =>
       set((s) => ({ hiddenGroupFilters: { ...s.hiddenGroupFilters, [domain]: [] } })),
+    demoFilterSelection: {},
+    setDemoFilterSelection: (domain, key) =>
+      set((s) => ({ demoFilterSelection: { ...s.demoFilterSelection, [domain]: key } })),
 
     // ── Group exclusion (dim on map) ─────────────────────────────
     groupExcludedTracks: new Set<string>(),

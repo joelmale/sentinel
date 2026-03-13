@@ -31,6 +31,7 @@ import {
   objectTypeSort,
   orbitClassSort,
 } from '@/data/grouping'
+import { buildDemoFilterOptions, getDefaultDemoFilterKey, matchesAssetDemoFilter } from '@/data/demoFilters'
 
 // ── Domain display config ─────────────────────────────────────────
 const DOMAIN_ORDER: SourceDomain[] = ['Air', 'Maritime', 'Space', 'GPS', 'Infra']
@@ -503,6 +504,8 @@ export function SourcePanel() {
     hiddenGroupFilters,
     toggleHiddenGroupFilter,
     clearHiddenGroupFilters,
+    demoFilterSelection,
+    setDemoFilterSelection,
     spaceTrackDuration,
     setSpaceTrackDuration,
     workspaceSearch,
@@ -640,7 +643,7 @@ export function SourcePanel() {
   })
 
   // Group assets by domain
-  const assetsByDomain = useMemo(() => {
+  const rawAssetsByDomain = useMemo(() => {
     const map = new Map<SourceDomain, TrackEventProperties[]>()
     for (const d of DOMAIN_ORDER) map.set(d, [])
     for (const a of uiViewportAssets.values()) {
@@ -659,6 +662,37 @@ export function SourcePanel() {
     return map
   }, [uiViewportAssets, selectedTrackId, selectedDomain])
 
+  const demoFilterOptions = useMemo(() => {
+    const next: Partial<Record<SourceDomain, ReturnType<typeof buildDemoFilterOptions>>> = {}
+    for (const domain of DOMAIN_ORDER) {
+      next[domain] = buildDemoFilterOptions(domain, rawAssetsByDomain.get(domain) ?? [])
+    }
+    return next
+  }, [rawAssetsByDomain])
+
+  useEffect(() => {
+    for (const domain of DOMAIN_ORDER) {
+      const options = demoFilterOptions[domain] ?? []
+      const selected = demoFilterSelection[domain] ?? null
+      const stillValid = selected ? options.some((option) => option.key === selected) : false
+      if (stillValid) continue
+      const nextDefault = getDefaultDemoFilterKey(domain, options)
+      if (selected !== nextDefault) {
+        setDemoFilterSelection(domain, nextDefault)
+      }
+    }
+  }, [demoFilterOptions, demoFilterSelection, setDemoFilterSelection])
+
+  const assetsByDomain = useMemo(() => {
+    const map = new Map<SourceDomain, TrackEventProperties[]>()
+    for (const domain of DOMAIN_ORDER) {
+      const selected = demoFilterSelection[domain] ?? null
+      const filtered = (rawAssetsByDomain.get(domain) ?? []).filter((asset) => matchesAssetDemoFilter(asset, selected))
+      map.set(domain, filtered)
+    }
+    return map
+  }, [rawAssetsByDomain, demoFilterSelection])
+
   // Flat filtered list for search mode — driven by workspace-wide search in store
   const filteredAssets = useMemo(() => {
     const q = workspaceSearch.trim().toLowerCase()
@@ -667,6 +701,7 @@ export function SourcePanel() {
       .filter((a) => {
         // Exclude hidden domains from search results
         if (layers[a.source_domain as keyof typeof layers]?.visibility === 'hidden') return false
+        if (!matchesAssetDemoFilter(a, demoFilterSelection[a.source_domain])) return false
         return (
           a.track_id.toLowerCase().includes(q) ||
           (a.callsign ?? '').toLowerCase().includes(q) ||
@@ -675,7 +710,7 @@ export function SourcePanel() {
       })
       .sort((a, b) => (a.callsign || a.track_id).localeCompare(b.callsign || b.track_id))
       .slice(0, 200)
-  }, [uiViewportAssets, workspaceSearch, layers])
+  }, [uiViewportAssets, workspaceSearch, layers, demoFilterSelection])
 
   const visibleDomains = useMemo(
     () => DOMAIN_ORDER.filter((domain) => layers[domain]?.visibility === 'active'),
@@ -1094,7 +1129,9 @@ export function SourcePanel() {
               const isHidden = layerVisibility === 'hidden'
               const isExpanded = expanded.has(domain)
               const domainAssets = assetsByDomain.get(domain) ?? []
+              const rawDomainAssets = rawAssetsByDomain.get(domain) ?? []
               const count = domainAssets.length
+              const totalCount = rawDomainAssets.length
               const isShowingAll = showAll.has(domain)
               const visibleAssetsList = isShowingAll ? domainAssets : domainAssets.slice(0, MAX_VISIBLE)
               const hiddenCount = domainAssets.length - visibleAssetsList.length
@@ -1102,6 +1139,9 @@ export function SourcePanel() {
               const activeFilterCount = hiddenClasses.length
               const groupMode = groupModes[domain] ?? 'none'
               const activeGroupFilters = hiddenGroupFilters[domain] ?? []
+              const domainDemoOptions = demoFilterOptions[domain] ?? []
+              const selectedDemoFilter = demoFilterSelection[domain] ?? null
+              const activeDemoOption = domainDemoOptions.find((option) => option.key === selectedDemoFilter) ?? null
               // Badge-click exclusion keys for this domain (dim on map, hide from list)
               const activeFilters = groupFilters[domain] ?? new Set<string>()
 
@@ -1159,6 +1199,27 @@ export function SourcePanel() {
                         {activeFilterCount}F
                       </span>
                     )}
+                    {activeDemoOption && (
+                      <span
+                        title={`${activeDemoOption.label} demo filter active`}
+                        style={{
+                          maxWidth: 88,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          fontSize: 9,
+                          fontWeight: 700,
+                          color: meta.colorHex,
+                          background: `${meta.colorHex}18`,
+                          border: `1px solid ${meta.colorHex}35`,
+                          borderRadius: 8,
+                          padding: '1px 6px',
+                          flexShrink: 0,
+                        }}
+                      >
+                        {activeDemoOption.label}
+                      </span>
+                    )}
                     <span
                       style={{
                         fontSize: 10,
@@ -1172,6 +1233,7 @@ export function SourcePanel() {
                         textAlign: 'center',
                         flexShrink: 0,
                       }}
+                      title={totalCount > count ? `${count} shown of ${totalCount} loaded` : `${count} loaded`}
                     >
                       {count}
                     </span>
@@ -1269,6 +1331,45 @@ export function SourcePanel() {
                             if (m === 'none') clearGroupFilters(domain)
                           }}
                         />
+                      )}
+
+                      {domainDemoOptions.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '4px 10px 8px 28px' }}>
+                          <span style={{
+                            fontSize: 9,
+                            color: '#64748b',
+                            letterSpacing: '0.1em',
+                            textTransform: 'uppercase',
+                            marginRight: 2,
+                            alignSelf: 'center',
+                          }}>
+                            Demo filter:
+                          </span>
+                          {domainDemoOptions.map((option) => {
+                            const selected = option.key === selectedDemoFilter
+                            return (
+                              <button
+                                key={`${domain}:${option.key}`}
+                                type="button"
+                                onClick={() => setDemoFilterSelection(domain, option.key)}
+                                style={{
+                                  borderRadius: 999,
+                                  border: `1px solid ${selected ? `${meta.colorHex}55` : 'rgba(100,116,139,0.28)'}`,
+                                  background: selected ? `${meta.colorHex}1c` : 'rgba(15,23,42,0.42)',
+                                  color: selected ? meta.colorHex : '#cbd5e1',
+                                  fontSize: 10,
+                                  fontWeight: 700,
+                                  lineHeight: 1.2,
+                                  padding: '4px 8px',
+                                  cursor: 'pointer',
+                                }}
+                                title={`Show ${option.label}`}
+                              >
+                                {option.label} · {option.count}
+                              </button>
+                            )
+                          })}
+                        </div>
                       )}
 
                       {activeGroupFilters.length > 0 && (

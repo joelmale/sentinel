@@ -42,6 +42,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { usePerfStore } from '@/store/usePerfStore'
 import { useMapStore } from '@/store/useMapStore'
 import { COCOM_GEOJSON_URL, COCOM_LABELS, getCocomColors } from '@/data/cocom'
+import { matchesAssetDemoFilter } from '@/data/demoFilters'
 import { UNDERSEA_CABLES_GEOJSON_URL, UNDERSEA_CABLE_LANDING_POINTS_GEOJSON_URL } from '@/data/underseaCables'
 import type { DisruptionEvent, TrackEventProperties } from '@/types/track'
 import { getAirlineGroup, getConstellation, getMmsiCountry, normalizeObjectType, normalizeOrbitClass } from '@/data/grouping'
@@ -264,6 +265,7 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
     globeView,
     classFilter,
     hiddenGroupFilters,
+    demoFilterSelection,
     workspaceSearch,
     declutterMode,
     selectAsset,
@@ -384,13 +386,15 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
     return liveAssets.filter((a) => {
       const layerState = layers[a.source_domain as keyof typeof layers]
       if (layerState?.visibility === 'hidden') return false
+      const selectedDemoFilter = demoFilterSelection[a.source_domain]
+      if (!matchesAssetDemoFilter(a, selectedDemoFilter)) return false
       // Classification filter — hide assets whose classification is in the "hidden" list
       const hidden = classFilter[a.source_domain] ?? []
       if (hidden.length > 0 && a.classification && hidden.includes(a.classification)) return false
       if (isHiddenByGroup(a)) return false
       return true
     })
-  }, [liveAssets, layers, classFilter, hiddenGroupFilters])
+  }, [liveAssets, layers, demoFilterSelection, classFilter, hiddenGroupFilters])
 
   const viewportAssets = useMemo(() => (
     filteredAssets.filter((asset) => isPointInBounds(asset.lon, asset.lat, cullBounds))
