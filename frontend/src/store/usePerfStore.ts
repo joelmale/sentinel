@@ -59,6 +59,7 @@ interface PerfStore {
   map: MapMetric
   apiPerf: ApiPerfSnapshot
   setEnabled: (enabled: boolean) => void
+  setPanelOpen: (open: boolean) => void
   togglePanel: () => void
   recordRequest: (metric: { key: string; ms: number; status: number; bytes: number; ok: boolean }) => void
   recordWsOpen: () => void
@@ -74,7 +75,7 @@ const perfEnabledByDefault = import.meta.env.DEV || import.meta.env.VITE_PERF_PA
 
 export const usePerfStore = create<PerfStore>()((set) => ({
   enabled: perfEnabledByDefault,
-  panelOpen: perfEnabledByDefault,
+  panelOpen: false,
   requests: {},
   ws: {
     connected: false,
@@ -97,6 +98,7 @@ export const usePerfStore = create<PerfStore>()((set) => ({
   },
   apiPerf: null,
   setEnabled: (enabled) => set({ enabled }),
+  setPanelOpen: (panelOpen) => set({ panelOpen }),
   togglePanel: () => set((state) => ({ panelOpen: !state.panelOpen })),
   recordRequest: ({ key, ms, status, bytes, ok }) =>
     set((state) => {

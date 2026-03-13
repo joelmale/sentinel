@@ -29,6 +29,7 @@ import { useLiveStream } from '@/hooks/useLiveStream'
 import { trackedFetchJson } from '@/lib/perf'
 import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
+import { usePerfStore } from '@/store/usePerfStore'
 import type {
   DisruptionEventResponse,
   LiveSummaryResponse,
@@ -58,6 +59,9 @@ const queryClient = new QueryClient({
     queries: { staleTime: 5_000, refetchOnWindowFocus: false },
   },
 })
+
+const APP_VERSION = '0.02'
+const DISCLAIMER_STORAGE_KEY = 'sentinel.evaluationDisclaimerAccepted'
 
 function SentinelApp() {
   const {
@@ -92,6 +96,7 @@ function SentinelApp() {
   const [annotationPos, setAnnotationPos] = useState<{ lon: number; lat: number } | null>(null)
   const [now, setNow] = useState(new Date())
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [disclaimerOpen, setDisclaimerOpen] = useState(false)
   const [spaceDashboardOpen, setSpaceDashboardOpen] = useState(false)
   const [priorityPrefetchEnabled, setPriorityPrefetchEnabled] = useState(false)
   const [domainDashboardOpen, setDomainDashboardOpen] = useState<'Air' | 'Maritime' | null>(null)
@@ -100,6 +105,7 @@ function SentinelApp() {
   const wsBatchRef = useRef<TrackEventProperties[]>([])
   const wsFrameRef = useRef<number | null>(null)
   const { mapMode, setMapMode, showTrails, toggleShowTrails, globeView, toggleGlobeView } = useMapStore()
+  const { panelOpen: perfPanelOpen, setPanelOpen: setPerfPanelOpen } = usePerfStore()
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000)
@@ -127,6 +133,16 @@ function SentinelApp() {
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(DISCLAIMER_STORAGE_KEY) !== 'accepted') {
+        setDisclaimerOpen(true)
+      }
+    } catch {
+      setDisclaimerOpen(true)
+    }
   }, [])
 
   const liveSummaryQuery = useQuery({
@@ -538,6 +554,15 @@ function SentinelApp() {
     { icon: '🌐', key: 'Infra', color: '#f59e0b' },
   ] as const
 
+  const acknowledgeDisclaimer = useCallback(() => {
+    try {
+      window.localStorage.setItem(DISCLAIMER_STORAGE_KEY, 'accepted')
+    } catch {
+      // Ignore localStorage failures and still dismiss the notice.
+    }
+    setDisclaimerOpen(false)
+  }, [])
+
   return (
     <div className="relative w-screen h-screen bg-slate-950">
       <div
@@ -703,7 +728,19 @@ function SentinelApp() {
                     <span>Show trails</span>
                     <input type="checkbox" checked={showTrails} onChange={toggleShowTrails} />
                   </label>
+                  <label style={settingsRowStyle}>
+                    <span>Show perf panel</span>
+                    <input
+                      type="checkbox"
+                      checked={perfPanelOpen}
+                      onChange={(event) => setPerfPanelOpen(event.target.checked)}
+                    />
+                  </label>
                   <div style={settingsHintStyle}>Globe view best shows orbital paths. Outline and None minimize tile and label overhead.</div>
+                  <div style={settingsVersionStyle}>
+                    <span>Version</span>
+                    <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{APP_VERSION}</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -770,6 +807,28 @@ function SentinelApp() {
         data={disruptionDashboardQuery.data}
         onClose={() => setDisruptionDashboardOpen(null)}
       />
+      {disclaimerOpen && (
+        <div style={disclaimerOverlayStyle}>
+          <div style={disclaimerCardStyle}>
+            <div style={disclaimerEyebrowStyle}>Evaluation Notice</div>
+            <div style={disclaimerTitleStyle}>Prototype Use Only</div>
+            <div style={disclaimerBodyStyle}>
+              Sentinel is a prototype evaluation platform intended for testing, demonstration, and internal assessment only.
+              It is not certified or validated for operational, safety-critical, compliance, or decision-support use.
+              Data may be incomplete, delayed, inaccurate, or misleading.
+              Do not rely on this application for real-world monitoring, incident response, navigation, security action, or other production use.
+            </div>
+            <div style={disclaimerFooterStyle}>
+              <span style={{ color: '#94a3b8', fontSize: 11 }}>
+                By continuing, you acknowledge that this environment is for evaluation only.
+              </span>
+              <button type="button" onClick={acknowledgeDisclaimer} style={disclaimerButtonStyle}>
+                Acknowledge
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -850,6 +909,81 @@ const settingsHintStyle: React.CSSProperties = {
   fontSize: '11px',
   lineHeight: 1.45,
   color: '#94a3b8',
+}
+
+const settingsVersionStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 10,
+  marginTop: '10px',
+  paddingTop: '10px',
+  borderTop: '1px solid rgba(71,85,105,0.28)',
+  color: '#94a3b8',
+  fontSize: '11px',
+}
+
+const disclaimerOverlayStyle: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  zIndex: 60,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: '24px',
+  background: 'rgba(2,6,23,0.78)',
+  backdropFilter: 'blur(10px)',
+}
+
+const disclaimerCardStyle: React.CSSProperties = {
+  width: 'min(560px, 100%)',
+  padding: '22px 22px 18px',
+  borderRadius: 18,
+  border: '1px solid rgba(148,163,184,0.2)',
+  background: 'rgba(15,23,42,0.98)',
+  boxShadow: '0 24px 80px rgba(0,0,0,0.48)',
+  display: 'grid',
+  gap: 12,
+}
+
+const disclaimerEyebrowStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 800,
+  letterSpacing: '0.16em',
+  textTransform: 'uppercase',
+  color: '#f59e0b',
+}
+
+const disclaimerTitleStyle: React.CSSProperties = {
+  fontSize: 22,
+  fontWeight: 700,
+  color: '#f8fafc',
+}
+
+const disclaimerBodyStyle: React.CSSProperties = {
+  fontSize: 13,
+  lineHeight: 1.65,
+  color: '#cbd5e1',
+}
+
+const disclaimerFooterStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 16,
+  paddingTop: 8,
+}
+
+const disclaimerButtonStyle: React.CSSProperties = {
+  border: '1px solid rgba(245,158,11,0.4)',
+  background: 'rgba(217,119,6,0.18)',
+  color: '#fcd34d',
+  borderRadius: 10,
+  padding: '9px 14px',
+  fontSize: 12,
+  fontWeight: 700,
+  cursor: 'pointer',
+  flexShrink: 0,
 }
 
 const mapModeButtonStyle = (active: boolean): React.CSSProperties => ({

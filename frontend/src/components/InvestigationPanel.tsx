@@ -269,6 +269,23 @@ export function InvestigationPanel() {
         >
           Active
         </span>
+        <button
+          type="button"
+          onClick={closeInvestigation}
+          title="Close investigation panel"
+          style={{
+            border: 'none',
+            background: 'transparent',
+            color: '#94a3b8',
+            fontSize: 16,
+            lineHeight: 1,
+            cursor: 'pointer',
+            padding: 0,
+            marginLeft: 8,
+          }}
+        >
+          ×
+        </button>
       </div>
 
       <div style={{ padding: '14px 14px 12px', display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto', minHeight: 0 }}>
