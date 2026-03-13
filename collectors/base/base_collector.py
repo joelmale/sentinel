@@ -287,6 +287,9 @@ class BaseCollector(ABC):
             "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS provenance JSONB DEFAULT '{}'::jsonb",
             "ALTER TABLE disruption_events ADD COLUMN IF NOT EXISTS entity_id UUID",
             "ALTER TABLE disruption_events ADD COLUMN IF NOT EXISTS entity_confidence DOUBLE PRECISION",
+            "ALTER TABLE disruption_events ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ",
+            "ALTER TABLE disruption_events ADD COLUMN IF NOT EXISTS valid_to TIMESTAMPTZ",
+            "ALTER TABLE disruption_events ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ",
             "ALTER TABLE disruption_events ADD COLUMN IF NOT EXISTS provenance JSONB DEFAULT '{}'::jsonb",
             "ALTER TABLE disruption_observations ADD COLUMN IF NOT EXISTS entity_id UUID",
             """
@@ -588,6 +591,9 @@ class BaseCollector(ABC):
                 "last_seen": disruption.get("last_seen") or observed_at,
                 "start_time": disruption.get("start_time") or observed_at,
                 "end_time": disruption.get("end_time"),
+                "valid_from": disruption.get("valid_from") or disruption.get("start_time") or observed_at,
+                "valid_to": disruption.get("valid_to") or disruption.get("end_time"),
+                "expires_at": disruption.get("expires_at"),
                 "geometry_geojson": geometry_geojson,
                 "centroid_geojson": centroid_geojson,
                 "h3_cell": disruption.get("h3_cell"),
@@ -752,25 +758,25 @@ class BaseCollector(ABC):
                     INSERT INTO disruption_events
                         (entity_id, source_domain, source_feed, external_event_id, track_id, callsign,
                          event_type, category, title, status, severity, confidence,
-                         source_trust_score, entity_confidence, first_seen, last_seen, start_time, end_time,
+                         source_trust_score, entity_confidence, first_seen, last_seen, start_time, end_time, valid_from, valid_to, expires_at,
                          geometry, centroid, h3_cell, measurement_value, measurement_unit,
                          affected_assets_count, correlation_id, provenance, metadata, classification)
                     VALUES
                         ($1, $2, $3, $4, $5, $6,
                          $7, $8, $9, $10, $11, $12,
-                         $13, $14, $15, $16, $17, $18,
+                         $13, $14, $15, $16, $17, $18, $19, $20, $21,
                          CASE
-                              WHEN $19::text IS NOT NULL
-                              THEN ST_SetSRID(ST_GeomFromGeoJSON($19::text), 4326)
+                              WHEN $22::text IS NOT NULL
+                              THEN ST_SetSRID(ST_GeomFromGeoJSON($22::text), 4326)
                               ELSE NULL::geometry(Geometry, 4326)
                          END,
                          CASE
-                              WHEN $20::text IS NOT NULL
-                              THEN ST_SetSRID(ST_GeomFromGeoJSON($20::text), 4326)
+                              WHEN $23::text IS NOT NULL
+                              THEN ST_SetSRID(ST_GeomFromGeoJSON($23::text), 4326)
                               ELSE NULL::geometry(Point, 4326)
                          END,
-                         $21, $22, $23,
-                         0, $24::uuid, $25::jsonb, $26::jsonb, $27)
+                         $24, $25, $26,
+                         0, $27::uuid, $28::jsonb, $29::jsonb, $30)
                     ON CONFLICT (source_feed, external_event_id) DO UPDATE SET
                         entity_id = EXCLUDED.entity_id,
                         track_id = EXCLUDED.track_id,
@@ -787,6 +793,9 @@ class BaseCollector(ABC):
                         first_seen = LEAST(disruption_events.first_seen, EXCLUDED.first_seen),
                         start_time = COALESCE(disruption_events.start_time, EXCLUDED.start_time),
                         end_time = COALESCE(EXCLUDED.end_time, disruption_events.end_time),
+                        valid_from = COALESCE(disruption_events.valid_from, EXCLUDED.valid_from, disruption_events.start_time, EXCLUDED.start_time),
+                        valid_to = COALESCE(EXCLUDED.valid_to, disruption_events.valid_to, EXCLUDED.end_time, disruption_events.end_time),
+                        expires_at = COALESCE(EXCLUDED.expires_at, disruption_events.expires_at),
                         geometry = COALESCE(EXCLUDED.geometry, disruption_events.geometry),
                         centroid = COALESCE(EXCLUDED.centroid, disruption_events.centroid),
                         h3_cell = COALESCE(EXCLUDED.h3_cell, disruption_events.h3_cell),
@@ -817,6 +826,7 @@ class BaseCollector(ABC):
                         e["event_type"], e["category"], e.get("title"), e["status"], e.get("severity"), e.get("confidence"),
                         e.get("source_trust_score"), e.get("confidence"), db_timestamp(e["first_seen"]), db_timestamp(e["last_seen"]),
                         db_timestamp(e["start_time"]), db_timestamp(e["end_time"]) if e.get("end_time") else None,
+                        db_timestamp(e["valid_from"]), db_timestamp(e["valid_to"]) if e.get("valid_to") else None, db_timestamp(e["expires_at"]) if e.get("expires_at") else None,
                         e.get("geometry_geojson"), e.get("centroid_geojson"), e.get("h3_cell"), e.get("measurement_value"),
                         e.get("measurement_unit"), e["correlation_id"], json.dumps({"collector": self.FEED_NAME, "source_feed": e["source_feed"]}), json.dumps(e.get("metadata", {})),
                         e.get("classification"),
