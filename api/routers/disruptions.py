@@ -64,6 +64,7 @@ async def list_disruption_events(
     sql = text(f"""
         SELECT
             id::text,
+            entity_id::text,
             source_domain,
             source_feed,
             external_event_id,

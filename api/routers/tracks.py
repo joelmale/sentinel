@@ -304,6 +304,7 @@ def _serialize_live_row(row: Any) -> dict[str, Any]:
         "type": "Feature",
         "geometry": geometry,
         "properties": {
+            "entity_id": str(row["entity_id"]) if row.get("entity_id") else None,
             "source_domain": row["source_domain"],
             "source_feed": row["source_feed"],
             "track_id": row["track_id"],
@@ -546,6 +547,7 @@ async def get_track_history(
     t_end: datetime = Query(..., description="End time (ISO8601 UTC)"),
     domain: SourceDomain | None = Query(None),
     track_id: str | None = Query(None, max_length=64),
+    entity_id: str | None = Query(None, description="Canonical internal entity identifier"),
     # bbox as comma-separated: min_lon,min_lat,max_lon,max_lat
     bbox: str | None = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
     limit: int = Query(default=10_000, le=100_000),
@@ -568,6 +570,10 @@ async def get_track_history(
         conditions.append("track_id = :track_id")
         params["track_id"] = track_id
 
+    if entity_id:
+        conditions.append("entity_id = :entity_id::uuid")
+        params["entity_id"] = entity_id
+
     if bbox:
         try:
             min_lon, min_lat, max_lon, max_lat = [float(x) for x in bbox.split(",")]
@@ -582,6 +588,7 @@ async def get_track_history(
     sql = text(f"""
         SELECT
             event_id::text,
+            entity_id::text,
             source_domain,
             source_feed,
             track_id,
@@ -616,6 +623,7 @@ async def get_track_history(
             "geometry": geometry,
             "properties": {
                 "event_id": row["event_id"],
+                "entity_id": row["entity_id"],
                 "source_domain": row["source_domain"],
                 "source_feed": row["source_feed"],
                 "track_id": row["track_id"],
@@ -727,6 +735,7 @@ async def get_live_assets(
     where_clause = " AND ".join(conditions)
     sql = text(f"""
         SELECT
+            entity_id::text AS entity_id,
             source_domain, source_feed, track_id, callsign,
             ST_X(position) AS lon, ST_Y(position) AS lat,
             altitude_m, heading_deg, speed_mps, last_seen,
@@ -789,23 +798,38 @@ async def get_live_assets(
 
 @router.get("/tracks/detail", summary="Full current-state detail for a single asset")
 async def get_asset_detail(
-    domain: SourceDomain = Query(..., description="Asset domain"),
-    track_id: str = Query(..., max_length=128, description="Track identifier"),
+    domain: SourceDomain | None = Query(None, description="Asset domain"),
+    track_id: str | None = Query(None, max_length=128, description="Track identifier"),
+    entity_id: str | None = Query(None, description="Canonical internal entity identifier"),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    if not entity_id and (domain is None or track_id is None):
+        raise HTTPException(status_code=400, detail="Provide entity_id or both domain and track_id.")
+
     sql = text("""
         SELECT
+            entity_id::text AS entity_id,
             source_domain, source_feed, track_id, callsign,
             ST_X(position) AS lon, ST_Y(position) AS lat,
             altitude_m, heading_deg, speed_mps, last_seen,
             metadata, classification
         FROM asset_states
-        WHERE source_domain = :domain
-          AND track_id = :track_id
+        WHERE (
+            :entity_id::uuid IS NOT NULL
+            AND entity_id = :entity_id::uuid
+        ) OR (
+            :entity_id::uuid IS NULL
+            AND source_domain = :domain
+            AND track_id = :track_id
+        )
         ORDER BY last_seen DESC
         LIMIT 1
     """)
-    result = await db.execute(sql, {"domain": domain.value, "track_id": track_id})
+    result = await db.execute(sql, {
+        "domain": domain.value if domain else None,
+        "track_id": track_id,
+        "entity_id": entity_id,
+    })
     row = result.mappings().first()
 
     if not row:
@@ -822,6 +846,7 @@ async def get_asset_detail(
         "type": "Feature",
         "geometry": geometry,
         "properties": {
+            "entity_id": row["entity_id"],
             "source_domain": row["source_domain"],
             "source_feed": row["source_feed"],
             "track_id": row["track_id"],
@@ -892,6 +917,7 @@ async def export_tracks(
     t_end: datetime = Query(..., description="End time (ISO8601 UTC)"),
     domain: SourceDomain | None = Query(None),
     track_id: str | None = Query(None, max_length=64),
+    entity_id: str | None = Query(None, description="Canonical internal entity identifier"),
     bbox: str | None = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
     format: str = Query("geojson", description="geojson | csv"),
     limit: int = Query(default=50_000, le=200_000),
@@ -912,6 +938,10 @@ async def export_tracks(
         conditions.append("track_id = :track_id")
         params["track_id"] = track_id
 
+    if entity_id:
+        conditions.append("entity_id = :entity_id::uuid")
+        params["entity_id"] = entity_id
+
     if bbox:
         try:
             min_lon, min_lat, max_lon, max_lat = [float(x) for x in bbox.split(",")]
@@ -926,6 +956,7 @@ async def export_tracks(
     sql = text(f"""
         SELECT
             event_id::text,
+            entity_id::text,
             source_domain,
             source_feed,
             track_id,
@@ -953,7 +984,7 @@ async def export_tracks(
         writer = csv.writer(output)
         writer.writerow(
             ["event_id", "domain", "feed", "track_id", "callsign", "timestamp",
-             "lon", "lat", "altitude_m", "heading_deg", "speed_mps", "classification"]
+             "entity_id", "lon", "lat", "altitude_m", "heading_deg", "speed_mps", "classification"]
         )
         for r in rows:
             writer.writerow([
@@ -963,6 +994,7 @@ async def export_tracks(
                 r["track_id"],
                 r["callsign"],
                 r["timestamp"],
+                r["entity_id"],
                 r["lon"],
                 r["lat"],
                 r["altitude_m"],
@@ -985,6 +1017,7 @@ async def export_tracks(
             "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]} if r["lon"] is not None else None,
             "properties": {
                 "event_id": str(r["event_id"]),
+                "entity_id": r["entity_id"],
                 "domain": r["source_domain"],
                 "feed": r["source_feed"],
                 "track_id": r["track_id"],
