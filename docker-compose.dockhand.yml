@@ -20,12 +20,7 @@ services:
 
   # ── Frontend (served as static by Caddy) ────────────────────────
   frontend:
-    build:
-      context: ./frontend
-      target: server
-      args:
-        VCS_REF: ${GIT_SHA:-dev}
-        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: ${FRONTEND_IMAGE:-ghcr.io/joelmale/sentinel-frontend:main}
     container_name: ${FRONTEND_CONTAINER_NAME:-sentinel-frontend}
     environment:
       - VITE_API_BASE_URL=${VITE_API_BASE_URL:-/api}
@@ -34,11 +29,7 @@ services:
 
   # ── Backend API ──────────────────────────────────────────────────
   api:
-    build:
-      context: ./api
-      args:
-        VCS_REF: ${GIT_SHA:-dev}
-        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: ${API_IMAGE:-ghcr.io/joelmale/sentinel-api:main}
     container_name: ${API_CONTAINER_NAME:-sentinel-api}
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -108,12 +99,7 @@ services:
 
   # ── Collectors ───────────────────────────────────────────────────
   collector-adsb:
-    build:
-      context: ./collectors
-      dockerfile: adsb/Dockerfile
-      args:
-        VCS_REF: ${GIT_SHA:-dev}
-        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: ${COLLECTOR_ADSB_IMAGE:-ghcr.io/joelmale/sentinel-collector-adsb:main}
     container_name: ${COLLECTOR_ADSB_CONTAINER_NAME:-sentinel-collector-adsb}
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -136,12 +122,7 @@ services:
     restart: unless-stopped
 
   collector-ais:
-    build:
-      context: ./collectors
-      dockerfile: ais/Dockerfile
-      args:
-        VCS_REF: ${GIT_SHA:-dev}
-        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: ${COLLECTOR_AIS_IMAGE:-ghcr.io/joelmale/sentinel-collector-ais:main}
     container_name: ${COLLECTOR_AIS_CONTAINER_NAME:-sentinel-collector-ais}
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -176,12 +157,7 @@ services:
     restart: unless-stopped
 
   collector-ais-history:
-    build:
-      context: ./collectors
-      dockerfile: ais/Dockerfile
-      args:
-        VCS_REF: ${GIT_SHA:-dev}
-        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: ${COLLECTOR_AIS_IMAGE:-ghcr.io/joelmale/sentinel-collector-ais:main}
     container_name: ${COLLECTOR_AIS_HISTORY_CONTAINER_NAME:-sentinel-collector-ais-history}
     profiles: ["historical"]
     environment:
@@ -198,12 +174,7 @@ services:
     restart: "no"
 
   collector-space:
-    build:
-      context: ./collectors
-      dockerfile: space/Dockerfile
-      args:
-        VCS_REF: ${GIT_SHA:-dev}
-        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: ${COLLECTOR_SPACE_IMAGE:-ghcr.io/joelmale/sentinel-collector-space:main}
     container_name: ${COLLECTOR_SPACE_CONTAINER_NAME:-sentinel-collector-space}
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -225,12 +196,7 @@ services:
     restart: unless-stopped
 
   collector-gpsjam:
-    build:
-      context: ./collectors
-      dockerfile: gpsjam/Dockerfile
-      args:
-        VCS_REF: ${GIT_SHA:-dev}
-        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: ${COLLECTOR_GPSJAM_IMAGE:-ghcr.io/joelmale/sentinel-collector-gpsjam:main}
     container_name: ${COLLECTOR_GPSJAM_CONTAINER_NAME:-sentinel-collector-gpsjam}
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -254,12 +220,7 @@ services:
     restart: unless-stopped
 
   collector-infra:
-    build:
-      context: ./collectors
-      dockerfile: infra/Dockerfile
-      args:
-        VCS_REF: ${GIT_SHA:-dev}
-        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: ${COLLECTOR_INFRA_IMAGE:-ghcr.io/joelmale/sentinel-collector-infra:main}
     container_name: ${COLLECTOR_INFRA_CONTAINER_NAME:-sentinel-collector-infra}
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
@@ -289,12 +250,7 @@ services:
     restart: unless-stopped
 
   collector-acled:
-    build:
-      context: ./collectors
-      dockerfile: acled/Dockerfile
-      args:
-        VCS_REF: ${GIT_SHA:-dev}
-        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: ${COLLECTOR_ACLED_IMAGE:-ghcr.io/joelmale/sentinel-collector-acled:main}
     container_name: ${ACLED_COLLECTOR_CONTAINER_NAME:-sentinel-collector-acled}
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}

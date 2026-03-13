@@ -114,7 +114,7 @@ Use [`docker-compose.dockhand.yml`](/Users/JoelN/Coding/sentinel/docker-compose.
 
 This will:
 
-- build the API/frontend/collectors
+- pull the API/frontend/collectors from GHCR
 - start TimescaleDB and Redis
 - start Sentinel Caddy attached to `${EXTERNAL_PROXY_NETWORK:-homelab-net}`
 
@@ -260,5 +260,6 @@ Suggested short subtitle:
 If you ever need to reproduce the Dockhand deployment from the shell, use:
 
 ```bash
-docker compose -f docker-compose.dockhand.yml up -d --build
+docker compose -f docker-compose.dockhand.yml pull
+docker compose -f docker-compose.dockhand.yml up -d
 ```

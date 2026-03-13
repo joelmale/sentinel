@@ -52,3 +52,70 @@ jobs:
           export GIT_SHA="${GITHUB_SHA}"
           export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           docker compose build --no-cache
+
+  publish-images:
+    name: Publish GHCR images
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: [lint-api, lint-frontend, docker-build]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: sentinel-frontend
+            context: ./frontend
+            file: ./frontend/Dockerfile
+          - image_name: sentinel-api
+            context: ./api
+            file: ./api/Dockerfile
+          - image_name: sentinel-collector-adsb
+            context: ./collectors
+            file: ./collectors/adsb/Dockerfile
+          - image_name: sentinel-collector-ais
+            context: ./collectors
+            file: ./collectors/ais/Dockerfile
+          - image_name: sentinel-collector-space
+            context: ./collectors
+            file: ./collectors/space/Dockerfile
+          - image_name: sentinel-collector-gpsjam
+            context: ./collectors
+            file: ./collectors/gpsjam/Dockerfile
+          - image_name: sentinel-collector-infra
+            context: ./collectors
+            file: ./collectors/infra/Dockerfile
+          - image_name: sentinel-collector-acled
+            context: ./collectors
+            file: ./collectors/acled/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set build time
+        run: echo "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image_name }}
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            BUILD_TIME=${{ env.BUILD_TIME }}
