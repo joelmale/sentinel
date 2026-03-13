@@ -78,6 +78,7 @@ function SentinelApp() {
   } = useMapStore()
   const {
     globalSummary,
+    uiGlobalSummary,
     setGlobalSummary,
     viewportAssets,
     upsertViewportAssets,
@@ -501,7 +502,7 @@ function SentinelApp() {
   const assetsArray = Array.from(viewportAssets.values())
 
   // Domain counts for the header
-  const counts = globalSummary?.domains ?? {
+  const counts = uiGlobalSummary?.domains ?? globalSummary?.domains ?? {
     Air: 0,
     Maritime: 0,
     Space: 0,
@@ -509,7 +510,7 @@ function SentinelApp() {
     Infra: 0,
   }
 
-  const totalTracked = globalSummary?.total ?? 0
+  const totalTracked = uiGlobalSummary?.total ?? globalSummary?.total ?? 0
   const statItems = [
     { icon: '✈', key: 'Air', color: '#60a5fa' },
     { icon: '⚓', key: 'Maritime', color: '#22d3ee' },

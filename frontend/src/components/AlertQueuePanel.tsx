@@ -215,7 +215,7 @@ export function AlertQueuePanel() {
     selectedDomain,
     setLayerEnabled,
   } = useMapStore()
-  const { viewportAssets, selectedAssetDetail } = useLiveDataStore()
+  const { uiViewportAssets, selectedAssetDetail } = useLiveDataStore()
   const { offset, dragHandleRef, isDragging } = useDrag({
     storageKey: 'sentinel.alertQueuePosition',
   })
@@ -321,13 +321,13 @@ export function AlertQueuePanel() {
       ? (
         (selectedAssetDetail?.track_id === selectedTrackId && selectedAssetDetail.source_domain === selectedDomain)
           ? selectedAssetDetail
-          : viewportAssets.get(`${selectedDomain}:${selectedTrackId}`)
+          : uiViewportAssets.get(`${selectedDomain}:${selectedTrackId}`)
       )
       : null
 
-    const fallbackAsset = Array.from(viewportAssets.values()).find(
+    const fallbackAsset = Array.from(uiViewportAssets.values()).find(
       (asset) => layers[asset.source_domain as keyof typeof layers]?.visibility !== 'hidden'
-    ) ?? Array.from(viewportAssets.values())[0]
+    ) ?? Array.from(uiViewportAssets.values())[0]
 
     const asset = selectedAsset ?? fallbackAsset
     const fallbackDomain = DOMAIN_ORDER.find((candidate) => layers[candidate]?.visibility !== 'hidden') ?? 'Air'

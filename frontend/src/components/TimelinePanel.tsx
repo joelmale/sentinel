@@ -271,7 +271,7 @@ export function TimelinePanel() {
     playback,
     setPlaybackMode, setCurrentTime, setTimeWindow, setSpeedMultiplier, tickPlayback,
   } = useMapStore()
-  const { viewportAssets } = useLiveDataStore()
+  const { uiViewportAssets } = useLiveDataStore()
 
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [activePreset, setActivePreset] = useState<number | null>(null)
@@ -302,12 +302,12 @@ export function TimelinePanel() {
 
   const domainCounts = useMemo(() => {
     const counts: Partial<Record<SourceDomain, number>> = {}
-    for (const a of viewportAssets.values()) {
+    for (const a of uiViewportAssets.values()) {
       const d = a.source_domain as SourceDomain
       counts[d] = (counts[d] ?? 0) + 1
     }
     return counts
-  }, [viewportAssets])
+  }, [uiViewportAssets])
 
   function enterReplay(presetMs?: number) {
     const end   = new Date()

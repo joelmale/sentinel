@@ -86,7 +86,7 @@ export function InvestigationPanel() {
     selectAsset,
     flyTo,
   } = useMapStore()
-  const { viewportAssets, selectedAssetDetail } = useLiveDataStore()
+  const { uiViewportAssets, selectedAssetDetail } = useLiveDataStore()
   const { offset, dragHandleRef, isDragging } = useDrag({
     storageKey: 'sentinel.investigationPanelPosition',
   })
@@ -127,8 +127,8 @@ export function InvestigationPanel() {
     ) {
       return selectedAssetDetail
     }
-    return viewportAssets.get(`${investigationContext.domain}:${investigationContext.trackId}`)
-  }, [investigationContext, viewportAssets, selectedAssetDetail])
+    return uiViewportAssets.get(`${investigationContext.domain}:${investigationContext.trackId}`)
+  }, [investigationContext, uiViewportAssets, selectedAssetDetail])
 
   const severity = investigationContext
     ? severityLabel(investigationContext.domain, investigationContext.ruleName)
@@ -136,7 +136,7 @@ export function InvestigationPanel() {
 
   const nearbyAssets = useMemo(() => {
     if (!investigationContext || !asset) return []
-    return Array.from(viewportAssets.values())
+    return Array.from(uiViewportAssets.values())
       .filter((candidate) => `${candidate.source_domain}:${candidate.track_id}` !== `${investigationContext.domain}:${investigationContext.trackId}`)
       .map((candidate) => ({
         asset: candidate,
@@ -145,7 +145,7 @@ export function InvestigationPanel() {
       .filter((row) => row.distanceKm !== null && row.distanceKm <= 900)
       .sort((a, b) => (a.distanceKm as number) - (b.distanceKm as number))
       .slice(0, 6)
-  }, [investigationContext, asset, viewportAssets])
+  }, [investigationContext, asset, uiViewportAssets])
 
   useEffect(() => {
     if (!investigationContext) return

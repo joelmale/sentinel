@@ -515,7 +515,7 @@ export function SourcePanel() {
     expandedSpaceConstellations,
     toggleExpandedSpaceConstellation,
   } = useMapStore()
-  const { viewportAssets } = useLiveDataStore()
+  const { uiViewportAssets } = useLiveDataStore()
 
   // Which domains have their track list expanded
   const [expanded, setExpanded] = useState<Set<SourceDomain>>(
@@ -589,7 +589,7 @@ export function SourcePanel() {
   // analogous to a SQL JOIN between the exclusion keys and the live track table.
   useEffect(() => {
     const excluded = new Set<string>()
-    for (const a of viewportAssets.values()) {
+    for (const a of uiViewportAssets.values()) {
       const domain = a.source_domain as SourceDomain
       const filters = groupFilters[domain]
       if (!filters?.size) continue
@@ -614,7 +614,7 @@ export function SourcePanel() {
       }
     }
     setGroupExcludedTracks(excluded)
-  }, [groupFilters, viewportAssets, setGroupExcludedTracks])
+  }, [groupFilters, uiViewportAssets, setGroupExcludedTracks])
 
   // 2-D resize — right edge (width), bottom edge (height), corner (both)
   const {
@@ -643,7 +643,7 @@ export function SourcePanel() {
   const assetsByDomain = useMemo(() => {
     const map = new Map<SourceDomain, TrackEventProperties[]>()
     for (const d of DOMAIN_ORDER) map.set(d, [])
-    for (const a of viewportAssets.values()) {
+    for (const a of uiViewportAssets.values()) {
       const domain = a.source_domain as SourceDomain
       if (map.has(domain)) map.get(domain)!.push(a)
     }
@@ -657,13 +657,13 @@ export function SourcePanel() {
       })
     }
     return map
-  }, [viewportAssets, selectedTrackId, selectedDomain])
+  }, [uiViewportAssets, selectedTrackId, selectedDomain])
 
   // Flat filtered list for search mode — driven by workspace-wide search in store
   const filteredAssets = useMemo(() => {
     const q = workspaceSearch.trim().toLowerCase()
     if (!q) return null
-    return Array.from(viewportAssets.values())
+    return Array.from(uiViewportAssets.values())
       .filter((a) => {
         // Exclude hidden domains from search results
         if (layers[a.source_domain as keyof typeof layers]?.visibility === 'hidden') return false
@@ -675,7 +675,7 @@ export function SourcePanel() {
       })
       .sort((a, b) => (a.callsign || a.track_id).localeCompare(b.callsign || b.track_id))
       .slice(0, 200)
-  }, [viewportAssets, workspaceSearch, layers])
+  }, [uiViewportAssets, workspaceSearch, layers])
 
   const visibleDomains = useMemo(
     () => DOMAIN_ORDER.filter((domain) => layers[domain]?.visibility === 'active'),
