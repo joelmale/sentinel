@@ -362,7 +362,12 @@ export function getConstellation(name: string | undefined): string {
 
   // Mega-constellations
   if (n.startsWith('STARLINK'))                              return 'Starlink'
+  if (n.startsWith('KUIPER'))                                return 'LEO (Kuiper)'
   if (n.startsWith('ONEWEB') || n.startsWith('ONE WEB'))    return 'OneWeb'
+  if (n.startsWith('QIANFAN') || n.startsWith('G60'))       return 'Qianfan'
+  if (n.startsWith('GUOWANG') || n.startsWith('GW '))       return 'Guowang'
+  if (n.startsWith('GALAXYSPACE'))                          return 'GalaxySpace'
+  if (n.startsWith('E-SPACE') || n.startsWith('ESPACE'))    return 'E-space'
   if (n.startsWith('TELESAT LIGHTSPEED'))                   return 'Telesat Lightspeed'
 
   // Navigation constellations
@@ -416,6 +421,69 @@ export function getConstellation(name: string | undefined): string {
   if (n.includes('DEB') || n.includes('DEBRIS'))            return 'Debris'
 
   return 'Other'
+}
+
+export type SpaceConstellationCategory =
+  | 'Finder'
+  | 'Internet'
+  | 'Communications'
+  | 'Positioning'
+  | 'Earth Imaging'
+  | 'Weather'
+  | 'Science'
+  | 'IoT'
+  | 'Other'
+
+export const SPACE_CONSTELLATION_CATEGORY_ORDER: SpaceConstellationCategory[] = [
+  'Finder',
+  'Internet',
+  'Communications',
+  'Positioning',
+  'Earth Imaging',
+  'Weather',
+  'Science',
+  'IoT',
+  'Other',
+]
+
+const SPACE_CONSTELLATION_CATEGORY_MAP: Record<string, SpaceConstellationCategory> = {
+  Starlink: 'Internet',
+  'LEO (Kuiper)': 'Internet',
+  OneWeb: 'Internet',
+  Qianfan: 'Internet',
+  Guowang: 'Internet',
+  GalaxySpace: 'Internet',
+  'E-space': 'Internet',
+  'Telesat Lightspeed': 'Internet',
+  Iridium: 'Communications',
+  Intelsat: 'Communications',
+  SES: 'Communications',
+  Eutelsat: 'Communications',
+  Telesat: 'Communications',
+  Viasat: 'Communications',
+  Globalstar: 'Communications',
+  'O3b (SES MEO)': 'Communications',
+  'GPS (USAF)': 'Positioning',
+  GLONASS: 'Positioning',
+  Galileo: 'Positioning',
+  BeiDou: 'Positioning',
+  'Sentinel (ESA)': 'Earth Imaging',
+  Landsat: 'Earth Imaging',
+  'NASA EOS': 'Earth Imaging',
+  'Maxar (Commercial ISR)': 'Earth Imaging',
+  'Planet Labs': 'Earth Imaging',
+  BlackSky: 'Earth Imaging',
+  'GOES (NOAA)': 'Weather',
+  NOAA: 'Weather',
+  'Meteosat (EUMETSAT)': 'Weather',
+  'Spire Global': 'Weather',
+  ISS: 'Science',
+  'Tiangong / CSS': 'Science',
+  Orbcomm: 'IoT',
+}
+
+export function getConstellationCategory(constellation: string): SpaceConstellationCategory {
+  return SPACE_CONSTELLATION_CATEGORY_MAP[constellation] ?? 'Other'
 }
 
 // ── Space: normalize object_type ─────────────────────────────────

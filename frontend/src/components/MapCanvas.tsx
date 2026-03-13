@@ -125,25 +125,14 @@ const UNDERSEA_NETWORK_FOCUS_VIEW = {
 interface MapCanvasProps {
   liveAssets: TrackEventProperties[]
   disruptions: DisruptionEvent[]
-  spaceAggregates?: SpaceAggregate[]
   onMapClick?: (lon: number, lat: number) => void
 }
 
 type HoverObject =
   | { kind: 'track'; item: TrackEventProperties }
   | { kind: 'disruption'; item: DisruptionEvent }
-  | { kind: 'spaceAggregate'; item: { constellation: string; count: number } }
   | { kind: 'underseaCable'; item: { name?: string; id?: string } }
   | { kind: 'landingPoint'; item: { name?: string; id?: string; lon?: number; lat?: number } }
-
-type SpaceAggregate = {
-  constellation: string
-  count: number
-  lon: number
-  lat: number
-}
-
-const LARGE_CONSTELLATION_THRESHOLD = 50
 const VIEWPORT_CULL_MARGIN_RATIO = 0.18
 
 type ViewBounds = {
@@ -151,31 +140,6 @@ type ViewBounds = {
   south: number
   east: number
   north: number
-}
-
-function circularMeanLongitude(longitudes: number[]): number {
-  if (longitudes.length === 0) return 0
-  const { x, y } = longitudes.reduce(
-    (sum, lon) => {
-      const radians = (lon * Math.PI) / 180
-      sum.x += Math.cos(radians)
-      sum.y += Math.sin(radians)
-      return sum
-    },
-    { x: 0, y: 0 }
-  )
-  return (Math.atan2(y / longitudes.length, x / longitudes.length) * 180) / Math.PI
-}
-
-function buildSpaceAggregate(constellation: string, assets: TrackEventProperties[]): SpaceAggregate | null {
-  const valid = assets.filter((asset) => typeof asset.lon === 'number' && typeof asset.lat === 'number')
-  if (valid.length === 0) return null
-  return {
-    constellation,
-    count: valid.length,
-    lon: circularMeanLongitude(valid.map((asset) => asset.lon as number)),
-    lat: valid.reduce((sum, asset) => sum + (asset.lat as number), 0) / valid.length,
-  }
 }
 
 function clampZoom(nextZoom: number): number {
@@ -252,7 +216,7 @@ function isPointInBounds(lon: number | undefined, lat: number | undefined, bound
   return lat >= bounds.south && lat <= bounds.north && isLonInBounds(lon, bounds)
 }
 
-export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMapClick }: MapCanvasProps) {
+export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProps) {
   const {
     viewport,
     setViewport,
@@ -265,6 +229,7 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
     globeView,
     classFilter,
     hiddenGroupFilters,
+    hiddenSpaceConstellations,
     demoFilterSelection,
     workspaceSearch,
     declutterMode,
@@ -280,8 +245,6 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
     pendingAlerts,
     investigationContext,
     watchedSpaceTrackIds,
-    spacePriorityOnly,
-    expandedSpaceConstellations,
   } = useMapStore()
   const [hoverInfo, setHoverInfo] = useState<{ x: number; y: number; object: HoverObject } | null>(null)
   const [renderWarning, setRenderWarning] = useState<string | null>(null)
@@ -388,13 +351,14 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
       if (layerState?.visibility === 'hidden') return false
       const selectedDemoFilter = demoFilterSelection[a.source_domain]
       if (!matchesAssetDemoFilter(a, selectedDemoFilter)) return false
+      if (a.source_domain === 'Space' && hiddenSpaceConstellations.includes(getConstellation(a.callsign))) return false
       // Classification filter — hide assets whose classification is in the "hidden" list
       const hidden = classFilter[a.source_domain] ?? []
       if (hidden.length > 0 && a.classification && hidden.includes(a.classification)) return false
       if (isHiddenByGroup(a)) return false
       return true
     })
-  }, [liveAssets, layers, demoFilterSelection, classFilter, hiddenGroupFilters])
+  }, [liveAssets, layers, hiddenSpaceConstellations, demoFilterSelection, classFilter, hiddenGroupFilters])
 
   const viewportAssets = useMemo(() => (
     filteredAssets.filter((asset) => isPointInBounds(asset.lon, asset.lat, cullBounds))
@@ -906,81 +870,10 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
       const prioritySpaceAssets = spaceAssets.filter((asset) => spacePriorityKeys.has(`Space:${asset.track_id}`))
       const backgroundSpaceAssets = spaceAssets.filter((asset) => !spacePriorityKeys.has(`Space:${asset.track_id}`))
 
-      const groupedByConstellation = new Map<string, TrackEventProperties[]>()
-      for (const asset of backgroundSpaceAssets) {
-        const constellation = getConstellation(asset.callsign)
-        if (!groupedByConstellation.has(constellation)) groupedByConstellation.set(constellation, [])
-        groupedByConstellation.get(constellation)!.push(asset)
-      }
-
-      const aggregateSpaceData: SpaceAggregate[] = []
-      const expandedSpaceAssets: TrackEventProperties[] = []
-      const inlineBackgroundSpaceAssets: TrackEventProperties[] = []
-
-      for (const [constellation, assets] of groupedByConstellation.entries()) {
-        const serverAggregate = spaceAggregates.find((aggregate) => aggregate.constellation === constellation)
-        const isLargeConstellation = (serverAggregate?.count ?? assets.length) >= LARGE_CONSTELLATION_THRESHOLD
-        const isExpanded = expandedSpaceConstellations.has(constellation)
-
-        if (spacePriorityOnly || (isLargeConstellation && !isExpanded)) {
-          const aggregate = serverAggregate ?? buildSpaceAggregate(constellation, assets)
-          if (aggregate) aggregateSpaceData.push(aggregate)
-          continue
-        }
-
-        if (isExpanded) expandedSpaceAssets.push(...assets)
-        else inlineBackgroundSpaceAssets.push(...assets)
-      }
-
-      for (const aggregate of spaceAggregates) {
-        const alreadyIncluded = aggregateSpaceData.some((item) => item.constellation === aggregate.constellation)
-        const isExpanded = expandedSpaceConstellations.has(aggregate.constellation)
-        if (!alreadyIncluded && !isExpanded) {
-          aggregateSpaceData.push(aggregate)
-        }
-      }
-
-      if (aggregateSpaceData.length > 0) {
-        ls.push(new ScatterplotLayer<SpaceAggregate>({
-          id: 'space-aggregate-halos',
-          data: aggregateSpaceData,
-          getPosition: (d) => [d.lon, d.lat],
-          getRadius: (d) => Math.min(30, 10 + Math.sqrt(d.count) * 1.6),
-          radiusUnits: 'pixels',
-          stroked: true,
-          filled: true,
-          lineWidthUnits: 'pixels',
-          getLineWidth: 1.5,
-          getLineColor: [192, 132, 252, 180],
-          getFillColor: [88, 28, 135, 70],
-          pickable: true,
-          opacity: domainOpacity('Space') * 0.75,
-          onHover: ({ x, y, object }: { x: number; y: number; object?: SpaceAggregate }) =>
-            setHoverInfo(object ? { x, y, object: { kind: 'spaceAggregate', item: { constellation: object.constellation, count: object.count } } } : null),
-        }))
-
-        ls.push(new TextLayer<SpaceAggregate>({
-          id: 'space-aggregate-labels',
-          data: aggregateSpaceData,
-          getPosition: (d) => [d.lon, d.lat],
-          getText: (d) => d.constellation === 'Unknown' ? `${d.count}` : `${d.constellation} · ${d.count}`,
-          getColor: [233, 213, 255, 230],
-          getSize: 11,
-          sizeUnits: 'pixels',
-          getTextAnchor: 'middle',
-          getAlignmentBaseline: 'center',
-          characterSet: 'auto',
-          fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-          fontWeight: 700,
-          pickable: false,
-          opacity: domainOpacity('Space'),
-        }))
-      }
-
-      const nonPriorityVisibleIndividuals = [...inlineBackgroundSpaceAssets, ...expandedSpaceAssets]
-      spaceAggregateCount = aggregateSpaceData.length
+      const nonPriorityVisibleIndividuals = backgroundSpaceAssets
+      spaceAggregateCount = 0
       spaceBackgroundCount = nonPriorityVisibleIndividuals.length
-      if (!spacePriorityOnly && nonPriorityVisibleIndividuals.length > 0) {
+      if (nonPriorityVisibleIndividuals.length > 0) {
         ls.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'space-background-points',
           data: nonPriorityVisibleIndividuals,
@@ -1198,8 +1091,6 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
     selectedLandingPoint,
     selectedTrackHistory,
     selectedOrbitPoints,
-    spacePriorityOnly,
-    expandedSpaceConstellations,
     spacePriorityKeys,
     hoverInfo,
     showTrails,
@@ -1212,7 +1103,6 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
     searchMatchSet,
     localViewport.zoom,
     cullBounds,
-    spaceAggregates,
   ])
 
   useEffect(() => {
@@ -1456,8 +1346,6 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
             ? (hoverInfo.object.item.callsign ?? hoverInfo.object.item.track_id)
             : hoverInfo.object.kind === 'disruption'
               ? (hoverInfo.object.item.title ?? hoverInfo.object.item.external_event_id)
-              : hoverInfo.object.kind === 'spaceAggregate'
-                ? `${hoverInfo.object.item.constellation} · ${hoverInfo.object.item.count}`
               : (hoverInfo.object.item.name ?? hoverInfo.object.item.id ?? 'Unnamed feature')}
         </div>
       )}

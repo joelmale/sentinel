@@ -233,6 +233,9 @@ interface MapStore {
   hiddenGroupFilters: Partial<Record<SourceDomain, string[]>>
   toggleHiddenGroupFilter: (domain: SourceDomain, key: string) => void
   clearHiddenGroupFilters: (domain: SourceDomain) => void
+  hiddenSpaceConstellations: string[]
+  toggleHiddenSpaceConstellation: (constellation: string) => void
+  clearHiddenSpaceConstellations: () => void
   demoFilterSelection: Partial<Record<SourceDomain, string | null>>
   setDemoFilterSelection: (domain: SourceDomain, key: string | null) => void
 
@@ -522,6 +525,15 @@ export const useMapStore = create<MapStore>()(
       }),
     clearHiddenGroupFilters: (domain) =>
       set((s) => ({ hiddenGroupFilters: { ...s.hiddenGroupFilters, [domain]: [] } })),
+    hiddenSpaceConstellations: [],
+    toggleHiddenSpaceConstellation: (constellation) =>
+      set((s) => {
+        const next = s.hiddenSpaceConstellations.includes(constellation)
+          ? s.hiddenSpaceConstellations.filter((item) => item !== constellation)
+          : [...s.hiddenSpaceConstellations, constellation]
+        return { hiddenSpaceConstellations: next }
+      }),
+    clearHiddenSpaceConstellations: () => set({ hiddenSpaceConstellations: [] }),
     demoFilterSelection: {},
     setDemoFilterSelection: (domain, key) =>
       set((s) => ({ demoFilterSelection: { ...s.demoFilterSelection, [domain]: key } })),

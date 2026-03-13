@@ -24,12 +24,14 @@ import { useDrag } from '@/hooks/useDrag'
 import type { SourceDomain, TrackEventProperties } from '@/types/track'
 import {
   getAirlineGroup,
+  getConstellationCategory,
   getMmsiCountry,
   getConstellation,
   normalizeObjectType,
   normalizeOrbitClass,
   objectTypeSort,
   orbitClassSort,
+  SPACE_CONSTELLATION_CATEGORY_ORDER,
 } from '@/data/grouping'
 import { buildDemoFilterOptions, getDefaultDemoFilterKey, matchesAssetDemoFilter } from '@/data/demoFilters'
 
@@ -504,6 +506,9 @@ export function SourcePanel() {
     hiddenGroupFilters,
     toggleHiddenGroupFilter,
     clearHiddenGroupFilters,
+    hiddenSpaceConstellations,
+    toggleHiddenSpaceConstellation,
+    clearHiddenSpaceConstellations,
     demoFilterSelection,
     setDemoFilterSelection,
     spaceTrackDuration,
@@ -687,11 +692,14 @@ export function SourcePanel() {
     const map = new Map<SourceDomain, TrackEventProperties[]>()
     for (const domain of DOMAIN_ORDER) {
       const selected = demoFilterSelection[domain] ?? null
-      const filtered = (rawAssetsByDomain.get(domain) ?? []).filter((asset) => matchesAssetDemoFilter(asset, selected))
+      const filtered = (rawAssetsByDomain.get(domain) ?? []).filter((asset) => {
+        if (domain === 'Space' && hiddenSpaceConstellations.includes(getConstellation(asset.callsign))) return false
+        return matchesAssetDemoFilter(asset, selected)
+      })
       map.set(domain, filtered)
     }
     return map
-  }, [rawAssetsByDomain, demoFilterSelection])
+  }, [rawAssetsByDomain, demoFilterSelection, hiddenSpaceConstellations])
 
   // Flat filtered list for search mode — driven by workspace-wide search in store
   const filteredAssets = useMemo(() => {
@@ -701,6 +709,7 @@ export function SourcePanel() {
       .filter((a) => {
         // Exclude hidden domains from search results
         if (layers[a.source_domain as keyof typeof layers]?.visibility === 'hidden') return false
+        if (a.source_domain === 'Space' && hiddenSpaceConstellations.includes(getConstellation(a.callsign))) return false
         if (!matchesAssetDemoFilter(a, demoFilterSelection[a.source_domain])) return false
         return (
           a.track_id.toLowerCase().includes(q) ||
@@ -710,7 +719,7 @@ export function SourcePanel() {
       })
       .sort((a, b) => (a.callsign || a.track_id).localeCompare(b.callsign || b.track_id))
       .slice(0, 200)
-  }, [uiViewportAssets, workspaceSearch, layers, demoFilterSelection])
+  }, [uiViewportAssets, workspaceSearch, layers, demoFilterSelection, hiddenSpaceConstellations])
 
   const visibleDomains = useMemo(
     () => DOMAIN_ORDER.filter((domain) => layers[domain]?.visibility === 'active'),
@@ -755,6 +764,30 @@ export function SourcePanel() {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8)
   }, [assetsByDomain])
+
+  const spaceConstellationFilters = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const asset of rawAssetsByDomain.get('Space') ?? []) {
+      const constellation = getConstellation(asset.callsign)
+      counts.set(constellation, (counts.get(constellation) ?? 0) + 1)
+    }
+    const byCategory = new Map<string, Array<{ constellation: string; count: number }>>()
+    for (const [constellation, count] of counts.entries()) {
+      const category = getConstellationCategory(constellation)
+      const bucket = byCategory.get(category) ?? []
+      bucket.push({ constellation, count })
+      byCategory.set(category, bucket)
+    }
+    for (const items of byCategory.values()) {
+      items.sort((a, b) => b.count - a.count || a.constellation.localeCompare(b.constellation))
+    }
+    return SPACE_CONSTELLATION_CATEGORY_ORDER
+      .map((category) => ({
+        category,
+        items: (byCategory.get(category) ?? []).slice(0, 8),
+      }))
+      .filter((entry) => entry.items.length > 0)
+  }, [rawAssetsByDomain])
 
   const toggleExpanded = (d: SourceDomain) => {
     setExpanded((prev) => {
@@ -1369,6 +1402,69 @@ export function SourcePanel() {
                               </button>
                             )
                           })}
+                        </div>
+                      )}
+
+                      {domain === 'Space' && spaceConstellationFilters.length > 0 && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '4px 10px 8px 28px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{
+                              fontSize: 9,
+                              color: '#64748b',
+                              letterSpacing: '0.1em',
+                              textTransform: 'uppercase',
+                            }}>
+                              Constellations
+                            </span>
+                            {hiddenSpaceConstellations.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={clearHiddenSpaceConstellations}
+                                style={{
+                                  border: 'none',
+                                  background: 'transparent',
+                                  color: '#5eead4',
+                                  fontSize: 9,
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                  padding: 0,
+                                }}
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                          {spaceConstellationFilters.map(({ category, items }) => (
+                            <div key={category} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                              <span style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8' }}>{category}</span>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                {items.map(({ constellation, count }) => {
+                                  const hidden = hiddenSpaceConstellations.includes(constellation)
+                                  return (
+                                    <button
+                                      key={constellation}
+                                      type="button"
+                                      onClick={() => toggleHiddenSpaceConstellation(constellation)}
+                                      style={{
+                                        borderRadius: 999,
+                                        border: `1px solid ${hidden ? 'rgba(239,68,68,0.35)' : 'rgba(192,132,252,0.28)'}`,
+                                        background: hidden ? 'rgba(127,29,29,0.28)' : 'rgba(88,28,135,0.18)',
+                                        color: hidden ? '#fca5a5' : '#e9d5ff',
+                                        fontSize: 10,
+                                        fontWeight: 700,
+                                        lineHeight: 1.2,
+                                        padding: '4px 8px',
+                                        cursor: 'pointer',
+                                      }}
+                                      title={`${hidden ? 'Show' : 'Hide'} ${constellation}`}
+                                    >
+                                      {constellation} · {count}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       )}
 
