@@ -351,6 +351,29 @@ class BaseCollector(ABC):
                 identity_confidence DOUBLE PRECISION
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS asset_current_state (
+                entity_id UUID PRIMARY KEY REFERENCES entities(entity_id),
+                source_domain source_domain NOT NULL,
+                winning_source_feed TEXT,
+                track_id TEXT,
+                callsign TEXT,
+                position GEOMETRY(Point, 4326),
+                altitude_m DOUBLE PRECISION,
+                heading_deg DOUBLE PRECISION,
+                speed_mps DOUBLE PRECISION,
+                first_seen TIMESTAMPTZ,
+                last_seen TIMESTAMPTZ NOT NULL,
+                source_trust_score DOUBLE PRECISION,
+                identity_confidence DOUBLE PRECISION,
+                state_confidence DOUBLE PRECISION,
+                winning_event_id UUID,
+                provenance JSONB DEFAULT '{}'::jsonb,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                classification TEXT,
+                fused_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """,
             "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS source_observation_id UUID",
             "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS source_record_id TEXT",
             "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS entity_id UUID",
@@ -431,6 +454,8 @@ class BaseCollector(ABC):
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_entity_time ON asset_observations (entity_id, observed_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_feed_record ON asset_observations (source_feed, source_record_id, observed_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_observations_position ON asset_observations USING GIST (position)",
+            "CREATE INDEX IF NOT EXISTS idx_asset_current_state_position ON asset_current_state USING GIST (position)",
+            "CREATE INDEX IF NOT EXISTS idx_asset_current_state_domain ON asset_current_state (source_domain, last_seen DESC)",
             "CREATE INDEX IF NOT EXISTS idx_track_events_entity_ts ON track_events (entity_id, timestamp DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_states_entity ON asset_states (entity_id)",
             "CREATE INDEX IF NOT EXISTS idx_disruption_events_entity ON disruption_events (entity_id)",
@@ -1055,6 +1080,63 @@ class BaseCollector(ABC):
                     (
                         self._asset_entity_id(e["source_domain"], str(e["track_id"])),
                         e["source_domain"], e["source_feed"], e["track_id"],
+                        e.get("callsign"),
+                        e.get("lon"), e.get("lat"),
+                        e.get("altitude_m"), e.get("heading_deg"), e.get("speed_mps"),
+                        db_timestamp(e["timestamp"]),
+                        db_timestamp(e["timestamp"]),
+                        self._estimate_source_trust_score(e),
+                        self._estimate_identity_confidence(e),
+                        self._estimate_state_confidence(e),
+                        self._observation_id(e),
+                        json.dumps(self._asset_provenance(e)),
+                        json.dumps(_public_metadata(e.get("metadata"))),
+                        e.get("classification"),
+                    )
+                    for e in current_state_events
+                ])
+
+            if current_state_events:
+                await conn.executemany("""
+                    INSERT INTO asset_current_state
+                        (entity_id, source_domain, winning_source_feed, track_id, callsign,
+                         position, altitude_m, heading_deg, speed_mps,
+                         first_seen, last_seen, source_trust_score, identity_confidence, state_confidence,
+                         winning_event_id, provenance, metadata, classification)
+                    VALUES
+                        ($1, $2, $3, $4, $5,
+                         CASE
+                              WHEN $6::double precision IS NOT NULL AND $7::double precision IS NOT NULL
+                              THEN ST_SetSRID(ST_MakePoint($6::double precision, $7::double precision), 4326)
+                              ELSE NULL::geometry(Point, 4326)
+                         END,
+                         $8, $9, $10, $11, $12, $13, $14,
+                         $15::uuid, $16::jsonb, $17::jsonb, $18)
+                    ON CONFLICT (entity_id) DO UPDATE SET
+                        source_domain = EXCLUDED.source_domain,
+                        winning_source_feed = EXCLUDED.winning_source_feed,
+                        track_id = COALESCE(EXCLUDED.track_id, asset_current_state.track_id),
+                        callsign = COALESCE(EXCLUDED.callsign, asset_current_state.callsign),
+                        position = EXCLUDED.position,
+                        altitude_m = EXCLUDED.altitude_m,
+                        heading_deg = EXCLUDED.heading_deg,
+                        speed_mps = EXCLUDED.speed_mps,
+                        first_seen = LEAST(COALESCE(asset_current_state.first_seen, EXCLUDED.first_seen), EXCLUDED.first_seen),
+                        last_seen = EXCLUDED.last_seen,
+                        source_trust_score = EXCLUDED.source_trust_score,
+                        identity_confidence = EXCLUDED.identity_confidence,
+                        state_confidence = EXCLUDED.state_confidence,
+                        winning_event_id = EXCLUDED.winning_event_id,
+                        provenance = COALESCE(asset_current_state.provenance, '{}'::jsonb) || EXCLUDED.provenance,
+                        metadata = EXCLUDED.metadata,
+                        classification = COALESCE(EXCLUDED.classification, asset_current_state.classification),
+                        fused_at = NOW()
+                """, [
+                    (
+                        self._asset_entity_id(e["source_domain"], str(e["track_id"])),
+                        e["source_domain"],
+                        e["source_feed"],
+                        e["track_id"],
                         e.get("callsign"),
                         e.get("lon"), e.get("lat"),
                         e.get("altitude_m"), e.get("heading_deg"), e.get("speed_mps"),

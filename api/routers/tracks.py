@@ -341,14 +341,14 @@ async def get_domain_status(
 
     asset_sql = text("""
         SELECT
-            source_feed,
+            winning_source_feed AS source_feed,
             track_id,
             callsign,
             altitude_m,
             speed_mps,
             last_seen,
             classification
-        FROM asset_states
+        FROM asset_current_state
         WHERE source_domain = :domain
         ORDER BY last_seen DESC
     """)
@@ -664,8 +664,8 @@ async def get_live_assets(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """
-    Returns the latest known state of all assets from asset_states table.
-    Much faster than querying track_events for live view — one row per asset.
+        Returns the latest canonical state of all assets from asset_current_state.
+        Much faster than querying track_events for live view — one row per asset.
     """
     now = datetime.now(timezone.utc)
     freshness_condition, freshness_params = _live_freshness_condition(now=now)
@@ -685,7 +685,7 @@ async def get_live_assets(
             SELECT
                 source_domain,
                 COUNT(*) FILTER (WHERE NOT """ + freshness_condition + """) AS stale_asset_count
-            FROM asset_states
+            FROM asset_current_state
             GROUP BY source_domain
         """)
         min_cutoff = min(freshness_params.values())
@@ -742,12 +742,12 @@ async def get_live_assets(
     sql = text(f"""
         SELECT
             entity_id::text AS entity_id,
-            source_domain, source_feed, track_id, callsign,
+            source_domain, winning_source_feed AS source_feed, track_id, callsign,
             ST_X(position) AS lon, ST_Y(position) AS lat,
             altitude_m, heading_deg, speed_mps, last_seen,
             first_seen, source_trust_score, identity_confidence, state_confidence,
             winning_event_id, provenance, metadata, classification
-        FROM asset_states
+        FROM asset_current_state
         WHERE {where_clause}
         ORDER BY last_seen DESC
     """)
@@ -816,11 +816,12 @@ async def get_asset_detail(
     sql = text("""
         SELECT
             entity_id::text AS entity_id,
-            source_domain, source_feed, track_id, callsign,
+            source_domain, winning_source_feed AS source_feed, track_id, callsign,
             ST_X(position) AS lon, ST_Y(position) AS lat,
             altitude_m, heading_deg, speed_mps, last_seen,
-            metadata, classification
-        FROM asset_states
+            first_seen, source_trust_score, identity_confidence, state_confidence,
+            winning_event_id, provenance, metadata, classification
+        FROM asset_current_state
         WHERE (
             :entity_id::uuid IS NOT NULL
             AND entity_id = :entity_id::uuid
@@ -1069,7 +1070,7 @@ async def get_orbital_track(
     Propagate a satellite's TLE forward using SGP4 (skyfield) and return
     a predicted ground-track as a list of {lon, lat, alt_km, timestamp} points.
 
-    The TLE is read from the most recent asset_states row for this track_id.
+    The TLE is read from the most recent canonical current-state row for this track_id.
     Propagation is done in a thread-pool executor so it doesn't block the event loop.
 
     Duration options:
@@ -1080,10 +1081,10 @@ async def get_orbital_track(
     Note: orbital tracks are best visualised in Globe View — in flat (Mercator)
     projection a polar orbit will appear to zig-zag across the antimeridian.
     """
-    # ── Fetch TLE from asset_states ─────────────────────────────
+    # ── Fetch TLE from canonical current state ──────────────────
     sql = text("""
         SELECT metadata
-        FROM asset_states
+        FROM asset_current_state
         WHERE track_id = :track_id
           AND source_domain = 'Space'
         ORDER BY last_seen DESC

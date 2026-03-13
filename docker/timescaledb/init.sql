@@ -255,8 +255,40 @@ CREATE INDEX idx_asset_observations_feed_record
 CREATE INDEX idx_asset_observations_position
     ON asset_observations USING GIST (position);
 
+-- ── Canonical fused current asset state ──────────────────────────
+-- One row per canonical entity, representing the platform's best
+-- current estimate after fusing available source-state evidence.
+CREATE TABLE asset_current_state (
+    entity_id            UUID            PRIMARY KEY REFERENCES entities(entity_id),
+    source_domain        source_domain   NOT NULL,
+    winning_source_feed  TEXT,
+    track_id             TEXT,
+    callsign             TEXT,
+    position             GEOMETRY(Point, 4326),
+    altitude_m           DOUBLE PRECISION,
+    heading_deg          DOUBLE PRECISION,
+    speed_mps            DOUBLE PRECISION,
+    first_seen           TIMESTAMPTZ,
+    last_seen            TIMESTAMPTZ     NOT NULL,
+    source_trust_score   DOUBLE PRECISION,
+    identity_confidence  DOUBLE PRECISION,
+    state_confidence     DOUBLE PRECISION,
+    winning_event_id     UUID,
+    provenance           JSONB           DEFAULT '{}'::jsonb,
+    metadata             JSONB           DEFAULT '{}'::jsonb,
+    classification       TEXT,
+    fused_at             TIMESTAMPTZ     DEFAULT NOW()
+);
+
+CREATE INDEX idx_asset_current_state_position
+    ON asset_current_state USING GIST (position);
+
+CREATE INDEX idx_asset_current_state_domain
+    ON asset_current_state (source_domain, last_seen DESC);
+
 -- ── Current asset state cache ─────────────────────────────────────
--- Mirrors Redis; survives Redis restarts; updated in-place per track
+-- Feed-scoped latest state cache. This preserves the latest report as
+-- seen from a particular feed-local identity before fusion.
 CREATE TABLE asset_states (
     id              BIGSERIAL       PRIMARY KEY,
     entity_id       UUID            REFERENCES entities(entity_id),
