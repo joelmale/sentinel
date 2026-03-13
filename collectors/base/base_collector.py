@@ -20,6 +20,7 @@ editorial process they all share.
 import asyncio
 import json
 import logging
+import math
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -76,15 +77,35 @@ class TrackEventDict:
             "source_feed": source_feed,
             "track_id": track_id,
             "callsign": callsign,
-            "lon": lon,
-            "lat": lat,
-            "altitude_m": altitude_m,
-            "heading_deg": heading_deg % 360 if heading_deg is not None else None,
-            "speed_mps": speed_mps,
+            "lon": _finite_or_none(lon),
+            "lat": _finite_or_none(lat),
+            "altitude_m": _finite_or_none(altitude_m),
+            "heading_deg": (_finite_or_none(heading_deg) % 360) if _finite_or_none(heading_deg) is not None else None,
+            "speed_mps": _finite_or_none(speed_mps),
             "timestamp": timestamp.isoformat() if isinstance(timestamp, datetime) else timestamp,
             "classification": classification,
             "metadata": metadata or {},
         }
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _sanitize_json_value(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _sanitize_json_value(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    return value
 
 
 class BaseCollector(ABC):
@@ -479,9 +500,10 @@ class BaseCollector(ABC):
         """Publish each event to Redis Stream for WebSocket fan-out."""
         pipe = self._redis.pipeline()
         for event in events:
+            safe_event = _sanitize_json_value(event)
             pipe.xadd(
                 STREAM_KEY,
-                {"payload": json.dumps(event)},
+                {"payload": json.dumps(safe_event, allow_nan=False)},
                 maxlen=50_000,   # trim stream to ~50k most recent events
                 approximate=True,
             )

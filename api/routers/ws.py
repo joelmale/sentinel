@@ -15,6 +15,7 @@ the transmitter tower.
 import asyncio
 import json
 import logging
+import math
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -45,7 +46,7 @@ class ConnectionManager:
     async def broadcast(self, message: dict[str, Any]):
         if not self.connections:
             return
-        data = json.dumps(message)
+        data = json.dumps(_sanitize_json_value(message), allow_nan=False)
         dead = set()
         for ws in self.connections:
             try:
@@ -57,6 +58,16 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+def _sanitize_json_value(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _sanitize_json_value(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    return value
 
 
 @router.websocket("/ws/live")
@@ -87,7 +98,7 @@ async def websocket_live(websocket: WebSocket):
                             last_id = entry_id
                             try:
                                 event_data = json.loads(fields.get("payload", "{}"))
-                                events.append(event_data)
+                                events.append(_sanitize_json_value(event_data))
                             except json.JSONDecodeError:
                                 pass
 
