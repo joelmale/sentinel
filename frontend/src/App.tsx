@@ -93,6 +93,7 @@ function SentinelApp() {
   const [now, setNow] = useState(new Date())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [spaceDashboardOpen, setSpaceDashboardOpen] = useState(false)
+  const [priorityPrefetchEnabled, setPriorityPrefetchEnabled] = useState(false)
   const [domainDashboardOpen, setDomainDashboardOpen] = useState<'Air' | 'Maritime' | null>(null)
   const [disruptionDashboardOpen, setDisruptionDashboardOpen] = useState<'GPS' | 'Infra' | null>(null)
   const settingsRef = useRef<HTMLDivElement | null>(null)
@@ -109,6 +110,13 @@ function SentinelApp() {
     if (wsFrameRef.current !== null) {
       cancelAnimationFrame(wsFrameRef.current)
     }
+  }, [])
+
+  useEffect(() => {
+    const timerId = window.setTimeout(() => {
+      setPriorityPrefetchEnabled(true)
+    }, 5_000)
+    return () => window.clearTimeout(timerId)
   }, [])
 
   useEffect(() => {
@@ -359,6 +367,7 @@ function SentinelApp() {
 
   const spaceWatchPriorityQuery = useQuery({
     queryKey: ['space-watch-priority'],
+    enabled: spaceDashboardOpen || priorityPrefetchEnabled,
     queryFn: async (): Promise<SpaceWatchDashboardPayload> => {
       return trackedFetchJson<SpaceWatchDashboardPayload>('space-watch-priority', '/api/satellites/watchlist/status')
     },
