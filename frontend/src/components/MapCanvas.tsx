@@ -663,23 +663,21 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
           selectedDomain === 'Maritime',
       )
 
-      ls.push(new TextLayer<TrackEventProperties>({
-        id: 'ais-live-icons',
+      ls.push(new ScatterplotLayer<TrackEventProperties>({
+        id: 'ais-live-points',
         data: maritimeAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
-        getText: () => '⚓',
-        // Black anchors — high contrast; alpha dims when declutter search is active
-        getColor: (d: TrackEventProperties) => [10, 10, 10, getAlpha(d)],
-        updateTriggers: { getColor: [declutterMode, searchMatchSet] },
-        getSize: 18,
-        sizeUnits: 'pixels',
+        getRadius: 4,
+        radiusUnits: 'pixels',
+        getLineWidth: 1,
+        lineWidthUnits: 'pixels',
+        stroked: true,
+        filled: true,
+        getLineColor: [241, 245, 249, 120],
+        getFillColor: (d: TrackEventProperties) => [10, 10, 10, getAlpha(d)],
+        updateTriggers: { getFillColor: [declutterMode, searchMatchSet] },
         pickable: true,
         opacity: domainOpacity('Maritime'),
-        getTextAnchor: 'middle',
-        getAlignmentBaseline: 'center',
-        characterSet: 'auto',
-        fontFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", "DejaVu Sans", Arial, sans-serif',
-        fontSettings: { sdf: true, fontSize: 64 },
         onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
           setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
         onClick: ({ object }) =>
@@ -687,6 +685,21 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
       }))
 
       if (selectedMaritimeAsset) {
+        ls.push(new TextLayer<TrackEventProperties>({
+          id: 'ais-selected-icon',
+          data: [selectedMaritimeAsset],
+          getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
+          getText: () => '⚓',
+          getColor: [15, 23, 42, 255],
+          getSize: 16,
+          sizeUnits: 'pixels',
+          pickable: false,
+          getTextAnchor: 'middle',
+          getAlignmentBaseline: 'center',
+          characterSet: 'auto',
+          fontFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", "DejaVu Sans", Arial, sans-serif',
+          fontSettings: { sdf: true, fontSize: 64 },
+        }))
         ls.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'ais-selected-ring',
           data: [selectedMaritimeAsset],
@@ -748,28 +761,24 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
           selectedDomain === 'Air',
       )
 
-      ls.push(new TextLayer<TrackEventProperties>({
-        id: 'adsb-live-icons',
+      ls.push(new ScatterplotLayer<TrackEventProperties>({
+        id: 'adsb-live-points',
         data: airAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
-        getText: () => '✈',
-        getColor: (d: TrackEventProperties) => {
+        getRadius: 4.5,
+        radiusUnits: 'pixels',
+        stroked: true,
+        filled: true,
+        lineWidthUnits: 'pixels',
+        getLineWidth: 1,
+        getLineColor: [226, 232, 240, 110],
+        getFillColor: (d: TrackEventProperties) => {
           const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
           return [base[0], base[1], base[2], getAlpha(d)] as [number, number, number, number]
         },
-        updateTriggers: { getColor: [declutterMode, searchMatchSet] },
-        getSize: 18,
-        getAngle: (d) => d.heading_deg ?? 0,
-        sizeUnits: 'pixels',
+        updateTriggers: { getFillColor: [declutterMode, searchMatchSet] },
         pickable: true,
         opacity: domainOpacity('Air'),
-        getTextAnchor: 'middle',
-        getAlignmentBaseline: 'center',
-        // deck.gl builds a GPU glyph atlas from a limited ASCII set by default.
-        // 'auto' rescans the data each update and bakes whatever characters appear.
-        characterSet: 'auto',
-        fontFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", "DejaVu Sans", Arial, sans-serif',
-        fontSettings: { sdf: true, fontSize: 64 },
         onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
           setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
         onClick: ({ object }) =>
@@ -777,6 +786,25 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
       }))
 
       if (selectedAirAsset) {
+        ls.push(new TextLayer<TrackEventProperties>({
+          id: 'adsb-selected-icon',
+          data: [selectedAirAsset],
+          getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
+          getText: () => '✈',
+          getColor: (d: TrackEventProperties) => {
+            const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
+            return [base[0], base[1], base[2], 255] as [number, number, number, number]
+          },
+          getSize: 16,
+          getAngle: (d) => d.heading_deg ?? 0,
+          sizeUnits: 'pixels',
+          pickable: false,
+          getTextAnchor: 'middle',
+          getAlignmentBaseline: 'center',
+          characterSet: 'auto',
+          fontFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", "DejaVu Sans", Arial, sans-serif',
+          fontSettings: { sdf: true, fontSize: 64 },
+        }))
         ls.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'adsb-selected-ring',
           data: [selectedAirAsset],
@@ -912,21 +940,17 @@ export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMap
       spaceAggregateCount = aggregateSpaceData.length
       spaceBackgroundCount = nonPriorityVisibleIndividuals.length
       if (!spacePriorityOnly && nonPriorityVisibleIndividuals.length > 0) {
-        ls.push(new TextLayer<TrackEventProperties>({
-          id: 'space-background-icons',
+        ls.push(new ScatterplotLayer<TrackEventProperties>({
+          id: 'space-background-points',
           data: nonPriorityVisibleIndividuals,
           getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
-          getText: () => '·',
-          getColor: [148, 163, 184, 95],
-          getSize: 14,
-          sizeUnits: 'pixels',
+          getRadius: 2.5,
+          radiusUnits: 'pixels',
+          stroked: false,
+          filled: true,
+          getFillColor: [148, 163, 184, 95],
           pickable: true,
           opacity: domainOpacity('Space') * 0.5,
-          getTextAnchor: 'middle',
-          getAlignmentBaseline: 'center',
-          characterSet: 'auto',
-          fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-          fontSettings: { sdf: true, fontSize: 64 },
           onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
             setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
           onClick: ({ object }) =>
