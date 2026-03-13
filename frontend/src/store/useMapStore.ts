@@ -39,6 +39,8 @@ export interface InvestigationContext {
   ruleName?: string
 }
 
+export type InvestigationWindowPreset = 'before' | 'during' | 'after'
+
 export interface UnderseaLandingPointSelection {
   id: string
   name: string
@@ -114,6 +116,26 @@ const DEFAULT_PLAYBACK: PlaybackState = {
   speedMultiplier: 1,
 }
 
+function investigationWindowFromPreset(triggeredAt: string, preset: InvestigationWindowPreset): TimeWindow {
+  const trigger = new Date(triggeredAt)
+  if (preset === 'before') {
+    return {
+      start: new Date(trigger.getTime() - 30 * 60_000),
+      end: trigger,
+    }
+  }
+  if (preset === 'during') {
+    return {
+      start: new Date(trigger.getTime() - 15 * 60_000),
+      end: new Date(trigger.getTime() + 15 * 60_000),
+    }
+  }
+  return {
+    start: trigger,
+    end: new Date(trigger.getTime() + 30 * 60_000),
+  }
+}
+
 // ── Store interface ───────────────────────────────────────────────
 interface MapStore {
   // Live asset data — shared across all panels so no prop drilling
@@ -177,6 +199,9 @@ interface MapStore {
 
   // Investigation context — set when analyst opens an alert
   investigationContext: InvestigationContext | null
+  investigationWindowPreset: InvestigationWindowPreset | null
+  setInvestigationWindowPreset: (preset: InvestigationWindowPreset | null) => void
+  applyInvestigationWindowPreset: (preset: InvestigationWindowPreset, triggeredAt?: string) => void
   focusAlert: (alert: AlertItem, options?: { preserveWindow?: boolean }) => void
   openInvestigation: (alert: AlertItem) => void
   closeInvestigation: () => void
@@ -394,8 +419,31 @@ export const useMapStore = create<MapStore>()(
 
     // ── Investigation context ─────────────────────────────────────
     investigationContext: null,
+    investigationWindowPreset: null,
+    setInvestigationWindowPreset: (investigationWindowPreset) => set({ investigationWindowPreset }),
+    applyInvestigationWindowPreset: (preset, triggeredAt) => {
+      const target = triggeredAt ?? get().investigationContext?.triggeredAt
+      if (!target) return
+      set((s) => ({
+        investigationWindowPreset: preset,
+        playback: {
+          ...s.playback,
+          mode: 'replay',
+          currentTime: new Date(target),
+          timeWindow: investigationWindowFromPreset(target, preset),
+        },
+      }))
+    },
     focusAlert: (alert, options) => {
-      const { flyTo, selectAsset, setTimeWindow, setCurrentTime, setPlaybackMode, triageAlert } = get()
+      const {
+        flyTo,
+        selectAsset,
+        setTimeWindow,
+        setCurrentTime,
+        setPlaybackMode,
+        triageAlert,
+        investigationWindowPreset,
+      } = get()
       const { viewportAssets, selectedAssetDetail } = useLiveDataStore.getState()
       // Fly to the track's last known position
       const assetKey = `${alert.domain}:${alert.trackId}`
@@ -409,9 +457,14 @@ export const useMapStore = create<MapStore>()(
       selectAsset(alert.trackId, alert.domain)
       const alertTime = new Date(alert.triggeredAt)
       if (!options?.preserveWindow) {
-        // Snap timeline ±30 min around the alert trigger time
-        const windowStart = new Date(alertTime.getTime() - 30 * 60_000)
-        const windowEnd   = new Date(Math.max(alertTime.getTime() + 30 * 60_000, Date.now()))
+        const nextWindow = investigationWindowPreset
+          ? investigationWindowFromPreset(alert.triggeredAt, investigationWindowPreset)
+          : {
+            start: new Date(alertTime.getTime() - 30 * 60_000),
+            end: new Date(Math.max(alertTime.getTime() + 30 * 60_000, Date.now())),
+          }
+        const windowStart = nextWindow.start
+        const windowEnd = nextWindow.end
         setTimeWindow({ start: windowStart, end: windowEnd })
       }
       setCurrentTime(alertTime)
@@ -430,7 +483,7 @@ export const useMapStore = create<MapStore>()(
       })
     },
     openInvestigation: (alert) => get().focusAlert(alert),
-    closeInvestigation: () => set({ investigationContext: null }),
+    closeInvestigation: () => set({ investigationContext: null, investigationWindowPreset: null }),
 
     // ── Panels ──────────────────────────────────────────────────
     sourcePanelOpen: true,

@@ -273,6 +273,7 @@ export function TimelinePanel() {
     playback,
     pendingAlerts,
     investigationContext,
+    investigationWindowPreset,
     layers,
     focusAlert,
     setPlaybackMode, setCurrentTime, setTimeWindow, setSpeedMultiplier, tickPlayback,
@@ -498,9 +499,28 @@ export function TimelinePanel() {
             ))}
             <PresetChip label="Custom" active={showCustom} onClick={() => { setShowCustom(v => !v); setActivePreset(null) }} />
             {windowMs > 0 && (
-              <span style={{ marginLeft:'auto', fontSize:11, fontWeight:600, color:'#475569', fontVariantNumeric:'tabular-nums' }}>
-                {fmtDur(windowMs / 1000)} window
-              </span>
+              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                {investigationContext && investigationWindowPreset && (
+                  <span
+                    style={{
+                      padding: '3px 8px',
+                      borderRadius: 999,
+                      border: '1px solid rgba(96,165,250,0.35)',
+                      background: 'rgba(37,99,235,0.14)',
+                      color: '#bfdbfe',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      letterSpacing: '.08em',
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    {investigationWindowPreset}
+                  </span>
+                )}
+                <span style={{ fontSize:11, fontWeight:600, color:'#475569', fontVariantNumeric:'tabular-nums' }}>
+                  {fmtDur(windowMs / 1000)} window
+                </span>
+              </div>
             )}
           </div>
 

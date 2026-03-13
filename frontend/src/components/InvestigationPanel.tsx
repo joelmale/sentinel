@@ -75,14 +75,13 @@ function bboxAround(asset: TrackEventProperties, degrees: number): string | null
 export function InvestigationPanel() {
   const {
     investigationContext,
+    investigationWindowPreset,
     pendingAlerts,
     playback,
     assetCardOpen,
+    applyInvestigationWindowPreset,
     openInvestigation,
     closeInvestigation,
-    setTimeWindow,
-    setCurrentTime,
-    setPlaybackMode,
     selectAsset,
     flyTo,
   } = useMapStore()
@@ -190,25 +189,6 @@ export function InvestigationPanel() {
     if (asset && typeof asset.lon === 'number' && typeof asset.lat === 'number') {
       flyTo(asset.lon, asset.lat, 9)
     }
-  }
-
-  const applyWindow = (mode: 'before' | 'during' | 'after') => {
-    const trigger = new Date(investigationContext.triggeredAt)
-    let start: Date
-    let end: Date
-    if (mode === 'before') {
-      end = trigger
-      start = new Date(trigger.getTime() - 30 * 60_000)
-    } else if (mode === 'during') {
-      start = new Date(trigger.getTime() - 15 * 60_000)
-      end = new Date(trigger.getTime() + 15 * 60_000)
-    } else {
-      start = trigger
-      end = new Date(trigger.getTime() + 30 * 60_000)
-    }
-    setTimeWindow({ start, end })
-    setCurrentTime(trigger)
-    setPlaybackMode('replay')
   }
 
   const saveNote = async () => {
@@ -333,10 +313,30 @@ export function InvestigationPanel() {
         <section style={panelSectionStyle}>
           <div style={sectionTitleStyle}>Time Shortcuts</div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <button style={tertiaryBtnStyle} onClick={() => applyWindow('before')}>Before</button>
-            <button style={tertiaryBtnStyle} onClick={() => applyWindow('during')}>During</button>
-            <button style={tertiaryBtnStyle} onClick={() => applyWindow('after')}>After</button>
+            <button
+              style={tertiaryBtnStyle(investigationWindowPreset === 'before')}
+              onClick={() => applyInvestigationWindowPreset('before')}
+            >
+              Before
+            </button>
+            <button
+              style={tertiaryBtnStyle(investigationWindowPreset === 'during')}
+              onClick={() => applyInvestigationWindowPreset('during')}
+            >
+              During
+            </button>
+            <button
+              style={tertiaryBtnStyle(investigationWindowPreset === 'after')}
+              onClick={() => applyInvestigationWindowPreset('after')}
+            >
+              After
+            </button>
           </div>
+          {investigationWindowPreset && (
+            <div style={{ fontSize: 10, color: '#94a3b8' }}>
+              Investigation bookmark: <span style={{ color: '#e2e8f0' }}>{investigationWindowPreset}</span>
+            </div>
+          )}
         </section>
 
         <section style={panelSectionStyle}>
@@ -510,16 +510,16 @@ const secondaryBtnStyle: React.CSSProperties = {
   cursor: 'pointer',
 }
 
-const tertiaryBtnStyle: React.CSSProperties = {
-  border: '1px solid rgba(59,130,246,0.30)',
-  background: 'rgba(30,64,175,0.12)',
-  color: '#bfdbfe',
+const tertiaryBtnStyle = (active = false): React.CSSProperties => ({
+  border: `1px solid ${active ? 'rgba(96,165,250,0.55)' : 'rgba(59,130,246,0.30)'}`,
+  background: active ? 'rgba(37,99,235,0.24)' : 'rgba(30,64,175,0.12)',
+  color: active ? '#eff6ff' : '#bfdbfe',
   borderRadius: 999,
   padding: '6px 10px',
   fontSize: 10,
   fontWeight: 700,
   cursor: 'pointer',
-}
+})
 
 const rowButtonStyle: React.CSSProperties = {
   display: 'flex',
