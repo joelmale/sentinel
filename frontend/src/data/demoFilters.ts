@@ -79,6 +79,10 @@ export function buildDemoFilterOptions(domain: SourceDomain, assets: TrackEventP
 
 export function getDefaultDemoFilterKey(domain: SourceDomain, options: DemoFilterOption[]): string | null {
   if (options.length === 0) return null
+  if (domain === 'Air') {
+    const military = options.find((option) => option.key === '🎖 Military')
+    if (military) return military.key
+  }
   if (domain === 'Space') {
     const spire = options.find((option) => option.key === 'Spire Global')
     if (spire) return spire.key
