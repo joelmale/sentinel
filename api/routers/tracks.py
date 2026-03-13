@@ -30,6 +30,14 @@ from models.track_event import SourceDomain
 router = APIRouter(tags=["Tracks"])
 logger = logging.getLogger(__name__)
 
+LIVE_FRESHNESS_WINDOWS: dict[SourceDomain, timedelta] = {
+    SourceDomain.AIR: timedelta(minutes=30),
+    SourceDomain.MARITIME: timedelta(hours=12),
+    SourceDomain.SPACE: timedelta(hours=24),
+    SourceDomain.GPS: timedelta(minutes=20),
+    SourceDomain.INFRA: timedelta(hours=24),
+}
+
 
 def _ensure_tz(dt: datetime | None) -> datetime | None:
     """Guard against timezone-naive datetimes from some asyncpg configurations."""
@@ -48,6 +56,26 @@ def _sanitize_json_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_sanitize_json_value(item) for item in value]
     return value
+
+
+def _live_freshness_cutoff(domain: SourceDomain, now: datetime | None = None) -> datetime:
+    reference = now or datetime.now(timezone.utc)
+    return reference - LIVE_FRESHNESS_WINDOWS[domain]
+
+
+def _live_freshness_condition(
+    domain_column: str = "source_domain",
+    time_column: str = "last_seen",
+    now: datetime | None = None,
+) -> tuple[str, dict[str, datetime]]:
+    params: dict[str, datetime] = {}
+    parts: list[str] = []
+    reference = now or datetime.now(timezone.utc)
+    for domain, window in LIVE_FRESHNESS_WINDOWS.items():
+        param_name = f"fresh_{domain.value.lower()}_cutoff"
+        params[param_name] = reference - window
+        parts.append(f"({domain_column} = '{domain.value}' AND {time_column} >= :{param_name})")
+    return "(" + " OR ".join(parts) + ")", params
 
 
 def _live_metadata_subset(domain: str, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -514,24 +542,37 @@ async def get_live_assets(
     Returns the latest known state of all assets from asset_states table.
     Much faster than querying track_events for live view — one row per asset.
     """
+    now = datetime.now(timezone.utc)
+    freshness_condition, freshness_params = _live_freshness_condition(now=now)
+
     if scope == "summary" or (scope == "detail" and domain is None and bbox is None):
         summary_sql = text("""
-            SELECT source_domain, COUNT(*) AS asset_count
+            SELECT
+                source_domain,
+                COUNT(*) FILTER (WHERE """ + freshness_condition + """) AS live_asset_count,
+                COUNT(*) FILTER (WHERE NOT """ + freshness_condition + """) AS stale_asset_count
             FROM asset_states
             GROUP BY source_domain
         """)
-        result = await db.execute(summary_sql)
+        result = await db.execute(summary_sql, freshness_params)
         rows = result.mappings().all()
         domains = {d.value: 0 for d in SourceDomain}
+        stale_domains = {d.value: 0 for d in SourceDomain}
         total = 0
+        stale_total = 0
         for row in rows:
-            count = int(row["asset_count"] or 0)
-            domains[row["source_domain"]] = count
-            total += count
+            live_count = int(row["live_asset_count"] or 0)
+            stale_count = int(row["stale_asset_count"] or 0)
+            domains[row["source_domain"]] = live_count
+            stale_domains[row["source_domain"]] = stale_count
+            total += live_count
+            stale_total += stale_count
         return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": now.isoformat(),
             "total": total,
             "domains": domains,
+            "stale_total": stale_total,
+            "stale_domains": stale_domains,
         }
 
     conditions = ["TRUE"]
@@ -540,6 +581,11 @@ async def get_live_assets(
     if domain:
         conditions.append("source_domain = :domain")
         params["domain"] = domain.value
+        conditions.append("last_seen >= :live_cutoff")
+        params["live_cutoff"] = _live_freshness_cutoff(domain, now)
+    else:
+        conditions.append(freshness_condition)
+        params.update(freshness_params)
 
     if bbox:
         try:
