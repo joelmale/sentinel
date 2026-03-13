@@ -82,11 +82,12 @@ CREATE INDEX idx_source_runs_feed_started
     ON source_runs (source_feed, started_at DESC);
 
 -- ── Core track events table ───────────────────────────────────────
--- Every position report / state update from every domain lands here.
--- This is a TimescaleDB hypertable partitioned by timestamp.
+-- Canonical historical track samples used for analyst replay/history.
+-- Linked back to the raw normalized observation that produced the sample.
 CREATE TABLE track_events (
     event_id        UUID            DEFAULT uuid_generate_v4(),
     entity_id       UUID            REFERENCES entities(entity_id),
+    source_observation_id UUID,
     source_record_id TEXT,
     source_domain   source_domain   NOT NULL,
     source_feed     TEXT            NOT NULL,
@@ -144,6 +145,43 @@ SELECT add_retention_policy(
     'track_events',
     drop_after => INTERVAL '90 days'
 );
+
+-- ── Raw normalized asset observations ─────────────────────────────
+CREATE TABLE asset_observations (
+    observation_id       UUID            PRIMARY KEY,
+    entity_id            UUID            REFERENCES entities(entity_id),
+    source_domain        source_domain   NOT NULL,
+    source_feed          TEXT            NOT NULL,
+    source_record_id     TEXT,
+    observed_at          TIMESTAMPTZ     NOT NULL,
+    ingested_at          TIMESTAMPTZ     DEFAULT NOW(),
+    position             GEOMETRY(Point, 4326),
+    altitude_m           DOUBLE PRECISION,
+    heading_deg          DOUBLE PRECISION,
+    speed_mps            DOUBLE PRECISION,
+    raw_payload          JSONB           DEFAULT '{}'::jsonb,
+    normalized_payload   JSONB           DEFAULT '{}'::jsonb,
+    classification       TEXT,
+    source_trust_score   DOUBLE PRECISION,
+    observation_confidence DOUBLE PRECISION,
+    identity_confidence  DOUBLE PRECISION
+);
+
+SELECT create_hypertable(
+    'asset_observations',
+    'observed_at',
+    chunk_time_interval => INTERVAL '1 day',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX idx_asset_observations_entity_time
+    ON asset_observations (entity_id, observed_at DESC);
+
+CREATE INDEX idx_asset_observations_feed_record
+    ON asset_observations (source_feed, source_record_id, observed_at DESC);
+
+CREATE INDEX idx_asset_observations_position
+    ON asset_observations USING GIST (position);
 
 -- ── Current asset state cache ─────────────────────────────────────
 -- Mirrors Redis; survives Redis restarts; updated in-place per track

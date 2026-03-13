@@ -277,6 +277,28 @@ class BaseCollector(ABC):
                 metadata JSONB DEFAULT '{}'::jsonb
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS asset_observations (
+                observation_id UUID PRIMARY KEY,
+                entity_id UUID REFERENCES entities(entity_id),
+                source_domain source_domain NOT NULL,
+                source_feed TEXT NOT NULL,
+                source_record_id TEXT,
+                observed_at TIMESTAMPTZ NOT NULL,
+                ingested_at TIMESTAMPTZ DEFAULT NOW(),
+                position GEOMETRY(Point, 4326),
+                altitude_m DOUBLE PRECISION,
+                heading_deg DOUBLE PRECISION,
+                speed_mps DOUBLE PRECISION,
+                raw_payload JSONB DEFAULT '{}'::jsonb,
+                normalized_payload JSONB DEFAULT '{}'::jsonb,
+                classification TEXT,
+                source_trust_score DOUBLE PRECISION,
+                observation_confidence DOUBLE PRECISION,
+                identity_confidence DOUBLE PRECISION
+            )
+            """,
+            "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS source_observation_id UUID",
             "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS source_record_id TEXT",
             "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS entity_id UUID",
             "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS entity_id UUID",
@@ -348,6 +370,9 @@ class BaseCollector(ABC):
             "CREATE INDEX IF NOT EXISTS idx_entities_type_domain ON entities (entity_type, source_domain, updated_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_entity_identifiers_entity ON entity_identifiers (entity_id, last_seen DESC)",
             "CREATE INDEX IF NOT EXISTS idx_source_runs_feed_started ON source_runs (source_feed, started_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_asset_observations_entity_time ON asset_observations (entity_id, observed_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_asset_observations_feed_record ON asset_observations (source_feed, source_record_id, observed_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_asset_observations_position ON asset_observations USING GIST (position)",
             "CREATE INDEX IF NOT EXISTS idx_track_events_entity_ts ON track_events (entity_id, timestamp DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_states_entity ON asset_states (entity_id)",
             "CREATE INDEX IF NOT EXISTS idx_disruption_events_entity ON disruption_events (entity_id)",
@@ -684,22 +709,60 @@ class BaseCollector(ABC):
 
             if history_events:
                 await conn.executemany("""
-                    INSERT INTO track_events
-                        (event_id, entity_id, source_record_id, source_domain, source_feed, track_id, callsign,
-                         position, altitude_m, heading_deg, speed_mps,
-                         timestamp, metadata, classification)
+                    INSERT INTO asset_observations
+                        (observation_id, entity_id, source_domain, source_feed, source_record_id,
+                         observed_at, position, altitude_m, heading_deg, speed_mps,
+                         raw_payload, normalized_payload, classification, source_trust_score,
+                         observation_confidence, identity_confidence)
                     VALUES
-                        ($1, $2, $3, $4, $5, $6, $7,
+                        ($1, $2, $3, $4, $5,
+                         $6,
                          CASE
-                              WHEN $8::double precision IS NOT NULL AND $9::double precision IS NOT NULL
-                              THEN ST_SetSRID(ST_MakePoint($8::double precision, $9::double precision), 4326)
+                              WHEN $7::double precision IS NOT NULL AND $8::double precision IS NOT NULL
+                              THEN ST_SetSRID(ST_MakePoint($7::double precision, $8::double precision), 4326)
                               ELSE NULL::geometry(Point, 4326)
                          END,
-                         $10, $11, $12, $13, $14::jsonb, $15)
+                         $9, $10, $11, $12::jsonb, $13::jsonb, $14, $15, $16, $17)
+                    ON CONFLICT (observation_id) DO NOTHING
                 """, [
                     (
                         self._observation_id(e),
                         self._asset_entity_id(e["source_domain"], str(e["track_id"])),
+                        e["source_domain"],
+                        e["source_feed"],
+                        str((e.get("metadata") or {}).get("source_record_id") or f"{e['source_feed']}:{e['track_id']}:{e['timestamp']}"),
+                        db_timestamp(e["timestamp"]),
+                        e.get("lon"), e.get("lat"),
+                        e.get("altitude_m"), e.get("heading_deg"), e.get("speed_mps"),
+                        json.dumps((e.get("metadata") or {}).get("raw_payload") or _public_metadata(e.get("metadata"))),
+                        json.dumps(_public_metadata(e.get("metadata"))),
+                        e.get("classification"),
+                        self._estimate_source_trust_score(e),
+                        self._estimate_state_confidence(e),
+                        self._estimate_identity_confidence(e),
+                    )
+                    for e in history_events
+                ])
+
+            if history_events:
+                await conn.executemany("""
+                    INSERT INTO track_events
+                        (event_id, entity_id, source_observation_id, source_record_id, source_domain, source_feed, track_id, callsign,
+                         position, altitude_m, heading_deg, speed_mps,
+                         timestamp, metadata, classification)
+                    VALUES
+                        ($1, $2, $3, $4, $5, $6, $7, $8,
+                         CASE
+                              WHEN $9::double precision IS NOT NULL AND $10::double precision IS NOT NULL
+                              THEN ST_SetSRID(ST_MakePoint($9::double precision, $10::double precision), 4326)
+                              ELSE NULL::geometry(Point, 4326)
+                         END,
+                         $11, $12, $13, $14, $15::jsonb, $16)
+                """, [
+                    (
+                        self._observation_id(e),
+                        self._asset_entity_id(e["source_domain"], str(e["track_id"])),
+                        self._observation_id(e),
                         str((e.get("metadata") or {}).get("source_record_id") or f"{e['source_feed']}:{e['track_id']}:{e['timestamp']}"),
                         e["source_domain"], e["source_feed"], e["track_id"],
                         e.get("callsign"),
