@@ -103,7 +103,16 @@ function SentinelApp() {
   const settingsRef = useRef<HTMLDivElement | null>(null)
   const wsBatchRef = useRef<TrackEventProperties[]>([])
   const wsFrameRef = useRef<number | null>(null)
-  const { mapMode, setMapMode, showTrails, toggleShowTrails, globeView, toggleGlobeView } = useMapStore()
+  const {
+    mapMode,
+    setMapMode,
+    showTrails,
+    toggleShowTrails,
+    showFilteredTrackGhosts,
+    toggleShowFilteredTrackGhosts,
+    globeView,
+    toggleGlobeView,
+  } = useMapStore()
   const perfPanelOpen = usePerfStore((state) => state.panelOpen)
   const setPerfPanelOpen = usePerfStore((state) => state.setPanelOpen)
 
@@ -745,6 +754,10 @@ function SentinelApp() {
                   <label style={settingsRowStyle}>
                     <span>Show trails</span>
                     <input type="checkbox" checked={showTrails} onChange={toggleShowTrails} />
+                  </label>
+                  <label style={settingsRowStyle}>
+                    <span>Show filtered track ghosts</span>
+                    <input type="checkbox" checked={showFilteredTrackGhosts} onChange={toggleShowFilteredTrackGhosts} />
                   </label>
                   <label style={settingsRowStyle}>
                     <span>Show perf panel</span>

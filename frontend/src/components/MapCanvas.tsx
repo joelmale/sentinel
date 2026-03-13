@@ -223,6 +223,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     layers,
     mapMode,
     showTrails,
+    showFilteredTrackGhosts,
     showCocom,
     showUnderseaCables,
     globeView,
@@ -317,6 +318,23 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     setViewportBounds(cullBounds)
   }, [cullBounds, setViewportBounds])
 
+  const pinnedTrackKeys = useMemo(() => {
+    const keys = new Set<string>()
+    if (selectedDomain && selectedTrackId) {
+      keys.add(`${selectedDomain}:${selectedTrackId}`)
+    }
+    if (investigationContext) {
+      keys.add(`${investigationContext.domain}:${investigationContext.trackId}`)
+    }
+    for (const alert of pendingAlerts) {
+      keys.add(`${alert.domain}:${alert.trackId}`)
+    }
+    for (const watchedId of watchedSpaceTrackIds) {
+      keys.add(`Space:${watchedId}`)
+    }
+    return keys
+  }, [selectedDomain, selectedTrackId, investigationContext, pendingAlerts, watchedSpaceTrackIds])
+
   // Filter assets: hidden layers and filtered classifications are excluded entirely.
   // Muted layers pass through (rendered dimmed). Think of hidden=off, muted=context.
   const filteredAssets = useMemo(() => {
@@ -345,6 +363,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     }
 
     return liveAssets.filter((a) => {
+      const assetKey = `${a.source_domain}:${a.track_id}`
+      if (pinnedTrackKeys.has(assetKey)) return true
       const layerState = layers[a.source_domain as keyof typeof layers]
       if (layerState?.visibility === 'hidden') return false
       if (a.source_domain === 'Space' && hiddenSpaceConstellations.includes(getConstellation(a.callsign, a.object_type))) return false
@@ -354,11 +374,32 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       if (isHiddenByGroup(a)) return false
       return true
     })
-  }, [liveAssets, layers, hiddenSpaceConstellations, classFilter, hiddenGroupFilters])
+  }, [liveAssets, layers, hiddenSpaceConstellations, classFilter, hiddenGroupFilters, pinnedTrackKeys])
 
   const viewportAssets = useMemo(() => (
     filteredAssets.filter((asset) => isPointInBounds(asset.lon, asset.lat, cullBounds))
   ), [filteredAssets, cullBounds])
+
+  const visibleTrackKeySet = useMemo(() => {
+    const keys = new Set<string>()
+    for (const asset of filteredAssets) {
+      keys.add(`${asset.source_domain}:${asset.track_id}`)
+    }
+    return keys
+  }, [filteredAssets])
+
+  const ghostTrailKeySet = useMemo(() => {
+    if (!showFilteredTrackGhosts) return new Set<string>()
+    const keys = new Set<string>()
+    for (const asset of liveAssets) {
+      const assetKey = `${asset.source_domain}:${asset.track_id}`
+      if (pinnedTrackKeys.has(assetKey)) continue
+      if (visibleTrackKeySet.has(assetKey)) continue
+      if (layers[asset.source_domain]?.visibility === 'hidden') continue
+      keys.add(assetKey)
+    }
+    return keys
+  }, [showFilteredTrackGhosts, liveAssets, pinnedTrackKeys, visibleTrackKeySet, layers])
 
   const visibleDisruptions = useMemo(() => (
     disruptions.filter((event) => {
@@ -416,6 +457,12 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     }
     return baseAlpha
   }, [declutterMode, searchMatchSet])
+
+  const getTrailVisibilityMode = useCallback((trackKey: string): 'visible' | 'ghost' | 'hidden' => {
+    if (pinnedTrackKeys.has(trackKey) || visibleTrackKeySet.has(trackKey)) return 'visible'
+    if (ghostTrailKeySet.has(trackKey)) return 'ghost'
+    return 'hidden'
+  }, [ghostTrailKeySet, pinnedTrackKeys, visibleTrackKeySet])
 
   // Per-domain effective opacity: muted domains render at 25% of their base opacity
   const domainOpacity = useCallback((domain: string): number => {
@@ -655,8 +702,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       )
       const maritimeTrails = Array.from(trailBuffer.entries())
         .filter(([key]) => key.startsWith('Maritime:'))
-        .map(([key, positions]) => ({ key, positions }))
-        .filter((d) => d.positions.length >= 2 && d.positions.some((p) => isPointInBounds(p.lon, p.lat, cullBounds)))
+        .map(([key, positions]) => ({ key, positions, visibility: getTrailVisibilityMode(key) }))
+        .filter((d) => d.visibility !== 'hidden' && d.positions.length >= 2 && d.positions.some((p) => isPointInBounds(p.lon, p.lat, cullBounds)))
 
       const selectedMaritimeAsset = maritimeAssets.find(
         (a) =>
@@ -740,7 +787,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           data: maritimeTrails,
           getPath: (d: { positions: Array<{ lon: number; lat: number; timestamp: number }> }) =>
             d.positions.map(p => [p.lon, p.lat] as [number, number]),
-          getColor: [80, 80, 80, 100],
+          getColor: (d: { visibility: 'visible' | 'ghost' | 'hidden' }) =>
+            d.visibility === 'ghost' ? [100, 116, 139, 45] : [80, 80, 80, 100],
           getWidth: 1.5,
           widthUnits: 'pixels',
           pickable: false,
@@ -756,8 +804,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       )
       const airTrails = Array.from(trailBuffer.entries())
         .filter(([key]) => key.startsWith('Air:'))
-        .map(([key, positions]) => ({ key, positions }))
-        .filter((d) => d.positions.length >= 2 && d.positions.some((p) => isPointInBounds(p.lon, p.lat, cullBounds)))
+        .map(([key, positions]) => ({ key, positions, visibility: getTrailVisibilityMode(key) }))
+        .filter((d) => d.visibility !== 'hidden' && d.positions.length >= 2 && d.positions.some((p) => isPointInBounds(p.lon, p.lat, cullBounds)))
 
       const selectedAirAsset = airAssets.find(
         (a) =>
@@ -848,7 +896,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           data: airTrails,
           getPath: (d: { positions: Array<{ lon: number; lat: number; timestamp: number }> }) =>
             d.positions.map(p => [p.lon, p.lat] as [number, number]),
-          getColor: [100, 181, 246, 120],
+          getColor: (d: { visibility: 'visible' | 'ghost' | 'hidden' }) =>
+            d.visibility === 'ghost' ? [148, 163, 184, 40] : [100, 181, 246, 120],
           getWidth: 1.5,
           widthUnits: 'pixels',
           pickable: false,
@@ -868,6 +917,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           a.track_id === selectedTrackId &&
           selectedDomain === 'Space',
       )
+      const spaceTrails = Array.from(trailBuffer.entries())
+        .filter(([key]) => key.startsWith('Space:'))
+        .map(([key, positions]) => ({ key, positions, visibility: getTrailVisibilityMode(key) }))
+        .filter((d) => d.visibility !== 'hidden' && d.positions.length >= 2 && d.positions.some((p) => isPointInBounds(p.lon, p.lat, cullBounds)))
 
       const prioritySpaceAssets = spaceAssets.filter((asset) => spacePriorityKeys.has(`Space:${asset.track_id}`))
       const backgroundSpaceAssets = spaceAssets.filter((asset) => !spacePriorityKeys.has(`Space:${asset.track_id}`))
@@ -932,6 +985,21 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           getLineWidth: 3,
           getLineColor: [250, 204, 21, 255],
           pickable: false,
+        }))
+      }
+
+      if (showTrails) {
+        ls.push(new PathLayer({
+          id: 'space-trails',
+          data: spaceTrails,
+          getPath: (d: { positions: Array<{ lon: number; lat: number; timestamp: number }> }) =>
+            d.positions.map((p) => [p.lon, p.lat] as [number, number]),
+          getColor: (d: { visibility: 'visible' | 'ghost' | 'hidden' }) =>
+            d.visibility === 'ghost' ? [100, 116, 139, 35] : [148, 163, 184, 90],
+          getWidth: 1.2,
+          widthUnits: 'pixels',
+          pickable: false,
+          opacity: domainOpacity('Space') * 0.8,
         }))
       }
 
@@ -1085,6 +1153,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     layers,
     domainOpacity,
     getAlpha,
+    getTrailVisibilityMode,
     selectAsset,
     selectLandingPoint,
     trailBuffer,

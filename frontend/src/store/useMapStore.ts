@@ -215,11 +215,13 @@ interface MapStore {
   // UI settings
   mapMode: MapMode
   showTrails: boolean
+  showFilteredTrackGhosts: boolean
   showCocom: boolean
   showUnderseaCables: boolean
   globeView: boolean
   setMapMode: (mode: MapMode) => void
   toggleShowTrails: () => void
+  toggleShowFilteredTrackGhosts: () => void
   toggleCocom: () => void
   toggleUnderseaCables: () => void
   toggleGlobeView: () => void
@@ -497,11 +499,13 @@ export const useMapStore = create<MapStore>()(
     // ── UI settings ────────────────────────────────────────────
     mapMode: 'outline',
     showTrails: true,
+    showFilteredTrackGhosts: false,
     showCocom: false,
     showUnderseaCables: false,
     globeView: false,
     setMapMode: (mapMode) => set({ mapMode }),
     toggleShowTrails: () => set((s) => ({ showTrails: !s.showTrails })),
+    toggleShowFilteredTrackGhosts: () => set((s) => ({ showFilteredTrackGhosts: !s.showFilteredTrackGhosts })),
     toggleCocom: () => set((s) => ({ showCocom: !s.showCocom })),
     toggleUnderseaCables: () => set((s) => ({ showUnderseaCables: !s.showUnderseaCables })),
     toggleGlobeView: () => set((s) => ({ globeView: !s.globeView })),
