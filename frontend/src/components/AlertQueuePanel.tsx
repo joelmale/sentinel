@@ -228,14 +228,14 @@ export function AlertQueuePanel() {
     isDragging: isResizing,
   } = useResizePanel({
     defaultWidth: 340,
-    defaultHeight: 500,
+    defaultHeight: 170,
     minWidth: 280,
     maxWidth: 640,
-    minHeight: 260,
+    minHeight: 160,
     maxHeight: Math.max(360, window.innerHeight - 140),
     horizontalAnchor: 'right',
     verticalAnchor: 'bottom',
-    storageKey: 'sentinel.alertQueueSize',
+    storageKey: 'sentinel.alertQueueSize.v2',
   })
 
   const [open, setOpen] = useState(true)
