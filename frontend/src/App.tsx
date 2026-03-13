@@ -105,7 +105,8 @@ function SentinelApp() {
   const wsBatchRef = useRef<TrackEventProperties[]>([])
   const wsFrameRef = useRef<number | null>(null)
   const { mapMode, setMapMode, showTrails, toggleShowTrails, globeView, toggleGlobeView } = useMapStore()
-  const { panelOpen: perfPanelOpen, setPanelOpen: setPerfPanelOpen } = usePerfStore()
+  const perfPanelOpen = usePerfStore((state) => state.panelOpen)
+  const setPerfPanelOpen = usePerfStore((state) => state.setPanelOpen)
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000)
