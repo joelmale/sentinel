@@ -28,7 +28,35 @@ import { DisruptionDashboard, type DisruptionDashboardPayload } from '@/componen
 import { useLiveStream } from '@/hooks/useLiveStream'
 import { trackedFetchJson } from '@/lib/perf'
 import { useMapStore } from '@/store/useMapStore'
-import type { DisruptionEventResponse, TrackEventProperties, TrackFeatureCollection, WsMessage } from '@/types/track'
+import type {
+  DisruptionEventResponse,
+  LiveSummaryResponse,
+  SpaceAggregateFeatureCollection,
+  TrackEventProperties,
+  TrackFeatureCollection,
+  WsMessage,
+} from '@/types/track'
+
+type SpaceAggregate = {
+  constellation: string
+  count: number
+  lon: number
+  lat: number
+}
+
+function serializeBbox(bounds: { west: number; south: number; east: number; north: number } | null): string | null {
+  if (!bounds) return null
+  return [bounds.west, bounds.south, bounds.east, bounds.north].join(',')
+}
+
+function normalizeTrackFeatures(payload: TrackFeatureCollection): TrackEventProperties[] {
+  return payload.features.map((feature) => ({
+    ...feature.properties,
+    lon: feature.geometry?.coordinates[0],
+    lat: feature.geometry?.coordinates[1],
+    timestamp: feature.properties.last_seen ?? feature.properties.timestamp,
+  }))
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -40,10 +68,13 @@ function SentinelApp() {
   const {
     playback,
     upsertAssets,
+    replaceDomainAssets,
     liveAssets,
     addAlert,
     selectedTrackId,
     selectedDomain,
+    viewport,
+    viewportBounds,
     setSelectedTrackHistory,
     clearSelectedTrackHistory,
     spaceTrackDuration,
@@ -84,25 +115,107 @@ function SentinelApp() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  const liveSnapshotQuery = useQuery({
-    queryKey: ['live-assets'],
-    queryFn: async (): Promise<TrackEventProperties[]> => {
-      const payload = await trackedFetchJson<TrackFeatureCollection>('live-assets', '/api/tracks/live')
-      return payload.features.map((feature) => ({
-        ...feature.properties,
-        lon: feature.geometry?.coordinates[0],
-        lat: feature.geometry?.coordinates[1],
-        timestamp: feature.properties.last_seen ?? feature.properties.timestamp,
-      }))
+  const liveSummaryQuery = useQuery({
+    queryKey: ['live-assets-summary'],
+    queryFn: async (): Promise<LiveSummaryResponse> => {
+      return trackedFetchJson<LiveSummaryResponse>('live-assets-summary', '/api/tracks/live?scope=summary')
     },
     refetchOnWindowFocus: false,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  })
+
+  const viewportBbox = serializeBbox(viewportBounds)
+  const shouldLoadSpaceDetails = (
+    layers.Space.visibility === 'active' ||
+    viewport.zoom >= 4 ||
+    selectedDomain === 'Space'
+  ) && Boolean(viewportBbox)
+
+  const liveViewportQuery = useQuery({
+    queryKey: [
+      'live-assets-viewport',
+      viewportBbox,
+      viewport.zoom,
+      layers.Air.visibility,
+      layers.Maritime.visibility,
+      layers.Space.visibility,
+      selectedDomain,
+    ],
+    queryFn: async (): Promise<{
+      air: TrackEventProperties[]
+      maritime: TrackEventProperties[]
+      space: TrackEventProperties[]
+      spaceAggregates: SpaceAggregate[]
+    }> => {
+      const bbox = serializeBbox(viewportBounds)
+      const requests: Array<Promise<unknown>> = []
+
+      if (bbox && layers.Air.visibility !== 'hidden') {
+        requests.push(
+          trackedFetchJson<TrackFeatureCollection>('live-air-viewport', `/api/tracks/live?domain=Air&bbox=${encodeURIComponent(bbox)}`)
+            .then(normalizeTrackFeatures)
+        )
+      } else {
+        requests.push(Promise.resolve([]))
+      }
+
+      if (bbox && layers.Maritime.visibility !== 'hidden') {
+        requests.push(
+          trackedFetchJson<TrackFeatureCollection>('live-maritime-viewport', `/api/tracks/live?domain=Maritime&bbox=${encodeURIComponent(bbox)}`)
+            .then(normalizeTrackFeatures)
+        )
+      } else {
+        requests.push(Promise.resolve([]))
+      }
+
+      if (layers.Space.visibility !== 'hidden') {
+        const aggregateUrl = bbox
+          ? `/api/tracks/live?domain=Space&scope=aggregate&bbox=${encodeURIComponent(bbox)}`
+          : '/api/tracks/live?domain=Space&scope=aggregate'
+        requests.push(
+          trackedFetchJson<SpaceAggregateFeatureCollection>('live-space-aggregates', aggregateUrl)
+            .then((payload) => payload.features
+              .filter((feature) => Array.isArray(feature.geometry?.coordinates))
+              .map((feature) => ({
+                constellation: feature.properties.constellation,
+                count: feature.properties.count,
+                lon: feature.geometry!.coordinates[0],
+                lat: feature.geometry!.coordinates[1],
+              })))
+        )
+      } else {
+        requests.push(Promise.resolve([]))
+      }
+
+      if (bbox && shouldLoadSpaceDetails && layers.Space.visibility !== 'hidden') {
+        requests.push(
+          trackedFetchJson<TrackFeatureCollection>('live-space-viewport', `/api/tracks/live?domain=Space&bbox=${encodeURIComponent(bbox)}`)
+            .then(normalizeTrackFeatures)
+        )
+      } else {
+        requests.push(Promise.resolve([]))
+      }
+
+      const [air, maritime, spaceAggregates, space] = await Promise.all(requests) as [
+        TrackEventProperties[],
+        TrackEventProperties[],
+        SpaceAggregate[],
+        TrackEventProperties[],
+      ]
+
+      return { air, maritime, space, spaceAggregates }
+    },
+    refetchOnWindowFocus: false,
+    refetchInterval: playback.mode === 'live' ? 20_000 : false,
+    staleTime: 5_000,
   })
 
   useEffect(() => {
-    if (liveSnapshotQuery.data?.length) {
-      upsertAssets(liveSnapshotQuery.data)
-    }
-  }, [liveSnapshotQuery.data, upsertAssets])
+    replaceDomainAssets('Air', liveViewportQuery.data?.air ?? [])
+    replaceDomainAssets('Maritime', liveViewportQuery.data?.maritime ?? [])
+    replaceDomainAssets('Space', liveViewportQuery.data?.space ?? [])
+  }, [liveViewportQuery.data, replaceDomainAssets])
 
   const selectedTrackHistoryQuery = useQuery({
     queryKey: [
@@ -317,12 +430,15 @@ function SentinelApp() {
   const assetsArray = Array.from(liveAssets.values())
 
   // Domain counts for the header
-  const counts = assetsArray.reduce<Record<string, number>>((acc, a) => {
-    acc[a.source_domain] = (acc[a.source_domain] ?? 0) + 1
-    return acc
-  }, {})
+  const counts = liveSummaryQuery.data?.domains ?? {
+    Air: 0,
+    Maritime: 0,
+    Space: 0,
+    GPS: 0,
+    Infra: 0,
+  }
 
-  const totalTracked = assetsArray.length
+  const totalTracked = liveSummaryQuery.data?.total ?? 0
   const statItems = [
     { icon: '✈', key: 'Air', color: '#60a5fa' },
     { icon: '⚓', key: 'Maritime', color: '#22d3ee' },
@@ -511,6 +627,7 @@ function SentinelApp() {
         <MapCanvas
           liveAssets={assetsArray}
           disruptions={disruptionEventsQuery.data?.items ?? []}
+          spaceAggregates={liveViewportQuery.data?.spaceAggregates ?? []}
           onMapClick={(lon, lat) => setAnnotationPos({ lon, lat })}
         />
       </div>

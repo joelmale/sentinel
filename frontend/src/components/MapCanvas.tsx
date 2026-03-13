@@ -124,6 +124,7 @@ const UNDERSEA_NETWORK_FOCUS_VIEW = {
 interface MapCanvasProps {
   liveAssets: TrackEventProperties[]
   disruptions: DisruptionEvent[]
+  spaceAggregates?: SpaceAggregate[]
   onMapClick?: (lon: number, lat: number) => void
 }
 
@@ -228,10 +229,11 @@ function isPointInBounds(lon: number | undefined, lat: number | undefined, bound
   return lat >= bounds.south && lat <= bounds.north && isLonInBounds(lon, bounds)
 }
 
-export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProps) {
+export function MapCanvas({ liveAssets, disruptions, spaceAggregates = [], onMapClick }: MapCanvasProps) {
   const {
     viewport,
     setViewport,
+    setViewportBounds,
     layers,
     mapMode,
     showTrails,
@@ -316,6 +318,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       return null
     }
   }, [containerSize.height, containerSize.width, localViewport])
+
+  useEffect(() => {
+    setViewportBounds(cullBounds)
+  }, [cullBounds, setViewportBounds])
 
   // Filter assets: hidden layers and filtered classifications are excluded entirely.
   // Muted layers pass through (rendered dimmed). Think of hidden=off, muted=context.
@@ -843,17 +849,26 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       const inlineBackgroundSpaceAssets: TrackEventProperties[] = []
 
       for (const [constellation, assets] of groupedByConstellation.entries()) {
-        const isLargeConstellation = assets.length >= LARGE_CONSTELLATION_THRESHOLD
+        const serverAggregate = spaceAggregates.find((aggregate) => aggregate.constellation === constellation)
+        const isLargeConstellation = (serverAggregate?.count ?? assets.length) >= LARGE_CONSTELLATION_THRESHOLD
         const isExpanded = expandedSpaceConstellations.has(constellation)
 
         if (spacePriorityOnly || (isLargeConstellation && !isExpanded)) {
-          const aggregate = buildSpaceAggregate(constellation, assets)
+          const aggregate = serverAggregate ?? buildSpaceAggregate(constellation, assets)
           if (aggregate) aggregateSpaceData.push(aggregate)
           continue
         }
 
         if (isExpanded) expandedSpaceAssets.push(...assets)
         else inlineBackgroundSpaceAssets.push(...assets)
+      }
+
+      for (const aggregate of spaceAggregates) {
+        const alreadyIncluded = aggregateSpaceData.some((item) => item.constellation === aggregate.constellation)
+        const isExpanded = expandedSpaceConstellations.has(aggregate.constellation)
+        if (!alreadyIncluded && !isExpanded) {
+          aggregateSpaceData.push(aggregate)
+        }
       }
 
       if (aggregateSpaceData.length > 0) {
@@ -1132,6 +1147,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     searchMatchSet,
     localViewport.zoom,
     cullBounds,
+    spaceAggregates,
   ])
 
   useEffect(() => {

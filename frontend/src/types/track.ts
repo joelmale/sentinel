@@ -82,6 +82,33 @@ export interface TrackFeatureCollection {
   }
 }
 
+export interface LiveSummaryResponse {
+  generated_at: string
+  total: number
+  domains: Record<SourceDomain, number>
+}
+
+export interface SpaceAggregateProperties {
+  source_domain: 'Space'
+  aggregate_kind: 'constellation'
+  constellation: string
+  count: number
+}
+
+export interface SpaceAggregateFeature {
+  type: 'Feature'
+  geometry: {
+    type: 'Point'
+    coordinates: [number, number]
+  } | null
+  properties: SpaceAggregateProperties
+}
+
+export interface SpaceAggregateFeatureCollection {
+  type: 'FeatureCollection'
+  features: SpaceAggregateFeature[]
+}
+
 // For deck.gl TripsLayer — needs {path, timestamps} format
 export interface TripPath {
   track_id: string

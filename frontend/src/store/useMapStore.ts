@@ -80,6 +80,13 @@ export interface Viewport {
   pitch: number
 }
 
+export interface ViewBounds {
+  west: number
+  south: number
+  east: number
+  north: number
+}
+
 const DEFAULT_VIEWPORT: Viewport = {
   longitude: 0,
   latitude: 20,
@@ -111,6 +118,7 @@ interface MapStore {
   // Live asset data — shared across all panels so no prop drilling
   liveAssets: Map<string, TrackEventProperties>
   upsertAssets: (events: TrackEventProperties[]) => void
+  replaceDomainAssets: (domain: SourceDomain, events: TrackEventProperties[]) => void
   clearAssets: () => void
 
   // Trail buffer: last 60 positions per track for live trail rendering
@@ -138,7 +146,9 @@ interface MapStore {
 
   // Viewport
   viewport: Viewport
+  viewportBounds: ViewBounds | null
   setViewport: (viewport: Partial<Viewport>) => void
+  setViewportBounds: (bounds: ViewBounds | null) => void
   flyTo: (lon: number, lat: number, zoom?: number) => void
 
   // Playback
@@ -255,6 +265,19 @@ export const useMapStore = create<MapStore>()(
 
         return { liveAssets: next, trailBuffer: nextTrailBuffer }
       }),
+    replaceDomainAssets: (domain, events) =>
+      set((s) => {
+        const next = new Map(s.liveAssets)
+        for (const key of next.keys()) {
+          if (key.startsWith(`${domain}:`)) {
+            next.delete(key)
+          }
+        }
+        for (const event of events) {
+          next.set(`${event.source_domain}:${event.track_id}`, event)
+        }
+        return { liveAssets: next }
+      }),
     clearAssets: () => set({ liveAssets: new Map() }),
 
     // ── Trail buffer ────────────────────────────────────────────
@@ -289,8 +312,10 @@ export const useMapStore = create<MapStore>()(
 
     // ── Viewport ────────────────────────────────────────────────
     viewport: DEFAULT_VIEWPORT,
+    viewportBounds: null,
     setViewport: (viewport) =>
       set((s) => ({ viewport: { ...s.viewport, ...viewport } })),
+    setViewportBounds: (viewportBounds) => set({ viewportBounds }),
     flyTo: (lon, lat, zoom = 8) =>
       set({ viewport: { ...get().viewport, longitude: lon, latitude: lat, zoom } }),
 

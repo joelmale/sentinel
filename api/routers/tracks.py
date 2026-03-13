@@ -71,6 +71,115 @@ def _live_metadata_subset(domain: str, metadata: dict[str, Any]) -> dict[str, An
     return {key: safe[key] for key in common_keys if key in safe}
 
 
+def _space_constellation(name: str | None) -> str:
+    if not name:
+        return "Other"
+    n = name.upper().strip()
+
+    if n.startswith("STARLINK"):
+        return "Starlink"
+    if n.startswith("ONEWEB") or n.startswith("ONE WEB"):
+        return "OneWeb"
+    if n.startswith("TELESAT LIGHTSPEED"):
+        return "Telesat Lightspeed"
+    if n.startswith("GPS ") or n.startswith("NAVSTAR"):
+        return "GPS (USAF)"
+    if n.startswith("GLONASS"):
+        return "GLONASS"
+    if n.startswith("GALILEO"):
+        return "Galileo"
+    if n.startswith("BEIDOU"):
+        return "BeiDou"
+    if n == "ISS (ZARYA)" or n == "ISS" or n.startswith("ISS "):
+        return "ISS"
+    if n.startswith("TIANGONG") or n.startswith("CSS "):
+        return "Tiangong / CSS"
+    if n.startswith("GOES-") or n.startswith("GOES "):
+        return "GOES (NOAA)"
+    if n.startswith("NOAA-") or n.startswith("NOAA "):
+        return "NOAA"
+    if n.startswith("METEOSAT"):
+        return "Meteosat (EUMETSAT)"
+    if n.startswith("SENTINEL-") or n.startswith("SENTINEL "):
+        return "Sentinel (ESA)"
+    if n.startswith("LANDSAT"):
+        return "Landsat"
+    if n.startswith("TERRA") or n in {"AQUA", "AURA"}:
+        return "NASA EOS"
+    if n.startswith("WORLDVIEW") or n.startswith("GEOEYE"):
+        return "Maxar (Commercial ISR)"
+    if n.startswith("PLANET") or n.startswith("FLOCK") or n.startswith("SKYSAT"):
+        return "Planet Labs"
+    if n.startswith("SPIRE") or n.startswith("LEMUR"):
+        return "Spire Global"
+    if n.startswith("BLACKSKY"):
+        return "BlackSky"
+    if n.startswith("IRIDIUM"):
+        return "Iridium"
+    if n.startswith("INTELSAT"):
+        return "Intelsat"
+    if n.startswith("SES-") or n.startswith("SES "):
+        return "SES"
+    if n.startswith("EUTELSAT"):
+        return "Eutelsat"
+    if n.startswith("TELESAT") or n.startswith("ANIK"):
+        return "Telesat"
+    if n.startswith("VIASAT") or n.startswith("WI-FI "):
+        return "Viasat"
+    if n.startswith("ORBCOMM"):
+        return "Orbcomm"
+    if n.startswith("GLOBALSTAR"):
+        return "Globalstar"
+    if n.startswith("O3B"):
+        return "O3b (SES MEO)"
+    if n.startswith("USA ") or n.startswith("USA-") or n.startswith("KH-") or n.startswith("NROL"):
+        return "NRO / USAF (classified)"
+    if n.startswith("COSMOS"):
+        return "Cosmos (Russia)"
+    if n.startswith("YAMAL") or n.startswith("EKSPRESS"):
+        return "Russia (Comms)"
+    if n.startswith("GONETS") or n.startswith("RODNIK") or n.startswith("MERIDIAN") or n.startswith("MOLNIYA"):
+        return "Russia (Military)"
+    if n.startswith("LUCH") or n.startswith("RADUGA"):
+        return "Russia (Military)"
+    if n.startswith("SJ-") or n.startswith("SHIJIAN"):
+        return "China (Experimental)"
+    if n.startswith("CZ-") or n.startswith("LM-"):
+        return "China (Rocket Bodies)"
+    if "R/B" in n or "ROCKET" in n:
+        return "Rocket Bodies"
+    if "DEB" in n or "DEBRIS" in n:
+        return "Debris"
+    return "Other"
+
+
+def _serialize_live_row(row: Any) -> dict[str, Any]:
+    lon = row["lon"]
+    lat = row["lat"]
+    last_seen = _ensure_tz(row["last_seen"])
+    geometry = None
+    if isinstance(lon, (int, float)) and isinstance(lat, (int, float)) and math.isfinite(lon) and math.isfinite(lat):
+        geometry = {"type": "Point", "coordinates": [lon, lat]}
+
+    return {
+        "type": "Feature",
+        "geometry": geometry,
+        "properties": {
+            "source_domain": row["source_domain"],
+            "source_feed": row["source_feed"],
+            "track_id": row["track_id"],
+            "callsign": row["callsign"],
+            "altitude_m": _sanitize_json_value(row["altitude_m"]),
+            "heading_deg": _sanitize_json_value(row["heading_deg"]),
+            "speed_mps": _sanitize_json_value(row["speed_mps"]),
+            "timestamp": last_seen.isoformat() if last_seen else None,
+            "last_seen": last_seen.isoformat() if last_seen else None,
+            "classification": row["classification"],
+            **_live_metadata_subset(row["source_domain"], row["metadata"] or {}),
+        },
+    }
+
+
 @router.get("/tracks/domain-status", summary="Operational status summary for a domain")
 async def get_domain_status(
     domain: SourceDomain = Query(..., description="Domain to summarize"),
@@ -398,12 +507,33 @@ async def get_track_history(
 async def get_live_assets(
     domain: SourceDomain | None = Query(None),
     bbox: str | None = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
+    scope: str = Query("detail", pattern="^(detail|summary|aggregate)$"),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """
     Returns the latest known state of all assets from asset_states table.
     Much faster than querying track_events for live view — one row per asset.
     """
+    if scope == "summary" or (scope == "detail" and domain is None and bbox is None):
+        summary_sql = text("""
+            SELECT source_domain, COUNT(*) AS asset_count
+            FROM asset_states
+            GROUP BY source_domain
+        """)
+        result = await db.execute(summary_sql)
+        rows = result.mappings().all()
+        domains = {d.value: 0 for d in SourceDomain}
+        total = 0
+        for row in rows:
+            count = int(row["asset_count"] or 0)
+            domains[row["source_domain"]] = count
+            total += count
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "total": total,
+            "domains": domains,
+        }
+
     conditions = ["TRUE"]
     params: dict[str, Any] = {}
 
@@ -436,31 +566,50 @@ async def get_live_assets(
     result = await db.execute(sql, params)
     rows = result.mappings().all()
 
+    if scope == "aggregate":
+        if domain != SourceDomain.Space:
+            raise HTTPException(status_code=400, detail="Aggregate live scope currently supports Space only.")
+
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            lon = row["lon"]
+            lat = row["lat"]
+            if not isinstance(lon, (int, float)) or not isinstance(lat, (int, float)):
+                continue
+            if not math.isfinite(lon) or not math.isfinite(lat):
+                continue
+            constellation = _space_constellation(row["callsign"])
+            entry = grouped.setdefault(constellation, {
+                "count": 0,
+                "lon_sum": 0.0,
+                "lat_sum": 0.0,
+            })
+            entry["count"] += 1
+            entry["lon_sum"] += lon
+            entry["lat_sum"] += lat
+
+        features = []
+        for constellation, entry in grouped.items():
+            count = entry["count"]
+            lon = entry["lon_sum"] / count
+            lat = entry["lat_sum"] / count
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "properties": {
+                    "source_domain": "Space",
+                    "aggregate_kind": "constellation",
+                    "constellation": constellation,
+                    "count": count,
+                },
+            })
+
+        features.sort(key=lambda feature: (-feature["properties"]["count"], feature["properties"]["constellation"]))
+        return {"type": "FeatureCollection", "features": features}
+
     features = []
     for row in rows:
-        lon = row["lon"]
-        lat = row["lat"]
-        last_seen = _ensure_tz(row["last_seen"])
-        geometry = None
-        if isinstance(lon, (int, float)) and isinstance(lat, (int, float)) and math.isfinite(lon) and math.isfinite(lat):
-            geometry = {"type": "Point", "coordinates": [lon, lat]}
-        features.append({
-            "type": "Feature",
-            "geometry": geometry,
-            "properties": {
-                "source_domain": row["source_domain"],
-                "source_feed": row["source_feed"],
-                "track_id": row["track_id"],
-                "callsign": row["callsign"],
-                "altitude_m": _sanitize_json_value(row["altitude_m"]),
-                "heading_deg": _sanitize_json_value(row["heading_deg"]),
-                "speed_mps": _sanitize_json_value(row["speed_mps"]),
-                "timestamp": last_seen.isoformat() if last_seen else None,
-                "last_seen": last_seen.isoformat() if last_seen else None,
-                "classification": row["classification"],
-                **_live_metadata_subset(row["source_domain"], row["metadata"] or {}),
-            },
-        })
+        features.append(_serialize_live_row(row))
 
     return {"type": "FeatureCollection", "features": features}
 
