@@ -296,6 +296,7 @@ def _serialize_live_row(row: Any) -> dict[str, Any]:
     lon = row["lon"]
     lat = row["lat"]
     last_seen = _ensure_tz(row["last_seen"])
+    first_seen = _ensure_tz(row["first_seen"])
     geometry = None
     if isinstance(lon, (int, float)) and isinstance(lat, (int, float)) and math.isfinite(lon) and math.isfinite(lat):
         geometry = {"type": "Point", "coordinates": [lon, lat]}
@@ -315,7 +316,7 @@ def _serialize_live_row(row: Any) -> dict[str, Any]:
             "timestamp": last_seen.isoformat() if last_seen else None,
             "last_seen": last_seen.isoformat() if last_seen else None,
             "classification": row["classification"],
-            "first_seen": _ensure_tz(row["first_seen"]).isoformat() if row.get("first_seen") else None,
+            "first_seen": first_seen.isoformat() if first_seen else None,
             "source_trust_score": _sanitize_json_value(row.get("source_trust_score")),
             "identity_confidence": _sanitize_json_value(row.get("identity_confidence")),
             "state_confidence": _sanitize_json_value(row.get("state_confidence")),
@@ -691,7 +692,7 @@ async def get_live_assets(
         min_cutoff = min(freshness_params.values())
         unique_result = await db.execute(unique_sql, {**freshness_params, "summary_min_cutoff": min_cutoff})
         stale_result = await db.execute(stale_sql, freshness_params)
-        unique_row = unique_result.mappings().first() or {}
+        unique_row: dict[str, Any] = dict(unique_result.mappings().first() or {})
         stale_rows = stale_result.mappings().all()
         domains = {d.value: 0 for d in SourceDomain}
         stale_domains = {d.value: 0 for d in SourceDomain}
@@ -869,6 +870,7 @@ async def get_asset_detail(
     source_result = await db.execute(source_state_sql, {"entity_id": row["entity_id"]})
     source_states = []
     for source_row in source_result.mappings().all():
+        source_first_seen = _ensure_tz(source_row["first_seen"])
         source_last_seen = _ensure_tz(source_row["last_seen"])
         source_states.append({
             "source_feed": source_row["source_feed"],
@@ -879,7 +881,7 @@ async def get_asset_detail(
             "altitude_m": _sanitize_json_value(source_row["altitude_m"]),
             "heading_deg": _sanitize_json_value(source_row["heading_deg"]),
             "speed_mps": _sanitize_json_value(source_row["speed_mps"]),
-            "first_seen": _ensure_tz(source_row["first_seen"]).isoformat() if source_row.get("first_seen") else None,
+            "first_seen": source_first_seen.isoformat() if source_first_seen else None,
             "last_seen": source_last_seen.isoformat() if source_last_seen else None,
             "source_trust_score": _sanitize_json_value(source_row.get("source_trust_score")),
             "identity_confidence": _sanitize_json_value(source_row.get("identity_confidence")),
@@ -893,6 +895,7 @@ async def get_asset_detail(
     lon = row["lon"]
     lat = row["lat"]
     last_seen = _ensure_tz(row["last_seen"])
+    first_seen = _ensure_tz(row["first_seen"])
     geometry = None
     if isinstance(lon, (int, float)) and isinstance(lat, (int, float)) and math.isfinite(lon) and math.isfinite(lat):
         geometry = {"type": "Point", "coordinates": [lon, lat]}
@@ -912,7 +915,7 @@ async def get_asset_detail(
             "timestamp": last_seen.isoformat() if last_seen else None,
             "last_seen": last_seen.isoformat() if last_seen else None,
             "classification": row["classification"],
-            "first_seen": _ensure_tz(row["first_seen"]).isoformat() if row.get("first_seen") else None,
+            "first_seen": first_seen.isoformat() if first_seen else None,
             "source_trust_score": _sanitize_json_value(row.get("source_trust_score")),
             "identity_confidence": _sanitize_json_value(row.get("identity_confidence")),
             "state_confidence": _sanitize_json_value(row.get("state_confidence")),

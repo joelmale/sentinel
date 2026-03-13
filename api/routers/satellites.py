@@ -225,6 +225,8 @@ async def get_satellite(
         )
 
     # Build response — convert date objects to ISO strings for JSON serialisation
+    row_dict = dict(row)
+
     return {
         "norad_id":        row["norad_id"],
         "object_name":     row["object_name"],
@@ -246,7 +248,7 @@ async def get_satellite(
         "sources":         list(row["sources"] or []),
         "last_updated":    row["last_updated"].isoformat() if row["last_updated"] else None,
         "metadata":        row["metadata"] or {},
-        "enrichment_status": _satellite_enrichment_status(row),
+        "enrichment_status": _satellite_enrichment_status(row_dict),
     }
 
 
