@@ -24,7 +24,7 @@ import math
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -277,6 +277,7 @@ class BaseCollector(ABC):
                 metadata JSONB DEFAULT '{}'::jsonb
             )
             """,
+            "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS source_record_id TEXT",
             "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS entity_id UUID",
             "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS entity_id UUID",
             "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS first_seen TIMESTAMPTZ",
@@ -475,6 +476,14 @@ class BaseCollector(ABC):
             "collector": self.FEED_NAME,
             "observed_at": event["timestamp"] if isinstance(event["timestamp"], str) else event["timestamp"].isoformat(),
         }
+
+    def _observation_id(self, event: dict) -> UUID:
+        timestamp = event["timestamp"] if isinstance(event["timestamp"], str) else event["timestamp"].isoformat()
+        source_record_id = (event.get("metadata") or {}).get("source_record_id") or ""
+        return uuid5(
+            NAMESPACE_URL,
+            f"sentinel:observation:{event['source_feed']}:{event['source_domain']}:{event['track_id']}:{timestamp}:{source_record_id}",
+        )
 
     async def _register_source(self) -> None:
         async with self._db.acquire() as conn:
@@ -676,20 +685,22 @@ class BaseCollector(ABC):
             if history_events:
                 await conn.executemany("""
                     INSERT INTO track_events
-                        (entity_id, source_domain, source_feed, track_id, callsign,
+                        (event_id, entity_id, source_record_id, source_domain, source_feed, track_id, callsign,
                          position, altitude_m, heading_deg, speed_mps,
                          timestamp, metadata, classification)
                     VALUES
-                        ($1, $2, $3, $4, $5,
+                        ($1, $2, $3, $4, $5, $6, $7,
                          CASE
-                              WHEN $6::double precision IS NOT NULL AND $7::double precision IS NOT NULL
-                              THEN ST_SetSRID(ST_MakePoint($6::double precision, $7::double precision), 4326)
+                              WHEN $8::double precision IS NOT NULL AND $9::double precision IS NOT NULL
+                              THEN ST_SetSRID(ST_MakePoint($8::double precision, $9::double precision), 4326)
                               ELSE NULL::geometry(Point, 4326)
                          END,
-                         $8, $9, $10, $11, $12::jsonb, $13)
+                         $10, $11, $12, $13, $14::jsonb, $15)
                 """, [
                     (
+                        self._observation_id(e),
                         self._asset_entity_id(e["source_domain"], str(e["track_id"])),
+                        str((e.get("metadata") or {}).get("source_record_id") or f"{e['source_feed']}:{e['track_id']}:{e['timestamp']}"),
                         e["source_domain"], e["source_feed"], e["track_id"],
                         e.get("callsign"),
                         e.get("lon"), e.get("lat"),
@@ -745,7 +756,7 @@ class BaseCollector(ABC):
                         self._estimate_source_trust_score(e),
                         self._estimate_identity_confidence(e),
                         self._estimate_state_confidence(e),
-                        uuid4(),
+                        self._observation_id(e),
                         json.dumps(self._asset_provenance(e)),
                         json.dumps(_public_metadata(e.get("metadata"))),
                         e.get("classification"),

@@ -87,6 +87,7 @@ CREATE INDEX idx_source_runs_feed_started
 CREATE TABLE track_events (
     event_id        UUID            DEFAULT uuid_generate_v4(),
     entity_id       UUID            REFERENCES entities(entity_id),
+    source_record_id TEXT,
     source_domain   source_domain   NOT NULL,
     source_feed     TEXT            NOT NULL,
     track_id        TEXT            NOT NULL,        -- ICAO hex, MMSI, NORAD ID, etc.
