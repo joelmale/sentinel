@@ -42,7 +42,6 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { usePerfStore } from '@/store/usePerfStore'
 import { useMapStore } from '@/store/useMapStore'
 import { COCOM_GEOJSON_URL, COCOM_LABELS, getCocomColors } from '@/data/cocom'
-import { matchesAssetDemoFilter } from '@/data/demoFilters'
 import { UNDERSEA_CABLES_GEOJSON_URL, UNDERSEA_CABLE_LANDING_POINTS_GEOJSON_URL } from '@/data/underseaCables'
 import type { DisruptionEvent, TrackEventProperties } from '@/types/track'
 import { getAirlineGroup, getConstellation, getMmsiCountry, normalizeObjectType, normalizeOrbitClass } from '@/data/grouping'
@@ -230,7 +229,6 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     classFilter,
     hiddenGroupFilters,
     hiddenSpaceConstellations,
-    demoFilterSelection,
     workspaceSearch,
     declutterMode,
     selectAsset,
@@ -335,7 +333,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       } else if (domain === 'Space') {
         const objectType = normalizeObjectType(asset.object_type)
         const orbitClass = normalizeOrbitClass(asset.orbit_class, asset.orbital_period_min)
-        const constellation = getConstellation(asset.callsign)
+        const constellation = getConstellation(asset.callsign, asset.object_type)
         keys.push(
           `Space:${objectType}`,
           `Space:${objectType}:${orbitClass}`,
@@ -349,16 +347,14 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     return liveAssets.filter((a) => {
       const layerState = layers[a.source_domain as keyof typeof layers]
       if (layerState?.visibility === 'hidden') return false
-      const selectedDemoFilter = demoFilterSelection[a.source_domain]
-      if (!matchesAssetDemoFilter(a, selectedDemoFilter)) return false
-      if (a.source_domain === 'Space' && hiddenSpaceConstellations.includes(getConstellation(a.callsign))) return false
+      if (a.source_domain === 'Space' && hiddenSpaceConstellations.includes(getConstellation(a.callsign, a.object_type))) return false
       // Classification filter — hide assets whose classification is in the "hidden" list
       const hidden = classFilter[a.source_domain] ?? []
       if (hidden.length > 0 && a.classification && hidden.includes(a.classification)) return false
       if (isHiddenByGroup(a)) return false
       return true
     })
-  }, [liveAssets, layers, hiddenSpaceConstellations, demoFilterSelection, classFilter, hiddenGroupFilters])
+  }, [liveAssets, layers, hiddenSpaceConstellations, classFilter, hiddenGroupFilters])
 
   const viewportAssets = useMemo(() => (
     filteredAssets.filter((asset) => isPointInBounds(asset.lon, asset.lat, cullBounds))
@@ -434,8 +430,11 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     let spaceAggregateCount = 0
     let spaceBackgroundCount = 0
 
-    // ── Globe base tiles (replaces MapLibre when globeView is active) ────────
-    if (globeView) {
+    // ── Globe / flat basemap selection ───────────────────────────────────────
+    // GlobeView should honor the selected map mode instead of always forcing
+    // raster tiles. Outline mode becomes a 3D outline globe; none keeps the
+    // globe empty; full/simple keep the raster globe base.
+    if (globeView && (mapMode === 'full' || mapMode === 'simple')) {
       ls.push(new TileLayer({
         id: 'globe-base-tiles',
         data: GLOBE_TILE_URL,
@@ -453,7 +452,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           })
         },
       }) as unknown as Layer<object>)
-    } else if (mapMode === 'outline') {
+    }
+
+    if (mapMode === 'outline') {
+      const outlineFillColor: [number, number, number, number] = globeView ? [15, 23, 42, 235] : [15, 23, 42, 45]
       ls.push(new GeoJsonLayer({
         id: 'outline-land',
         data: WORLD_BOUNDARIES_URL,
@@ -463,7 +465,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         lineWidthMinPixels: 1.2,
         lineWidthMaxPixels: 2.5,
         getLineColor: [148, 163, 184, 230],
-        getFillColor: [15, 23, 42, 45],
+        getFillColor: outlineFillColor,
         opacity: 0.95,
       }))
       ls.push(new GeoJsonLayer({

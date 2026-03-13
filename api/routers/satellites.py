@@ -15,6 +15,7 @@ track_events is the play-by-play history, satellite_catalog is the
 player roster / stats card — biographic data that rarely changes.
 """
 
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -24,6 +25,59 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.connection import get_db
 
 router = APIRouter(tags=["Satellites"])
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    return str(value)
+
+
+def _satellite_enrichment_status(row: dict[str, Any]) -> dict[str, Any]:
+    sources = list(row["sources"] or [])
+    source_set = set(sources)
+
+    field_status = {
+        "identity": "authoritative" if row["intl_designator"] or row["country_code"] or row["launch_date"] else "missing",
+        "orbit": "derived" if row["orbit_class"] or row["period_min"] or row["inclination_deg"] else "missing",
+        "operator": "inferred" if row["operator"] and "satnogs" in source_set else "curated" if row["operator"] else "missing",
+        "purpose": "curated" if row["purpose"] else "missing",
+        "contractor": "curated" if row["contractor"] else "missing",
+        "launch": "authoritative" if row["launch_site"] and "spacetrack" in source_set else "inferred" if row["launch_site"] else "missing",
+    }
+
+    total_fields = len(field_status)
+    populated_fields = sum(1 for value in field_status.values() if value != "missing")
+    completeness_pct = round((populated_fields / total_fields) * 100) if total_fields else 0
+
+    if "spacetrack" in source_set and completeness_pct >= 65:
+        confidence = "high"
+    elif "spacetrack" in source_set or completeness_pct >= 35:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    tle_epoch = row["tle_epoch"]
+    if tle_epoch and isinstance(tle_epoch, datetime) and tle_epoch.tzinfo is None:
+        tle_epoch = tle_epoch.replace(tzinfo=timezone.utc)
+    tle_age_minutes = None
+    if isinstance(tle_epoch, datetime):
+        tle_age_minutes = max(0, int((datetime.now(timezone.utc) - tle_epoch).total_seconds() // 60))
+
+    return {
+        "sources": sources,
+        "last_updated": _iso_or_none(row["last_updated"]),
+        "tle_epoch": _iso_or_none(tle_epoch),
+        "tle_source": row["tle_source"],
+        "tle_age_minutes": tle_age_minutes,
+        "completeness_pct": completeness_pct,
+        "confidence": confidence,
+        "field_status": field_status,
+    }
 
 
 @router.get("/satellites/watchlist/status", summary="Get curated space watchlist dashboard status")
@@ -147,9 +201,18 @@ async def get_satellite(
             launch_site,
             sources,
             last_updated,
-            metadata
+            metadata,
+            latest_tle.epoch AS tle_epoch,
+            latest_tle.source AS tle_source
         FROM satellite_catalog
-        WHERE norad_id = :norad_id
+        LEFT JOIN LATERAL (
+            SELECT epoch, source
+            FROM satellite_tles
+            WHERE satellite_tles.norad_id = satellite_catalog.norad_id
+            ORDER BY epoch DESC
+            LIMIT 1
+        ) AS latest_tle ON TRUE
+        WHERE satellite_catalog.norad_id = :norad_id
     """)
     result = await db.execute(sql, {"norad_id": norad_id})
     row = result.mappings().first()
@@ -183,6 +246,7 @@ async def get_satellite(
         "sources":         list(row["sources"] or []),
         "last_updated":    row["last_updated"].isoformat() if row["last_updated"] else None,
         "metadata":        row["metadata"] or {},
+        "enrichment_status": _satellite_enrichment_status(row),
     }
 
 

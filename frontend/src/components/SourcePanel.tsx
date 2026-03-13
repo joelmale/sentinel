@@ -33,7 +33,6 @@ import {
   orbitClassSort,
   SPACE_CONSTELLATION_CATEGORY_ORDER,
 } from '@/data/grouping'
-import { buildDemoFilterOptions, getDefaultDemoFilterKey, matchesAssetDemoFilter } from '@/data/demoFilters'
 
 // ── Domain display config ─────────────────────────────────────────
 const DOMAIN_ORDER: SourceDomain[] = ['Air', 'Maritime', 'Space', 'GPS', 'Infra']
@@ -45,6 +44,8 @@ const DOMAIN_META: Record<SourceDomain, { icon: string; colorHex: string }> = {
   GPS:      { icon: '📡', colorHex: '#f87171' },  // red-400
   Infra:    { icon: '🌐', colorHex: '#f59e0b' },  // amber-400
 }
+
+const DOMAIN_LIST_MAX_HEIGHT = 216
 
 // ── Classification badge colours ──────────────────────────────────
 const CLASS_COLORS: Record<string, string> = {
@@ -509,8 +510,6 @@ export function SourcePanel() {
     hiddenSpaceConstellations,
     toggleHiddenSpaceConstellation,
     clearHiddenSpaceConstellations,
-    demoFilterSelection,
-    setDemoFilterSelection,
     spaceTrackDuration,
     setSpaceTrackDuration,
     workspaceSearch,
@@ -611,7 +610,7 @@ export function SourcePanel() {
       } else if (domain === 'Space') {
         const L0 = normalizeObjectType(a.object_type)
         const L1 = normalizeOrbitClass(a.orbit_class, a.orbital_period_min)
-        const L2 = getConstellation(a.callsign)
+        const L2 = getConstellation(a.callsign, a.object_type)
         const full = `${L0}:${L1}:${L2}`
         for (const f of filters) {
           if (full === f || full.startsWith(f + ':') || f === L0 || f === `${L0}:${L1}`) {
@@ -667,39 +666,17 @@ export function SourcePanel() {
     return map
   }, [uiViewportAssets, selectedTrackId, selectedDomain])
 
-  const demoFilterOptions = useMemo(() => {
-    const next: Partial<Record<SourceDomain, ReturnType<typeof buildDemoFilterOptions>>> = {}
-    for (const domain of DOMAIN_ORDER) {
-      next[domain] = buildDemoFilterOptions(domain, rawAssetsByDomain.get(domain) ?? [])
-    }
-    return next
-  }, [rawAssetsByDomain])
-
-  useEffect(() => {
-    for (const domain of DOMAIN_ORDER) {
-      const options = demoFilterOptions[domain] ?? []
-      const selected = demoFilterSelection[domain] ?? null
-      const stillValid = selected ? options.some((option) => option.key === selected) : false
-      if (stillValid) continue
-      const nextDefault = getDefaultDemoFilterKey(domain, options)
-      if (selected !== nextDefault) {
-        setDemoFilterSelection(domain, nextDefault)
-      }
-    }
-  }, [demoFilterOptions, demoFilterSelection, setDemoFilterSelection])
-
   const assetsByDomain = useMemo(() => {
     const map = new Map<SourceDomain, TrackEventProperties[]>()
     for (const domain of DOMAIN_ORDER) {
-      const selected = demoFilterSelection[domain] ?? null
       const filtered = (rawAssetsByDomain.get(domain) ?? []).filter((asset) => {
-        if (domain === 'Space' && hiddenSpaceConstellations.includes(getConstellation(asset.callsign))) return false
-        return matchesAssetDemoFilter(asset, selected)
+        if (domain === 'Space' && hiddenSpaceConstellations.includes(getConstellation(asset.callsign, asset.object_type))) return false
+        return true
       })
       map.set(domain, filtered)
     }
     return map
-  }, [rawAssetsByDomain, demoFilterSelection, hiddenSpaceConstellations])
+  }, [rawAssetsByDomain, hiddenSpaceConstellations])
 
   // Flat filtered list for search mode — driven by workspace-wide search in store
   const filteredAssets = useMemo(() => {
@@ -709,8 +686,7 @@ export function SourcePanel() {
       .filter((a) => {
         // Exclude hidden domains from search results
         if (layers[a.source_domain as keyof typeof layers]?.visibility === 'hidden') return false
-        if (a.source_domain === 'Space' && hiddenSpaceConstellations.includes(getConstellation(a.callsign))) return false
-        if (!matchesAssetDemoFilter(a, demoFilterSelection[a.source_domain])) return false
+        if (a.source_domain === 'Space' && hiddenSpaceConstellations.includes(getConstellation(a.callsign, a.object_type))) return false
         return (
           a.track_id.toLowerCase().includes(q) ||
           (a.callsign ?? '').toLowerCase().includes(q) ||
@@ -719,7 +695,7 @@ export function SourcePanel() {
       })
       .sort((a, b) => (a.callsign || a.track_id).localeCompare(b.callsign || b.track_id))
       .slice(0, 200)
-  }, [uiViewportAssets, workspaceSearch, layers, demoFilterSelection, hiddenSpaceConstellations])
+  }, [uiViewportAssets, workspaceSearch, layers, hiddenSpaceConstellations])
 
   const visibleDomains = useMemo(
     () => DOMAIN_ORDER.filter((domain) => layers[domain]?.visibility === 'active'),
@@ -756,7 +732,7 @@ export function SourcePanel() {
   const largeSpaceConstellations = useMemo(() => {
     const counts = new Map<string, number>()
     for (const asset of assetsByDomain.get('Space') ?? []) {
-      const constellation = getConstellation(asset.callsign)
+      const constellation = getConstellation(asset.callsign, asset.object_type)
       counts.set(constellation, (counts.get(constellation) ?? 0) + 1)
     }
     return Array.from(counts.entries())
@@ -768,7 +744,7 @@ export function SourcePanel() {
   const spaceConstellationFilters = useMemo(() => {
     const counts = new Map<string, number>()
     for (const asset of rawAssetsByDomain.get('Space') ?? []) {
-      const constellation = getConstellation(asset.callsign)
+      const constellation = getConstellation(asset.callsign, asset.object_type)
       counts.set(constellation, (counts.get(constellation) ?? 0) + 1)
     }
     const byCategory = new Map<string, Array<{ constellation: string; count: number }>>()
@@ -1172,9 +1148,6 @@ export function SourcePanel() {
               const activeFilterCount = hiddenClasses.length
               const groupMode = groupModes[domain] ?? 'none'
               const activeGroupFilters = hiddenGroupFilters[domain] ?? []
-              const domainDemoOptions = demoFilterOptions[domain] ?? []
-              const selectedDemoFilter = demoFilterSelection[domain] ?? null
-              const activeDemoOption = domainDemoOptions.find((option) => option.key === selectedDemoFilter) ?? null
               // Badge-click exclusion keys for this domain (dim on map, hide from list)
               const activeFilters = groupFilters[domain] ?? new Set<string>()
 
@@ -1230,27 +1203,6 @@ export function SourcePanel() {
                         marginRight: 4,
                       }} title={`${activeFilterCount} classification filter${activeFilterCount > 1 ? 's' : ''} active`}>
                         {activeFilterCount}F
-                      </span>
-                    )}
-                    {activeDemoOption && (
-                      <span
-                        title={`${activeDemoOption.label} demo filter active`}
-                        style={{
-                          maxWidth: 88,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          fontSize: 9,
-                          fontWeight: 700,
-                          color: meta.colorHex,
-                          background: `${meta.colorHex}18`,
-                          border: `1px solid ${meta.colorHex}35`,
-                          borderRadius: 8,
-                          padding: '1px 6px',
-                          flexShrink: 0,
-                        }}
-                      >
-                        {activeDemoOption.label}
                       </span>
                     )}
                     <span
@@ -1364,45 +1316,6 @@ export function SourcePanel() {
                             if (m === 'none') clearGroupFilters(domain)
                           }}
                         />
-                      )}
-
-                      {domainDemoOptions.length > 0 && (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '4px 10px 8px 28px' }}>
-                          <span style={{
-                            fontSize: 9,
-                            color: '#64748b',
-                            letterSpacing: '0.1em',
-                            textTransform: 'uppercase',
-                            marginRight: 2,
-                            alignSelf: 'center',
-                          }}>
-                            Demo filter:
-                          </span>
-                          {domainDemoOptions.map((option) => {
-                            const selected = option.key === selectedDemoFilter
-                            return (
-                              <button
-                                key={`${domain}:${option.key}`}
-                                type="button"
-                                onClick={() => setDemoFilterSelection(domain, option.key)}
-                                style={{
-                                  borderRadius: 999,
-                                  border: `1px solid ${selected ? `${meta.colorHex}55` : 'rgba(100,116,139,0.28)'}`,
-                                  background: selected ? `${meta.colorHex}1c` : 'rgba(15,23,42,0.42)',
-                                  color: selected ? meta.colorHex : '#cbd5e1',
-                                  fontSize: 10,
-                                  fontWeight: 700,
-                                  lineHeight: 1.2,
-                                  padding: '4px 8px',
-                                  cursor: 'pointer',
-                                }}
-                                title={`Show ${option.label}`}
-                              >
-                                {option.label} · {option.count}
-                              </button>
-                            )
-                          })}
-                        </div>
                       )}
 
                       {domain === 'Space' && spaceConstellationFilters.length > 0 && (
@@ -1566,9 +1479,18 @@ export function SourcePanel() {
                         >
                           No {domain} tracks live
                         </div>
+                      ) : (
+                        <div
+                          style={{
+                            maxHeight: DOMAIN_LIST_MAX_HEIGHT,
+                            overflowY: 'auto',
+                            overscrollBehavior: 'contain',
+                            borderTop: '1px solid rgba(148,163,184,0.08)',
+                          }}
+                        >
 
-                      // ── AIR: airline grouping ─────────────────────────────────────
-                      ) : domain === 'Air' && groupMode === 'airline' ? (
+                      {/* ── AIR: airline grouping ───────────────────────────────────── */}
+                      {domain === 'Air' && groupMode === 'airline' ? (
                         (() => {
                           // Bucket by airline group (ICAO 3-char prefix → airline name).
                           // Analogous to a GROUP BY on the callsign prefix column.
@@ -1734,7 +1656,7 @@ export function SourcePanel() {
                                       // ── L2: Constellation ──────────────────────────
                                       const byConst = new Map<string, TrackEventProperties[]>()
                                       for (const a of orbitAssets) {
-                                        const c = getConstellation(a.callsign)
+                                        const c = getConstellation(a.callsign, a.object_type)
                                         if (!byConst.has(c)) byConst.set(c, [])
                                         byConst.get(c)!.push(a)
                                       }
@@ -1829,6 +1751,8 @@ export function SourcePanel() {
                             </div>
                           )}
                         </>
+                      )}
+                        </div>
                       )}
                     </div>
                   )}

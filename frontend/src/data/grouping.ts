@@ -353,11 +353,19 @@ export function getMmsiCountry(mmsi: string): string {
   return MID_COUNTRY[mid] ?? `MID ${mid}`
 }
 
-// ── Space: derive constellation from object name (callsign) ────────
-// Matches against well-known prefixes and patterns from the Space-Track
-// catalog object name field. Returns a short human-readable group name.
-export function getConstellation(name: string | undefined): string {
-  if (!name) return 'Other'
+// ── Space: derive constellation / program from object name ─────────
+// This is intentionally broader than commercial "constellation" naming.
+// The goal is to avoid dumping most satellites into "Other" when they are
+// actually identifiable as a government program, EO fleet, weather system,
+// or still-unknown payload family.
+export function getConstellation(name: string | undefined, objectType?: unknown): string {
+  const normalizedObjectType = normalizeObjectType(objectType)
+  if (!name) {
+    if (normalizedObjectType === 'Rocket Body') return 'Rocket Bodies'
+    if (normalizedObjectType === 'Debris') return 'Debris'
+    if (normalizedObjectType === 'Payload') return 'Unmapped Payload'
+    return 'Other'
+  }
   const n = name.toUpperCase().trim()
 
   // Mega-constellations
@@ -384,11 +392,23 @@ export function getConstellation(name: string | undefined): string {
   // Weather & Earth observation
   if (n.startsWith('GOES-') || n.startsWith('GOES '))       return 'GOES (NOAA)'
   if (n.startsWith('NOAA-') || n.startsWith('NOAA '))       return 'NOAA'
+  if (n.startsWith('METOP'))                                return 'MetOp'
+  if (n.startsWith('HIMAWARI'))                             return 'Himawari'
+  if (n.startsWith('FY-') || n.startsWith('FENGYUN'))       return 'Fengyun'
   if (n.startsWith('METEOSAT'))                              return 'Meteosat (EUMETSAT)'
   if (n.startsWith('SENTINEL-') || n.startsWith('SENTINEL ')) return 'Sentinel (ESA)'
   if (n.startsWith('LANDSAT'))                               return 'Landsat'
   if (n.startsWith('TERRA') || n === 'AQUA' || n === 'AURA') return 'NASA EOS'
+  if (n.startsWith('COPERNICUS'))                            return 'Sentinel (ESA)'
+  if (n.startsWith('GAOFEN') || n.startsWith('GF-'))         return 'Gaofen'
+  if (n.startsWith('YAOGAN') || n.startsWith('YG-'))         return 'Yaogan'
+  if (n.startsWith('JILIN'))                                 return 'Jilin'
+  if (n.startsWith('CAPELLA'))                               return 'Capella Space'
+  if (n.startsWith('ICEYE'))                                 return 'ICEYE'
+  if (n.startsWith('UMBRA'))                                 return 'Umbra'
   if (n.startsWith('WORLDVIEW') || n.startsWith('GEOEYE'))  return 'Maxar (Commercial ISR)'
+  if (n.startsWith('PLEIADES'))                              return 'Pleiades'
+  if (n.startsWith('PAZ'))                                   return 'PAZ'
   if (n.startsWith('PLANET') || n.startsWith('FLOCK') || n.startsWith('SKYSAT')) return 'Planet Labs'
   if (n.startsWith('SPIRE') || n.startsWith('LEMUR'))        return 'Spire Global'
   if (n.startsWith('BLACKSKY'))                              return 'BlackSky'
@@ -400,26 +420,60 @@ export function getConstellation(name: string | undefined): string {
   if (n.startsWith('EUTELSAT'))                             return 'Eutelsat'
   if (n.startsWith('TELESAT') || n.startsWith('ANIK'))      return 'Telesat'
   if (n.startsWith('VIASAT') || n.startsWith('WI-FI '))     return 'Viasat'
+  if (n.startsWith('INMARSAT'))                             return 'Inmarsat'
+  if (n.startsWith('THURAYA'))                              return 'Thuraya'
+  if (n.startsWith('ARABSAT') || n.startsWith('BADR-'))     return 'Arabsat / Badr'
+  if (n.startsWith('TURKSAT'))                              return 'Turksat'
+  if (n.startsWith('HISPASAT'))                             return 'Hispasat'
+  if (n.startsWith('JCSAT') || n.startsWith('SUPERBIRD'))   return 'JSAT / Superbird'
+  if (n.startsWith('ASTRA'))                                return 'Astra'
   if (n.startsWith('ORBCOMM'))                              return 'Orbcomm'
   if (n.startsWith('GLOBALSTAR'))                           return 'Globalstar'
   if (n.startsWith('O3B') || n.startsWith('O3B '))          return 'O3b (SES MEO)'
+  if (n.startsWith('AST SPACE') || n.startsWith('BLUEBIRD') || n.startsWith('BLUEMAN')) return 'AST SpaceMobile'
+  if (n.startsWith('LYNK'))                                 return 'Lynk Global'
+  if (n.startsWith('SWARM'))                                return 'Swarm'
+  if (n.startsWith('KEPLER'))                               return 'Kepler Communications'
+  if (n.startsWith('KINÉIS') || n.startsWith('KINEIS'))     return 'Kineis'
+  if (n.startsWith('ASTROCAST'))                            return 'Astrocast'
+  if (n.startsWith('FOSSA'))                                return 'FOSSA Systems'
 
   // Military / government programs (by country origin)
   if (n.startsWith('USA ') || n.startsWith('USA-'))         return 'NRO / USAF (classified)'
   if (n.startsWith('KH-'))                                  return 'NRO (classified)'
   if (n.startsWith('NROL'))                                 return 'NRO / USAF (classified)'
+  if (n.startsWith('NOSS'))                                 return 'NOSS / White Cloud'
   if (n.startsWith('COSMOS'))                               return 'Cosmos (Russia)'
   if (n.startsWith('YAMAL') || n.startsWith('EKSPRESS'))    return 'Russia (Comms)'
   if (n.startsWith('GONETS') || n.startsWith('RODNIK'))     return 'Russia (Military)'
   if (n.startsWith('MERIDIAN') || n.startsWith('MOLNIYA'))  return 'Russia (Military)'
   if (n.startsWith('LUCH') || n.startsWith('RADUGA'))       return 'Russia (Military)'
   if (n.startsWith('SJ-') || n.startsWith('SHIJIAN'))       return 'China (Experimental)'
+  if (n.startsWith('SHIYAN'))                               return 'China (Experimental)'
+  if (n.startsWith('TJS-'))                                 return 'China (Military)'
+  if (n.startsWith('TIANHUI'))                              return 'Tianhui'
+  if (n.startsWith('TIANLIAN'))                             return 'Tianlian'
+  if (n.startsWith('ZIYUAN'))                               return 'Ziyuan'
   if (n.startsWith('CZ-') || n.startsWith('LM-'))           return 'China (Rocket Bodies)'
+  if (n.startsWith('SARAH'))                                return 'SARah (Germany)'
+  if (n.startsWith('HELIOS'))                               return 'Helios'
+  if (n.startsWith('PERSONA'))                              return 'Persona'
+
+  // Science / exploration
+  if (n.startsWith('HST') || n.startsWith('HUBBLE'))        return 'Hubble'
+  if (n.startsWith('JWST') || n.startsWith('JAMES WEBB'))   return 'JWST'
+  if (n.startsWith('TESS'))                                 return 'TESS'
+  if (n.startsWith('CHANDRA'))                              return 'Chandra'
+  if (n.startsWith('XMM-'))                                 return 'XMM-Newton'
+  if (n.startsWith('SWIFT'))                                return 'Swift'
+  if (n.startsWith('CHEOPS'))                               return 'CHEOPS'
 
   // Rocket bodies and debris (fallback, usually caught by object_type first)
   if (n.includes('R/B') || n.includes('ROCKET'))            return 'Rocket Bodies'
   if (n.includes('DEB') || n.includes('DEBRIS'))            return 'Debris'
-
+  if (normalizedObjectType === 'Rocket Body')               return 'Rocket Bodies'
+  if (normalizedObjectType === 'Debris')                    return 'Debris'
+  if (normalizedObjectType === 'Payload')                   return 'Unmapped Payload'
   return 'Other'
 }
 
@@ -477,9 +531,56 @@ const SPACE_CONSTELLATION_CATEGORY_MAP: Record<string, SpaceConstellationCategor
   NOAA: 'Weather',
   'Meteosat (EUMETSAT)': 'Weather',
   'Spire Global': 'Weather',
+  MetOp: 'Weather',
+  Himawari: 'Weather',
+  Fengyun: 'Weather',
   ISS: 'Science',
   'Tiangong / CSS': 'Science',
+  Hubble: 'Science',
+  JWST: 'Science',
+  TESS: 'Science',
+  Chandra: 'Science',
+  'XMM-Newton': 'Science',
+  Swift: 'Science',
+  CHEOPS: 'Science',
   Orbcomm: 'IoT',
+  Swarm: 'IoT',
+  'Kepler Communications': 'IoT',
+  Kineis: 'IoT',
+  Astrocast: 'IoT',
+  'FOSSA Systems': 'IoT',
+  'AST SpaceMobile': 'Communications',
+  'Lynk Global': 'Communications',
+  Inmarsat: 'Communications',
+  Thuraya: 'Communications',
+  'Arabsat / Badr': 'Communications',
+  Turksat: 'Communications',
+  Hispasat: 'Communications',
+  'JSAT / Superbird': 'Communications',
+  Astra: 'Communications',
+  Gaofen: 'Earth Imaging',
+  Yaogan: 'Earth Imaging',
+  Jilin: 'Earth Imaging',
+  'Capella Space': 'Earth Imaging',
+  ICEYE: 'Earth Imaging',
+  Umbra: 'Earth Imaging',
+  Pleiades: 'Earth Imaging',
+  PAZ: 'Earth Imaging',
+  'NRO / USAF (classified)': 'Other',
+  'NRO (classified)': 'Other',
+  'NOSS / White Cloud': 'Other',
+  'Cosmos (Russia)': 'Other',
+  'Russia (Comms)': 'Communications',
+  'Russia (Military)': 'Other',
+  'China (Experimental)': 'Other',
+  'China (Military)': 'Other',
+  Tianhui: 'Earth Imaging',
+  Tianlian: 'Communications',
+  Ziyuan: 'Earth Imaging',
+  'SARah (Germany)': 'Earth Imaging',
+  Helios: 'Earth Imaging',
+  Persona: 'Earth Imaging',
+  'Unmapped Payload': 'Other',
 }
 
 export function getConstellationCategory(constellation: string): SpaceConstellationCategory {

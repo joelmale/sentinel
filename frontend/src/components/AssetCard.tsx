@@ -17,12 +17,14 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { formatDistanceToNow } from 'date-fns'
+import { trackedFetchJson } from '@/lib/perf'
 import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import { useResize } from '@/hooks/useResize'
 import { useDrag } from '@/hooks/useDrag'
-import type { SourceDomain } from '@/types/track'
+import type { SatelliteCatalogEntry, SatelliteFieldStatus, SatelliteTleResponse, SourceDomain } from '@/types/track'
 
 // ── Domain colour/icon config ─────────────────────────────────────
 const DOMAIN_META: Record<SourceDomain, { icon: string; color: string; border: string; accent: string }> = {
@@ -251,11 +253,28 @@ function fmtTime(iso: string | undefined): string | null {
   catch { return iso }
 }
 
+function fmtDate(iso: string | null | undefined): string | null {
+  if (!iso) return null
+  try {
+    return new Date(iso).toLocaleDateString()
+  } catch {
+    return iso
+  }
+}
+
 function fmtVertRate(mps: number | null | undefined): string | null {
   if (mps == null) return null
   const fpm = Math.round(mps * 196.85)
   const arrow = mps > 1 ? '↑' : mps < -1 ? '↓' : '→'
   return `${arrow} ${Math.abs(fpm).toLocaleString()} ft/min`
+}
+
+function fieldStatusColor(status: SatelliteFieldStatus): string {
+  if (status === 'authoritative') return 'green'
+  if (status === 'derived') return 'blue'
+  if (status === 'inferred') return 'amber'
+  if (status === 'curated') return 'purple'
+  return 'slate'
 }
 
 // ── Action button ─────────────────────────────────────────────────
@@ -436,6 +455,35 @@ export function AssetCard() {
     return viewportAsset ?? null
   }, [selectedTrackId, selectedDomain, selectedAssetDetail, viewportAsset])
 
+  const spaceNoradId = useMemo(() => {
+    if (selectedDomain !== 'Space' || !asset) return null
+    const raw = asset.norad_id ?? asset.track_id
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) ? parsed : null
+  }, [asset, selectedDomain])
+
+  const satelliteCatalogQuery = useQuery({
+    queryKey: ['satellite-catalog', spaceNoradId],
+    enabled: selectedDomain === 'Space' && spaceNoradId !== null,
+    queryFn: async (): Promise<SatelliteCatalogEntry> => trackedFetchJson(
+      'satellite-catalog',
+      `/api/satellites/${spaceNoradId}`,
+    ),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+
+  const satelliteTlesQuery = useQuery({
+    queryKey: ['satellite-tles', spaceNoradId],
+    enabled: selectedDomain === 'Space' && spaceNoradId !== null,
+    queryFn: async (): Promise<SatelliteTleResponse> => trackedFetchJson(
+      'satellite-tles',
+      `/api/satellites/${spaceNoradId}/tles?limit=5`,
+    ),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+
   const handleFocus = useCallback(() => {
     if (asset?.lon != null && asset?.lat != null) flyTo(asset.lon, asset.lat)
   }, [asset, flyTo])
@@ -576,69 +624,92 @@ export function AssetCard() {
 
     // ── SPACE ─────────────────────────────────────────────────────
     if (selectedDomain === 'Space') {
-      const intlDesignator = asset.intl_designator as string | undefined
-      const orbitClass     = asset.orbit_class as string | undefined
-      const countryCode    = asset.country_code as string | undefined
-      const rcsSize        = asset.rcs_size as string | undefined
-      const launchDate     = asset.launch_date as string | undefined
-      const period         = asset.orbital_period_min != null
-        ? asset.orbital_period_min as number
-        : asset.orbital_period != null
-          ? asset.orbital_period as number
-          : null
-      const incl           = asset.inclination_deg != null
-        ? asset.inclination_deg as number
-        : asset.inclination != null
-          ? asset.inclination as number
-          : null
+      const catalog        = satelliteCatalogQuery.data
+      const intlDesignator = catalog?.intl_designator ?? null
+      const orbitClass     = catalog?.orbit_class ?? (asset.orbit_class as string | undefined) ?? null
+      const countryCode    = catalog?.country_code ?? null
+      const rcsSize        = catalog?.rcs_size ?? null
+      const launchDate     = catalog?.launch_date ?? null
+      const period         = catalog?.period_min ?? null
+      const incl           = catalog?.inclination_deg ?? null
       const altKm          = asset.altitude_km as number | undefined
       const countryFlag    = countryToFlag(countryCode)
+      const tleSummary     = satelliteTlesQuery.data?.tles?.[0] ?? null
+      const enrichment     = catalog?.enrichment_status ?? null
 
       return (
-        <StatSection title="Orbital Data">
-          <StatCell label="NORAD ID" value={asset.track_id} mono fullWidth />
-          {intlDesignator && (
-            <StatCell label="Intl Designator" value={intlDesignator} mono fullWidth />
-          )}
-          {/* Orbit class pill */}
-          {orbitClass && (
-            <div style={{ gridColumn: '1 / -1', marginBottom: 2 }}>
-              <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.13em', color: '#64748b', textTransform: 'uppercase', marginBottom: 4 }}>
-                Orbit Class
+        <>
+          <StatSection title="Orbital Data">
+            <StatCell label="NORAD ID" value={spaceNoradId ?? asset.track_id} mono fullWidth />
+            {intlDesignator && (
+              <StatCell label="Intl Designator" value={intlDesignator} mono fullWidth />
+            )}
+            {orbitClass && (
+              <div style={{ gridColumn: '1 / -1', marginBottom: 2 }}>
+                <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.13em', color: '#64748b', textTransform: 'uppercase', marginBottom: 4 }}>
+                  Orbit Class
+                </div>
+                <Pill color={ORBIT_PILL_COLOR[orbitClass] || 'slate'}>{orbitClass}</Pill>
               </div>
-              <Pill color={ORBIT_PILL_COLOR[orbitClass] || 'slate'}>{orbitClass}</Pill>
+            )}
+            {countryCode && (
+              <div style={{ gridColumn: '1 / -1' }}>
+                <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.13em', color: '#64748b', textTransform: 'uppercase', marginBottom: 4 }}>
+                  Country
+                </div>
+                <div style={{ fontSize: '12px', fontWeight: 600, color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {countryFlag && <span style={{ fontSize: 16, lineHeight: 1 }}>{countryFlag}</span>}
+                  {countryCode}
+                </div>
+              </div>
+            )}
+            <StatCell label="Period" value={period != null ? `${period.toFixed(1)} min` : null} />
+            <StatCell label="Inclination" value={incl != null ? `${incl.toFixed(2)}°` : null} />
+            <StatCell label="Altitude" value={altKm != null ? `${altKm.toFixed(0)} km` : null} />
+            <StatCell label="Apogee" value={catalog?.apogee_km != null ? `${catalog.apogee_km.toFixed(0)} km` : null} />
+            <StatCell label="Perigee" value={catalog?.perigee_km != null ? `${catalog.perigee_km.toFixed(0)} km` : null} />
+            <StatCell label="RCS Size" value={rcsSize} />
+            <StatCell label="Object Type" value={catalog?.object_type ?? (asset.object_type as string | undefined)} />
+            <StatCell label="Operator" value={catalog?.operator} fullWidth />
+            <StatCell label="Purpose" value={catalog?.purpose} fullWidth />
+            <StatCell label="Contractor" value={catalog?.contractor} fullWidth />
+            <StatCell label="Launch Date" value={fmtDate(launchDate)} />
+            <StatCell label="Launch Site" value={catalog?.launch_site} />
+          </StatSection>
+
+          <StatSection title="Enrichment Status">
+            <StatCell label="Confidence" value={enrichment?.confidence?.toUpperCase() ?? (satelliteCatalogQuery.isLoading ? 'Loading…' : 'Unavailable')} />
+            <StatCell label="Completeness" value={enrichment ? `${enrichment.completeness_pct}%` : null} />
+            <StatCell label="Catalog Updated" value={fmtTime(enrichment?.last_updated ?? undefined)} />
+            <StatCell label="TLE Epoch" value={fmtTime(enrichment?.tle_epoch ?? undefined)} />
+            <StatCell label="TLE Source" value={enrichment?.tle_source ?? tleSummary?.source ?? null} />
+            <StatCell label="TLE Age" value={enrichment?.tle_age_minutes != null ? `${enrichment.tle_age_minutes} min` : null} />
+            <StatCell label="Sources" value={enrichment?.sources?.join(', ') ?? null} fullWidth />
+            <div style={{ gridColumn: '1 / -1', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {enrichment && Object.entries(enrichment.field_status).map(([label, status]) => (
+                <Pill key={label} color={fieldStatusColor(status)}>
+                  {label}: {status}
+                </Pill>
+              ))}
             </div>
-          )}
-          {/* Country flag */}
-          {countryCode && (
-            <div style={{ gridColumn: '1 / -1' }}>
-              <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.13em', color: '#64748b', textTransform: 'uppercase', marginBottom: 4 }}>
-                Country
-              </div>
-              <div style={{ fontSize: '12px', fontWeight: 600, color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: 6 }}>
-                {countryFlag && <span style={{ fontSize: 16, lineHeight: 1 }}>{countryFlag}</span>}
-                {countryCode}
-              </div>
-            </div>
-          )}
-          <StatCell
-            label="Period"
-            value={period != null ? `${period.toFixed(1)} min` : null}
-          />
-          <StatCell
-            label="Inclination"
-            value={incl != null ? `${incl.toFixed(2)}°` : null}
-          />
-          <StatCell
-            label="Altitude"
-            value={altKm != null ? `${altKm.toFixed(0)} km` : null}
-          />
-          <StatCell label="RCS Size" value={rcsSize} />
-          {launchDate && (
-            <StatCell label="Launch Date" value={launchDate} fullWidth />
-          )}
-          <StatCell label="Operator"   value={asset.operator as string}    fullWidth />
-        </StatSection>
+          </StatSection>
+
+          <StatSection title="TLE History">
+            <StatCell label="Snapshots" value={satelliteTlesQuery.data?.count ?? null} />
+            <StatCell label="Latest Epoch" value={fmtTime(tleSummary?.epoch)} />
+            {tleSummary && (
+              <>
+                <StatCell label="Latest Source" value={tleSummary.source} />
+                <StatCell label="Ingested" value={fmtTime(tleSummary.ingested_at ?? undefined)} />
+                <StatCell label="TLE Line 1" value={tleSummary.tle_line1} mono fullWidth />
+                <StatCell label="TLE Line 2" value={tleSummary.tle_line2} mono fullWidth />
+              </>
+            )}
+            {satelliteTlesQuery.isError && (
+              <StatCell label="Status" value="No TLE history available" fullWidth />
+            )}
+          </StatSection>
+        </>
       )
     }
 

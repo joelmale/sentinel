@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { formatDistanceToNowStrict } from 'date-fns'
 import { getAirlineGroup, getConstellation, getConstellationCategory, getMmsiCountry } from '@/data/grouping'
+import { trackedFetchJson } from '@/lib/perf'
 import { useMapStore } from '@/store/useMapStore'
-import type { SourceDomain, TrackEventProperties } from '@/types/track'
+import type { SatelliteCatalogEntry, SatelliteTleResponse, SourceDomain, TrackEventProperties } from '@/types/track'
 
 type SortKey = 'timestamp' | 'domain' | 'classification' | 'feed' | 'track'
 
@@ -19,8 +21,21 @@ const PAGE_SIZE = 100
 function assetGroupLabel(asset: TrackEventProperties): string {
   if (asset.source_domain === 'Air') return getAirlineGroup(asset.callsign, asset.classification)
   if (asset.source_domain === 'Maritime') return getMmsiCountry(asset.track_id)
-  if (asset.source_domain === 'Space') return getConstellation(asset.callsign)
+  if (asset.source_domain === 'Space') return getConstellation(asset.callsign, asset.object_type)
   return asset.classification ?? 'Unknown'
+}
+
+function assetKey(asset: TrackEventProperties): string {
+  return `${asset.source_domain}:${asset.track_id}`
+}
+
+function fmtRelative(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  try {
+    return formatDistanceToNowStrict(new Date(iso), { addSuffix: true })
+  } catch {
+    return iso
+  }
 }
 
 export function TrackBrowserView({ assets, loading }: { assets: TrackEventProperties[]; loading: boolean }) {
@@ -32,6 +47,7 @@ export function TrackBrowserView({ assets, loading }: { assets: TrackEventProper
   const [selectedSpaceCategory, setSelectedSpaceCategory] = useState<string>('All')
   const [sortKey, setSortKey] = useState<SortKey>('timestamp')
   const [page, setPage] = useState(0)
+  const [selectedAssetKey, setSelectedAssetKey] = useState<string | null>(null)
 
   const classifications = useMemo(() => (
     Array.from(new Set(assets.map((asset) => asset.classification ?? 'Unknown'))).sort()
@@ -45,7 +61,7 @@ export function TrackBrowserView({ assets, loading }: { assets: TrackEventProper
     Array.from(new Set(
       assets
         .filter((asset) => asset.source_domain === 'Space')
-        .map((asset) => getConstellationCategory(getConstellation(asset.callsign)))
+        .map((asset) => getConstellationCategory(getConstellation(asset.callsign, asset.object_type)))
     ))
   ), [assets])
 
@@ -57,7 +73,7 @@ export function TrackBrowserView({ assets, loading }: { assets: TrackEventProper
       if (selectedFeed !== 'All' && asset.source_feed !== selectedFeed) return false
       if (
         selectedSpaceCategory !== 'All' &&
-        (asset.source_domain !== 'Space' || getConstellationCategory(getConstellation(asset.callsign)) !== selectedSpaceCategory)
+        (asset.source_domain !== 'Space' || getConstellationCategory(getConstellation(asset.callsign, asset.object_type)) !== selectedSpaceCategory)
       ) return false
       if (!q) return true
       return [
@@ -79,10 +95,59 @@ export function TrackBrowserView({ assets, loading }: { assets: TrackEventProper
     return next
   }, [assets, search, selectedDomain, selectedClassification, selectedFeed, selectedSpaceCategory, sortKey])
 
-  const selectedAsset = filtered[0] ?? null
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const safePage = Math.min(page, pageCount - 1)
   const paged = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE)
+  const selectedAsset = useMemo(() => {
+    if (selectedAssetKey) {
+      const explicit = filtered.find((asset) => assetKey(asset) === selectedAssetKey)
+      if (explicit) return explicit
+    }
+    return paged[0] ?? filtered[0] ?? null
+  }, [filtered, paged, selectedAssetKey])
+
+  useEffect(() => {
+    if (!selectedAsset) {
+      setSelectedAssetKey(null)
+      return
+    }
+    if (!selectedAssetKey) {
+      setSelectedAssetKey(assetKey(selectedAsset))
+      return
+    }
+    if (!filtered.some((asset) => assetKey(asset) === selectedAssetKey)) {
+      setSelectedAssetKey(assetKey(selectedAsset))
+    }
+  }, [filtered, selectedAsset, selectedAssetKey])
+
+  const selectedSpaceNoradId = useMemo(() => {
+    if (!selectedAsset || selectedAsset.source_domain !== 'Space') return null
+    const raw = selectedAsset.norad_id ?? selectedAsset.track_id
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) ? parsed : null
+  }, [selectedAsset])
+
+  const selectedSpaceCatalogQuery = useQuery({
+    queryKey: ['browser-satellite-catalog', selectedSpaceNoradId],
+    enabled: selectedSpaceNoradId !== null,
+    queryFn: async (): Promise<SatelliteCatalogEntry> => trackedFetchJson(
+      'browser-satellite-catalog',
+      `/api/satellites/${selectedSpaceNoradId}`,
+    ),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+
+  const selectedSpaceTlesQuery = useQuery({
+    queryKey: ['browser-satellite-tles', selectedSpaceNoradId],
+    enabled: selectedSpaceNoradId !== null,
+    queryFn: async (): Promise<SatelliteTleResponse> => trackedFetchJson(
+      'browser-satellite-tles',
+      `/api/satellites/${selectedSpaceNoradId}/tles?limit=3`,
+    ),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
 
   const correlation = useMemo(() => {
     const byDomain = new Map<string, number>()
@@ -207,14 +272,19 @@ export function TrackBrowserView({ assets, loading }: { assets: TrackEventProper
             <tbody>
               {paged.map((asset) => (
                 <tr
-                  key={`${asset.source_domain}:${asset.track_id}`}
+                  key={assetKey(asset)}
                   onClick={() => {
+                    setSelectedAssetKey(assetKey(asset))
                     selectAsset(asset.track_id, asset.source_domain)
                     if (typeof asset.lon === 'number' && typeof asset.lat === 'number') {
                       flyTo(asset.lon, asset.lat, 6)
                     }
                   }}
-                  style={{ cursor: 'pointer', borderBottom: '1px solid rgba(148,163,184,0.08)' }}
+                  style={{
+                    cursor: 'pointer',
+                    borderBottom: '1px solid rgba(148,163,184,0.08)',
+                    background: selectedAsset && assetKey(asset) === assetKey(selectedAsset) ? 'rgba(30,41,59,0.85)' : 'transparent',
+                  }}
                 >
                   <td style={tdStyle}>
                     <div style={{ color: '#f8fafc', fontWeight: 700 }}>{asset.callsign ?? asset.track_id}</div>
@@ -244,10 +314,100 @@ export function TrackBrowserView({ assets, loading }: { assets: TrackEventProper
         <SummaryBlock title="Groups" items={correlation.byGroup} />
         {selectedAsset && (
           <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid rgba(148,163,184,0.16)' }}>
-            <div style={{ fontSize: 11, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 8 }}>Lead Track</div>
+            <div style={{ fontSize: 11, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 8 }}>Track Detail</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: '#f8fafc', marginBottom: 6 }}>{selectedAsset.callsign ?? selectedAsset.track_id}</div>
             <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 4 }}>{selectedAsset.source_domain} · {selectedAsset.source_feed}</div>
-            <div style={{ fontSize: 12, color: '#cbd5e1' }}>{assetGroupLabel(selectedAsset)}</div>
+            <div style={{ fontSize: 12, color: '#cbd5e1', marginBottom: 14 }}>{assetGroupLabel(selectedAsset)}</div>
+
+            <DetailGrid
+              items={[
+                ['Track ID', selectedAsset.track_id],
+                ['Classification', selectedAsset.classification ?? 'Unknown'],
+                ['Last Seen', fmtRelative(selectedAsset.timestamp)],
+                ['Latitude', typeof selectedAsset.lat === 'number' ? selectedAsset.lat.toFixed(4) : '—'],
+                ['Longitude', typeof selectedAsset.lon === 'number' ? selectedAsset.lon.toFixed(4) : '—'],
+                ['Heading', typeof selectedAsset.heading_deg === 'number' ? `${selectedAsset.heading_deg.toFixed(1)}°` : '—'],
+                ['Speed', typeof selectedAsset.speed_mps === 'number' ? `${(selectedAsset.speed_mps * 1.94384).toFixed(1)} kts` : '—'],
+                ['Altitude', typeof selectedAsset.altitude_m === 'number' ? `${Math.round(selectedAsset.altitude_m).toLocaleString()} m` : '—'],
+              ]}
+            />
+
+            {selectedAsset.source_domain === 'Space' && (
+              <>
+                <SidebarSection title="Catalog">
+                  {selectedSpaceCatalogQuery.isLoading ? (
+                    <div style={subtleTextStyle}>Loading satellite catalog…</div>
+                  ) : selectedSpaceCatalogQuery.data ? (
+                    <DetailGrid
+                      items={[
+                        ['NORAD', String(selectedSpaceCatalogQuery.data.norad_id)],
+                        ['Object Name', selectedSpaceCatalogQuery.data.object_name],
+                        ['Intl Des.', selectedSpaceCatalogQuery.data.intl_designator ?? '—'],
+                        ['Object Type', selectedSpaceCatalogQuery.data.object_type ?? '—'],
+                        ['Operator', selectedSpaceCatalogQuery.data.operator ?? '—'],
+                        ['Purpose', selectedSpaceCatalogQuery.data.purpose ?? '—'],
+                        ['Contractor', selectedSpaceCatalogQuery.data.contractor ?? '—'],
+                        ['Orbit Class', selectedSpaceCatalogQuery.data.orbit_class ?? '—'],
+                        ['Apogee', selectedSpaceCatalogQuery.data.apogee_km != null ? `${selectedSpaceCatalogQuery.data.apogee_km.toFixed(0)} km` : '—'],
+                        ['Perigee', selectedSpaceCatalogQuery.data.perigee_km != null ? `${selectedSpaceCatalogQuery.data.perigee_km.toFixed(0)} km` : '—'],
+                        ['Inclination', selectedSpaceCatalogQuery.data.inclination_deg != null ? `${selectedSpaceCatalogQuery.data.inclination_deg.toFixed(2)}°` : '—'],
+                        ['Launch Date', selectedSpaceCatalogQuery.data.launch_date ?? '—'],
+                        ['Launch Site', selectedSpaceCatalogQuery.data.launch_site ?? '—'],
+                        ['RCS', selectedSpaceCatalogQuery.data.rcs_size ?? '—'],
+                      ]}
+                    />
+                  ) : (
+                    <div style={subtleTextStyle}>No catalog enrichment available.</div>
+                  )}
+                </SidebarSection>
+
+                <SidebarSection title="Enrichment Status">
+                  {selectedSpaceCatalogQuery.data?.enrichment_status ? (
+                    <>
+                      <DetailGrid
+                        items={[
+                          ['Confidence', selectedSpaceCatalogQuery.data.enrichment_status.confidence],
+                          ['Completeness', `${selectedSpaceCatalogQuery.data.enrichment_status.completeness_pct}%`],
+                          ['Catalog Updated', fmtRelative(selectedSpaceCatalogQuery.data.enrichment_status.last_updated)],
+                          ['TLE Epoch', fmtRelative(selectedSpaceCatalogQuery.data.enrichment_status.tle_epoch)],
+                          ['TLE Source', selectedSpaceCatalogQuery.data.enrichment_status.tle_source ?? '—'],
+                          ['Sources', selectedSpaceCatalogQuery.data.enrichment_status.sources.join(', ') || '—'],
+                        ]}
+                      />
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                        {Object.entries(selectedSpaceCatalogQuery.data.enrichment_status.field_status).map(([label, status]) => (
+                          <span key={label} style={statusChipStyle(status)}>
+                            {label}: {status}
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div style={subtleTextStyle}>No enrichment status available.</div>
+                  )}
+                </SidebarSection>
+
+                <SidebarSection title="TLE">
+                  {selectedSpaceTlesQuery.isLoading ? (
+                    <div style={subtleTextStyle}>Loading TLE history…</div>
+                  ) : selectedSpaceTlesQuery.data?.tles?.length ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {selectedSpaceTlesQuery.data.tles.map((tle) => (
+                        <div key={tle.epoch} style={tleCardStyle}>
+                          <div style={{ fontSize: 11, color: '#f8fafc', fontWeight: 700, marginBottom: 4 }}>
+                            {fmtRelative(tle.epoch)} · {tle.source}
+                          </div>
+                          <div style={monoLineStyle}>{tle.tle_line1}</div>
+                          <div style={monoLineStyle}>{tle.tle_line2}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={subtleTextStyle}>No TLE history available.</div>
+                  )}
+                </SidebarSection>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -280,6 +440,28 @@ function SummaryBlock({ title, items }: { title: string; items: Array<[string, n
   )
 }
 
+function SidebarSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginTop: 18 }}>
+      <div style={{ fontSize: 10, color: '#64748b', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>{title}</div>
+      {children}
+    </div>
+  )
+}
+
+function DetailGrid({ items }: { items: Array<[string, string]> }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
+      {items.map(([label, value]) => (
+        <div key={label} style={{ display: 'grid', gap: 2 }}>
+          <div style={{ fontSize: 10, color: '#64748b', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{label}</div>
+          <div style={{ fontSize: 12, color: '#e2e8f0', wordBreak: 'break-word' }}>{value}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 const selectStyle: React.CSSProperties = {
   width: '100%',
   borderRadius: 10,
@@ -304,6 +486,45 @@ const tdStyle: React.CSSProperties = {
   padding: '12px 14px',
   color: '#cbd5e1',
   verticalAlign: 'top',
+}
+
+const subtleTextStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: '#94a3b8',
+}
+
+const tleCardStyle: React.CSSProperties = {
+  borderRadius: 10,
+  border: '1px solid rgba(100,116,139,0.24)',
+  background: 'rgba(15,23,42,0.72)',
+  padding: '10px 12px',
+}
+
+const monoLineStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: '#cbd5e1',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  lineHeight: 1.5,
+  wordBreak: 'break-all',
+}
+
+function statusChipStyle(status: string): React.CSSProperties {
+  const color =
+    status === 'authoritative' ? ['rgba(34,197,94,0.16)', 'rgba(34,197,94,0.35)', '#86efac']
+    : status === 'derived' ? ['rgba(59,130,246,0.16)', 'rgba(59,130,246,0.35)', '#93c5fd']
+    : status === 'inferred' ? ['rgba(245,158,11,0.16)', 'rgba(245,158,11,0.35)', '#fcd34d']
+    : status === 'curated' ? ['rgba(168,85,247,0.16)', 'rgba(168,85,247,0.35)', '#d8b4fe']
+    : ['rgba(71,85,105,0.22)', 'rgba(100,116,139,0.3)', '#cbd5e1']
+
+  return {
+    borderRadius: 999,
+    border: `1px solid ${color[1]}`,
+    background: color[0],
+    color: color[2],
+    fontSize: 10,
+    fontWeight: 700,
+    padding: '4px 8px',
+  }
 }
 
 function pagerStyle(disabled: boolean): React.CSSProperties {

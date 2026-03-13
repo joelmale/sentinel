@@ -97,26 +97,38 @@ def _live_metadata_subset(domain: str, metadata: dict[str, Any]) -> dict[str, An
         common_keys = {
             "object_type",
             "orbit_class",
-            "orbital_period_min",
-            "orbital_period",
-            "inclination_deg",
-            "inclination",
-            "country_code",
             "norad_id",
         }
 
     return {key: safe[key] for key in common_keys if key in safe}
 
 
-def _space_constellation(name: str | None) -> str:
+def _space_constellation(name: str | None, object_type: str | None = None) -> str:
+    normalized_object_type = (object_type or "").strip().upper()
     if not name:
+        if normalized_object_type in {"ROCKET BODY", "R/B"}:
+            return "Rocket Bodies"
+        if "DEBRIS" in normalized_object_type or normalized_object_type == "DEB":
+            return "Debris"
+        if normalized_object_type == "PAYLOAD":
+            return "Unmapped Payload"
         return "Other"
     n = name.upper().strip()
 
     if n.startswith("STARLINK"):
         return "Starlink"
+    if n.startswith("KUIPER"):
+        return "LEO (Kuiper)"
     if n.startswith("ONEWEB") or n.startswith("ONE WEB"):
         return "OneWeb"
+    if n.startswith("QIANFAN") or n.startswith("G60"):
+        return "Qianfan"
+    if n.startswith("GUOWANG") or n.startswith("GW "):
+        return "Guowang"
+    if n.startswith("GALAXYSPACE"):
+        return "GalaxySpace"
+    if n.startswith("E-SPACE") or n.startswith("ESPACE"):
+        return "E-space"
     if n.startswith("TELESAT LIGHTSPEED"):
         return "Telesat Lightspeed"
     if n.startswith("GPS ") or n.startswith("NAVSTAR"):
@@ -135,6 +147,12 @@ def _space_constellation(name: str | None) -> str:
         return "GOES (NOAA)"
     if n.startswith("NOAA-") or n.startswith("NOAA "):
         return "NOAA"
+    if n.startswith("METOP"):
+        return "MetOp"
+    if n.startswith("HIMAWARI"):
+        return "Himawari"
+    if n.startswith("FY-") or n.startswith("FENGYUN"):
+        return "Fengyun"
     if n.startswith("METEOSAT"):
         return "Meteosat (EUMETSAT)"
     if n.startswith("SENTINEL-") or n.startswith("SENTINEL "):
@@ -143,8 +161,26 @@ def _space_constellation(name: str | None) -> str:
         return "Landsat"
     if n.startswith("TERRA") or n in {"AQUA", "AURA"}:
         return "NASA EOS"
+    if n.startswith("COPERNICUS"):
+        return "Sentinel (ESA)"
+    if n.startswith("GAOFEN") or n.startswith("GF-"):
+        return "Gaofen"
+    if n.startswith("YAOGAN") or n.startswith("YG-"):
+        return "Yaogan"
+    if n.startswith("JILIN"):
+        return "Jilin"
+    if n.startswith("CAPELLA"):
+        return "Capella Space"
+    if n.startswith("ICEYE"):
+        return "ICEYE"
+    if n.startswith("UMBRA"):
+        return "Umbra"
     if n.startswith("WORLDVIEW") or n.startswith("GEOEYE"):
         return "Maxar (Commercial ISR)"
+    if n.startswith("PLEIADES"):
+        return "Pleiades"
+    if n.startswith("PAZ"):
+        return "PAZ"
     if n.startswith("PLANET") or n.startswith("FLOCK") or n.startswith("SKYSAT"):
         return "Planet Labs"
     if n.startswith("SPIRE") or n.startswith("LEMUR"):
@@ -163,14 +199,44 @@ def _space_constellation(name: str | None) -> str:
         return "Telesat"
     if n.startswith("VIASAT") or n.startswith("WI-FI "):
         return "Viasat"
+    if n.startswith("INMARSAT"):
+        return "Inmarsat"
+    if n.startswith("THURAYA"):
+        return "Thuraya"
+    if n.startswith("ARABSAT") or n.startswith("BADR-"):
+        return "Arabsat / Badr"
+    if n.startswith("TURKSAT"):
+        return "Turksat"
+    if n.startswith("HISPASAT"):
+        return "Hispasat"
+    if n.startswith("JCSAT") or n.startswith("SUPERBIRD"):
+        return "JSAT / Superbird"
+    if n.startswith("ASTRA"):
+        return "Astra"
     if n.startswith("ORBCOMM"):
         return "Orbcomm"
     if n.startswith("GLOBALSTAR"):
         return "Globalstar"
     if n.startswith("O3B"):
         return "O3b (SES MEO)"
+    if n.startswith("AST SPACE") or n.startswith("BLUEBIRD") or n.startswith("BLUEMAN"):
+        return "AST SpaceMobile"
+    if n.startswith("LYNK"):
+        return "Lynk Global"
+    if n.startswith("SWARM"):
+        return "Swarm"
+    if n.startswith("KEPLER"):
+        return "Kepler Communications"
+    if n.startswith("KINÉIS") or n.startswith("KINEIS"):
+        return "Kineis"
+    if n.startswith("ASTROCAST"):
+        return "Astrocast"
+    if n.startswith("FOSSA"):
+        return "FOSSA Systems"
     if n.startswith("USA ") or n.startswith("USA-") or n.startswith("KH-") or n.startswith("NROL"):
         return "NRO / USAF (classified)"
+    if n.startswith("NOSS"):
+        return "NOSS / White Cloud"
     if n.startswith("COSMOS"):
         return "Cosmos (Russia)"
     if n.startswith("YAMAL") or n.startswith("EKSPRESS"):
@@ -181,12 +247,48 @@ def _space_constellation(name: str | None) -> str:
         return "Russia (Military)"
     if n.startswith("SJ-") or n.startswith("SHIJIAN"):
         return "China (Experimental)"
+    if n.startswith("SHIYAN"):
+        return "China (Experimental)"
+    if n.startswith("TJS-"):
+        return "China (Military)"
+    if n.startswith("TIANHUI"):
+        return "Tianhui"
+    if n.startswith("TIANLIAN"):
+        return "Tianlian"
+    if n.startswith("ZIYUAN"):
+        return "Ziyuan"
     if n.startswith("CZ-") or n.startswith("LM-"):
         return "China (Rocket Bodies)"
+    if n.startswith("SARAH"):
+        return "SARah (Germany)"
+    if n.startswith("HELIOS"):
+        return "Helios"
+    if n.startswith("PERSONA"):
+        return "Persona"
+    if n.startswith("HST") or n.startswith("HUBBLE"):
+        return "Hubble"
+    if n.startswith("JWST") or n.startswith("JAMES WEBB"):
+        return "JWST"
+    if n.startswith("TESS"):
+        return "TESS"
+    if n.startswith("CHANDRA"):
+        return "Chandra"
+    if n.startswith("XMM-"):
+        return "XMM-Newton"
+    if n.startswith("SWIFT"):
+        return "Swift"
+    if n.startswith("CHEOPS"):
+        return "CHEOPS"
     if "R/B" in n or "ROCKET" in n:
         return "Rocket Bodies"
     if "DEB" in n or "DEBRIS" in n:
         return "Debris"
+    if normalized_object_type in {"ROCKET BODY", "R/B"}:
+        return "Rocket Bodies"
+    if "DEBRIS" in normalized_object_type or normalized_object_type == "DEB":
+        return "Debris"
+    if normalized_object_type == "PAYLOAD":
+        return "Unmapped Payload"
     return "Other"
 
 
@@ -649,7 +751,7 @@ async def get_live_assets(
                 continue
             if not math.isfinite(lon) or not math.isfinite(lat):
                 continue
-            constellation = _space_constellation(row["callsign"])
+            constellation = _space_constellation(row["callsign"], (row["metadata"] or {}).get("object_type"))
             entry = grouped.setdefault(constellation, {
                 "count": 0,
                 "lon_sum": 0.0,

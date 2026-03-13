@@ -236,8 +236,6 @@ interface MapStore {
   hiddenSpaceConstellations: string[]
   toggleHiddenSpaceConstellation: (constellation: string) => void
   clearHiddenSpaceConstellations: () => void
-  demoFilterSelection: Partial<Record<SourceDomain, string | null>>
-  setDemoFilterSelection: (domain: SourceDomain, key: string | null) => void
 
   // Group exclusion — set of 'domain:track_id' keys that should be dimmed on the map.
   // Unlike hiddenGroupFilters (which removes tracks entirely), these remain visible but
@@ -497,7 +495,7 @@ export const useMapStore = create<MapStore>()(
     setAssetCardOpen: (open) => set({ assetCardOpen: open }),
 
     // ── UI settings ────────────────────────────────────────────
-    mapMode: 'full',
+    mapMode: 'outline',
     showTrails: true,
     showCocom: false,
     showUnderseaCables: false,
@@ -534,9 +532,6 @@ export const useMapStore = create<MapStore>()(
         return { hiddenSpaceConstellations: next }
       }),
     clearHiddenSpaceConstellations: () => set({ hiddenSpaceConstellations: [] }),
-    demoFilterSelection: {},
-    setDemoFilterSelection: (domain, key) =>
-      set((s) => ({ demoFilterSelection: { ...s.demoFilterSelection, [domain]: key } })),
 
     // ── Group exclusion (dim on map) ─────────────────────────────
     groupExcludedTracks: new Set<string>(),

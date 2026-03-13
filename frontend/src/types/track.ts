@@ -91,6 +91,65 @@ export interface LiveSummaryResponse {
   stale_domains: Record<SourceDomain, number>
 }
 
+export type SatelliteFieldStatus = 'authoritative' | 'inferred' | 'derived' | 'curated' | 'missing'
+export type SatelliteEnrichmentConfidence = 'high' | 'medium' | 'low'
+
+export interface SatelliteEnrichmentStatus {
+  sources: string[]
+  last_updated: string | null
+  tle_epoch: string | null
+  tle_source: string | null
+  tle_age_minutes: number | null
+  completeness_pct: number
+  confidence: SatelliteEnrichmentConfidence
+  field_status: {
+    identity: SatelliteFieldStatus
+    orbit: SatelliteFieldStatus
+    operator: SatelliteFieldStatus
+    purpose: SatelliteFieldStatus
+    contractor: SatelliteFieldStatus
+    launch: SatelliteFieldStatus
+  }
+}
+
+export interface SatelliteCatalogEntry {
+  norad_id: number
+  object_name: string
+  intl_designator: string | null
+  object_type: string | null
+  country_code: string | null
+  launch_date: string | null
+  decay_date: string | null
+  period_min: number | null
+  inclination_deg: number | null
+  apogee_km: number | null
+  perigee_km: number | null
+  rcs_size: string | null
+  orbit_class: string | null
+  operator: string | null
+  purpose: string | null
+  contractor: string | null
+  launch_site: string | null
+  sources: string[]
+  last_updated: string | null
+  metadata: Record<string, unknown>
+  enrichment_status: SatelliteEnrichmentStatus
+}
+
+export interface SatelliteTleSnapshot {
+  epoch: string
+  tle_line1: string
+  tle_line2: string
+  source: string
+  ingested_at: string | null
+}
+
+export interface SatelliteTleResponse {
+  norad_id: number
+  count: number
+  tles: SatelliteTleSnapshot[]
+}
+
 export interface SpaceAggregateProperties {
   source_domain: 'Space'
   aggregate_kind: 'constellation'
