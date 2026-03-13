@@ -18,11 +18,27 @@ CREATE TYPE source_domain AS ENUM (
     'Infra'
 );
 
+-- ── Canonical entities ────────────────────────────────────────────
+CREATE TABLE entities (
+    entity_id        UUID            PRIMARY KEY,
+    entity_type      TEXT            NOT NULL,    -- asset | disruption | region | facility
+    source_domain    source_domain,
+    display_name     TEXT,
+    status           TEXT            DEFAULT 'active',
+    metadata         JSONB           DEFAULT '{}'::jsonb,
+    created_at       TIMESTAMPTZ     DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ     DEFAULT NOW()
+);
+
+CREATE INDEX idx_entities_type_domain
+    ON entities (entity_type, source_domain, updated_at DESC);
+
 -- ── Core track events table ───────────────────────────────────────
 -- Every position report / state update from every domain lands here.
 -- This is a TimescaleDB hypertable partitioned by timestamp.
 CREATE TABLE track_events (
     event_id        UUID            DEFAULT uuid_generate_v4(),
+    entity_id       UUID            REFERENCES entities(entity_id),
     source_domain   source_domain   NOT NULL,
     source_feed     TEXT            NOT NULL,
     track_id        TEXT            NOT NULL,        -- ICAO hex, MMSI, NORAD ID, etc.
@@ -53,6 +69,9 @@ CREATE INDEX idx_track_events_position
 CREATE INDEX idx_track_events_domain_track_ts
     ON track_events (source_domain, track_id, timestamp DESC);
 
+CREATE INDEX idx_track_events_entity_ts
+    ON track_events (entity_id, timestamp DESC);
+
 -- Text search on callsign
 CREATE INDEX idx_track_events_callsign_trgm
     ON track_events USING GIN (callsign gin_trgm_ops);
@@ -81,6 +100,7 @@ SELECT add_retention_policy(
 -- Mirrors Redis; survives Redis restarts; updated in-place per track
 CREATE TABLE asset_states (
     id              BIGSERIAL       PRIMARY KEY,
+    entity_id       UUID            REFERENCES entities(entity_id),
     source_domain   source_domain   NOT NULL,
     source_feed     TEXT            NOT NULL,
     track_id        TEXT            NOT NULL,
@@ -100,6 +120,9 @@ CREATE INDEX idx_asset_states_position
 
 CREATE INDEX idx_asset_states_domain
     ON asset_states (source_domain);
+
+CREATE INDEX idx_asset_states_entity
+    ON asset_states (entity_id);
 
 -- ── Analyst annotations ───────────────────────────────────────────
 CREATE TABLE annotations (
@@ -300,6 +323,7 @@ CREATE INDEX idx_space_watchlist_priority
 -- `disruption_observations` preserves the time-series evidence.
 CREATE TABLE disruption_events (
     id                  UUID            DEFAULT uuid_generate_v4() PRIMARY KEY,
+    entity_id           UUID            REFERENCES entities(entity_id),
     source_domain       source_domain   NOT NULL,
     source_feed         TEXT            NOT NULL,
     external_event_id   TEXT            NOT NULL,
@@ -344,8 +368,12 @@ CREATE INDEX idx_disruption_events_centroid
 CREATE INDEX idx_disruption_events_correlation
     ON disruption_events (correlation_id);
 
+CREATE INDEX idx_disruption_events_entity
+    ON disruption_events (entity_id);
+
 CREATE TABLE disruption_observations (
     observation_id      UUID            DEFAULT uuid_generate_v4(),
+    entity_id           UUID            REFERENCES entities(entity_id),
     source_domain       source_domain   NOT NULL,
     source_feed         TEXT            NOT NULL,
     external_event_id   TEXT            NOT NULL,
@@ -373,6 +401,9 @@ CREATE INDEX idx_disruption_observations_domain_time
 
 CREATE INDEX idx_disruption_observations_feed_event
     ON disruption_observations (source_feed, external_event_id, observed_at DESC);
+
+CREATE INDEX idx_disruption_observations_entity_time
+    ON disruption_observations (entity_id, observed_at DESC);
 
 CREATE INDEX idx_disruption_observations_geometry
     ON disruption_observations USING GIST (geometry);

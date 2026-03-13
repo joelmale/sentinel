@@ -24,7 +24,7 @@ import math
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -132,6 +132,7 @@ class BaseCollector(ABC):
             self.db_url.replace("postgresql+asyncpg://", "postgresql://"),
             min_size=2, max_size=5,
         )
+        await self._ensure_storage_model()
         self._redis = await aioredis.from_url(
             self.redis_url, encoding="utf-8", decode_responses=True
         )
@@ -205,6 +206,120 @@ class BaseCollector(ABC):
             tasks.append(self._publish_to_redis(publish_events))
         if tasks:
             await asyncio.gather(*tasks)
+
+    async def _ensure_storage_model(self) -> None:
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS entities (
+                entity_id UUID PRIMARY KEY,
+                entity_type TEXT NOT NULL,
+                source_domain source_domain,
+                display_name TEXT,
+                status TEXT DEFAULT 'active',
+                metadata JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """,
+            "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS entity_id UUID",
+            "ALTER TABLE asset_states ADD COLUMN IF NOT EXISTS entity_id UUID",
+            "ALTER TABLE disruption_events ADD COLUMN IF NOT EXISTS entity_id UUID",
+            "ALTER TABLE disruption_observations ADD COLUMN IF NOT EXISTS entity_id UUID",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'track_events_entity_id_fkey'
+                ) THEN
+                    ALTER TABLE track_events
+                    ADD CONSTRAINT track_events_entity_id_fkey
+                    FOREIGN KEY (entity_id) REFERENCES entities(entity_id);
+                END IF;
+            END $$;
+            """,
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'asset_states_entity_id_fkey'
+                ) THEN
+                    ALTER TABLE asset_states
+                    ADD CONSTRAINT asset_states_entity_id_fkey
+                    FOREIGN KEY (entity_id) REFERENCES entities(entity_id);
+                END IF;
+            END $$;
+            """,
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'disruption_events_entity_id_fkey'
+                ) THEN
+                    ALTER TABLE disruption_events
+                    ADD CONSTRAINT disruption_events_entity_id_fkey
+                    FOREIGN KEY (entity_id) REFERENCES entities(entity_id);
+                END IF;
+            END $$;
+            """,
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'disruption_observations_entity_id_fkey'
+                ) THEN
+                    ALTER TABLE disruption_observations
+                    ADD CONSTRAINT disruption_observations_entity_id_fkey
+                    FOREIGN KEY (entity_id) REFERENCES entities(entity_id);
+                END IF;
+            END $$;
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_entities_type_domain ON entities (entity_type, source_domain, updated_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_track_events_entity_ts ON track_events (entity_id, timestamp DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_asset_states_entity ON asset_states (entity_id)",
+            "CREATE INDEX IF NOT EXISTS idx_disruption_events_entity ON disruption_events (entity_id)",
+            "CREATE INDEX IF NOT EXISTS idx_disruption_observations_entity_time ON disruption_observations (entity_id, observed_at DESC)",
+        ]
+        async with self._db.acquire() as conn:
+            for statement in statements:
+                await conn.execute(statement)
+
+    def _asset_entity_id(self, source_domain: str, track_id: str) -> UUID:
+        return uuid5(NAMESPACE_URL, f"sentinel:asset:{source_domain}:{track_id}")
+
+    def _disruption_entity_id(self, source_feed: str, external_event_id: str) -> UUID:
+        return uuid5(NAMESPACE_URL, f"sentinel:disruption:{source_feed}:{external_event_id}")
+
+    def _entity_rows_for_assets(self, events: list[dict]) -> list[tuple[UUID, str, str, str | None, str, str]]:
+        rows: dict[UUID, tuple[UUID, str, str, str | None, str, str]] = {}
+        for event in events:
+            entity_id = self._asset_entity_id(event["source_domain"], str(event["track_id"]))
+            rows[entity_id] = (
+                entity_id,
+                "asset",
+                event["source_domain"],
+                event.get("callsign") or str(event["track_id"]),
+                "active",
+                json.dumps({"source_feed": event["source_feed"]}),
+            )
+        return list(rows.values())
+
+    def _entity_rows_for_disruptions(self, events: list[dict]) -> list[tuple[UUID, str, str, str | None, str, str]]:
+        rows: dict[UUID, tuple[UUID, str, str, str | None, str, str]] = {}
+        for event in events:
+            entity_id = self._disruption_entity_id(event["source_feed"], event["external_event_id"])
+            rows[entity_id] = (
+                entity_id,
+                "disruption",
+                event["source_domain"],
+                event.get("title") or event.get("callsign") or event["external_event_id"],
+                event.get("status") or "active",
+                json.dumps({"source_feed": event["source_feed"], "event_type": event["event_type"]}),
+            )
+        return list(rows.values())
 
     def _events_for_track_history(self, events: list[dict]) -> list[dict]:
         return events
@@ -310,22 +425,35 @@ class BaseCollector(ABC):
             return value
 
         async with self._db.acquire() as conn:
+            entity_rows = self._entity_rows_for_assets(current_state_events) + self._entity_rows_for_disruptions(disruption_events)
+            if entity_rows:
+                await conn.executemany("""
+                    INSERT INTO entities (entity_id, entity_type, source_domain, display_name, status, metadata)
+                    VALUES ($1, $2, $3::source_domain, $4, $5, $6::jsonb)
+                    ON CONFLICT (entity_id) DO UPDATE SET
+                        display_name = COALESCE(EXCLUDED.display_name, entities.display_name),
+                        status = EXCLUDED.status,
+                        metadata = entities.metadata || EXCLUDED.metadata,
+                        updated_at = NOW()
+                """, entity_rows)
+
             if history_events:
                 await conn.executemany("""
                     INSERT INTO track_events
-                        (source_domain, source_feed, track_id, callsign,
+                        (entity_id, source_domain, source_feed, track_id, callsign,
                          position, altitude_m, heading_deg, speed_mps,
                          timestamp, metadata, classification)
                     VALUES
-                        ($1, $2, $3, $4,
+                        ($1, $2, $3, $4, $5,
                          CASE
-                              WHEN $5::double precision IS NOT NULL AND $6::double precision IS NOT NULL
-                              THEN ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), 4326)
+                              WHEN $6::double precision IS NOT NULL AND $7::double precision IS NOT NULL
+                              THEN ST_SetSRID(ST_MakePoint($6::double precision, $7::double precision), 4326)
                               ELSE NULL::geometry(Point, 4326)
                          END,
-                         $7, $8, $9, $10, $11::jsonb, $12)
+                         $8, $9, $10, $11, $12::jsonb, $13)
                 """, [
                     (
+                        self._asset_entity_id(e["source_domain"], str(e["track_id"])),
                         e["source_domain"], e["source_feed"], e["track_id"],
                         e.get("callsign"),
                         e.get("lon"), e.get("lat"),
@@ -340,18 +468,19 @@ class BaseCollector(ABC):
             if current_state_events:
                 await conn.executemany("""
                     INSERT INTO asset_states
-                        (source_domain, source_feed, track_id, callsign,
+                        (entity_id, source_domain, source_feed, track_id, callsign,
                          position, altitude_m, heading_deg, speed_mps,
                          last_seen, metadata, classification)
                     VALUES
-                        ($1, $2, $3, $4,
+                        ($1, $2, $3, $4, $5,
                          CASE
-                              WHEN $5::double precision IS NOT NULL AND $6::double precision IS NOT NULL
-                              THEN ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), 4326)
+                              WHEN $6::double precision IS NOT NULL AND $7::double precision IS NOT NULL
+                              THEN ST_SetSRID(ST_MakePoint($6::double precision, $7::double precision), 4326)
                               ELSE NULL::geometry(Point, 4326)
                          END,
-                         $7, $8, $9, $10, $11::jsonb, $12)
+                         $8, $9, $10, $11, $12::jsonb, $13)
                     ON CONFLICT (source_domain, track_id) DO UPDATE SET
+                        entity_id       = EXCLUDED.entity_id,
                         callsign       = EXCLUDED.callsign,
                         position       = EXCLUDED.position,
                         altitude_m     = EXCLUDED.altitude_m,
@@ -362,6 +491,7 @@ class BaseCollector(ABC):
                         classification = EXCLUDED.classification
                 """, [
                     (
+                        self._asset_entity_id(e["source_domain"], str(e["track_id"])),
                         e["source_domain"], e["source_feed"], e["track_id"],
                         e.get("callsign"),
                         e.get("lon"), e.get("lat"),
@@ -376,28 +506,29 @@ class BaseCollector(ABC):
             if disruption_events:
                 await conn.executemany("""
                     INSERT INTO disruption_events
-                        (source_domain, source_feed, external_event_id, track_id, callsign,
+                        (entity_id, source_domain, source_feed, external_event_id, track_id, callsign,
                          event_type, category, title, status, severity, confidence,
                          source_trust_score, first_seen, last_seen, start_time, end_time,
                          geometry, centroid, h3_cell, measurement_value, measurement_unit,
                          affected_assets_count, correlation_id, metadata, classification)
                     VALUES
-                        ($1, $2, $3, $4, $5,
-                         $6, $7, $8, $9, $10, $11,
-                         $12, $13, $14, $15, $16,
-                         CASE
-                              WHEN $17::text IS NOT NULL
-                              THEN ST_SetSRID(ST_GeomFromGeoJSON($17::text), 4326)
-                              ELSE NULL::geometry(Geometry, 4326)
-                         END,
+                        ($1, $2, $3, $4, $5, $6,
+                         $7, $8, $9, $10, $11, $12,
+                         $13, $14, $15, $16, $17,
                          CASE
                               WHEN $18::text IS NOT NULL
                               THEN ST_SetSRID(ST_GeomFromGeoJSON($18::text), 4326)
+                              ELSE NULL::geometry(Geometry, 4326)
+                         END,
+                         CASE
+                              WHEN $19::text IS NOT NULL
+                              THEN ST_SetSRID(ST_GeomFromGeoJSON($19::text), 4326)
                               ELSE NULL::geometry(Point, 4326)
                          END,
-                         $19, $20, $21,
-                         0, $22::uuid, $23::jsonb, $24)
+                         $20, $21, $22,
+                         0, $23::uuid, $24::jsonb, $25)
                     ON CONFLICT (source_feed, external_event_id) DO UPDATE SET
+                        entity_id = EXCLUDED.entity_id,
                         track_id = EXCLUDED.track_id,
                         callsign = COALESCE(EXCLUDED.callsign, disruption_events.callsign),
                         event_type = EXCLUDED.event_type,
@@ -435,6 +566,7 @@ class BaseCollector(ABC):
                         END
                 """, [
                     (
+                        self._disruption_entity_id(e["source_feed"], e["external_event_id"]),
                         e["source_domain"], e["source_feed"], e["external_event_id"], e["track_id"], e.get("callsign"),
                         e["event_type"], e["category"], e.get("title"), e["status"], e.get("severity"), e.get("confidence"),
                         e.get("source_trust_score"), db_timestamp(e["first_seen"]), db_timestamp(e["last_seen"]),
@@ -468,26 +600,27 @@ class BaseCollector(ABC):
             if disruption_observations:
                 await conn.executemany("""
                     INSERT INTO disruption_observations
-                        (source_domain, source_feed, external_event_id, track_id,
+                        (entity_id, source_domain, source_feed, external_event_id, track_id,
                          observed_at, observation_type, severity, confidence,
                          source_trust_score, geometry, centroid, raw_payload, metadata)
                     VALUES
-                        ($1, $2, $3, $4,
-                         $5, $6, $7, $8,
-                         $9,
-                         CASE
-                              WHEN $10::text IS NOT NULL
-                              THEN ST_SetSRID(ST_GeomFromGeoJSON($10::text), 4326)
-                              ELSE NULL::geometry(Geometry, 4326)
-                         END,
+                        ($1, $2, $3, $4, $5,
+                         $6, $7, $8, $9,
+                         $10,
                          CASE
                               WHEN $11::text IS NOT NULL
                               THEN ST_SetSRID(ST_GeomFromGeoJSON($11::text), 4326)
+                              ELSE NULL::geometry(Geometry, 4326)
+                         END,
+                         CASE
+                              WHEN $12::text IS NOT NULL
+                              THEN ST_SetSRID(ST_GeomFromGeoJSON($12::text), 4326)
                               ELSE NULL::geometry(Point, 4326)
                          END,
-                         $12::jsonb, $13::jsonb)
+                         $13::jsonb, $14::jsonb)
                 """, [
                     (
+                        self._disruption_entity_id(obs["source_feed"], obs["external_event_id"]),
                         obs["source_domain"], obs["source_feed"], obs["external_event_id"], obs["track_id"],
                         db_timestamp(obs["observed_at"]), obs["observation_type"], obs.get("severity"), obs.get("confidence"),
                         obs.get("source_trust_score"), obs.get("geometry_geojson"), obs.get("centroid_geojson"),
