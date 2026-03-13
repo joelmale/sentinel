@@ -156,7 +156,6 @@ function SentinelApp() {
       air: TrackEventProperties[]
       maritime: TrackEventProperties[]
       space: TrackEventProperties[]
-      spaceAggregates: SpaceAggregate[]
     }> => {
       const bbox = serializeBbox(viewportBounds)
       const requests: Array<Promise<unknown>> = []
@@ -179,25 +178,6 @@ function SentinelApp() {
         requests.push(Promise.resolve([]))
       }
 
-      if (layers.Space.visibility !== 'hidden') {
-        const aggregateUrl = bbox
-          ? `/api/tracks/live?domain=Space&scope=aggregate&bbox=${encodeURIComponent(bbox)}`
-          : '/api/tracks/live?domain=Space&scope=aggregate'
-        requests.push(
-          trackedFetchJson<SpaceAggregateFeatureCollection>('live-space-aggregates', aggregateUrl)
-            .then((payload) => payload.features
-              .filter((feature) => Array.isArray(feature.geometry?.coordinates))
-              .map((feature) => ({
-                constellation: feature.properties.constellation,
-                count: feature.properties.count,
-                lon: feature.geometry!.coordinates[0],
-                lat: feature.geometry!.coordinates[1],
-              })))
-        )
-      } else {
-        requests.push(Promise.resolve([]))
-      }
-
       if (bbox && shouldLoadSpaceDetails && layers.Space.visibility !== 'hidden') {
         requests.push(
           trackedFetchJson<TrackFeatureCollection>('live-space-viewport', `/api/tracks/live?domain=Space&bbox=${encodeURIComponent(bbox)}`)
@@ -207,18 +187,45 @@ function SentinelApp() {
         requests.push(Promise.resolve([]))
       }
 
-      const [air, maritime, spaceAggregates, space] = await Promise.all(requests) as [
+      const [air, maritime, space] = await Promise.all(requests) as [
         TrackEventProperties[],
         TrackEventProperties[],
-        SpaceAggregate[],
         TrackEventProperties[],
       ]
 
-      return { air, maritime, space, spaceAggregates }
+      return { air, maritime, space }
     },
     refetchOnWindowFocus: false,
     refetchInterval: playback.mode === 'live' ? 20_000 : false,
     staleTime: 5_000,
+  })
+
+  const spaceAggregateQuery = useQuery({
+    queryKey: [
+      'space-aggregates',
+      viewportBbox,
+      layers.Space.visibility,
+    ],
+    enabled: layers.Space.visibility !== 'hidden',
+    queryFn: async (): Promise<SpaceAggregate[]> => {
+      const bbox = serializeBbox(viewportBounds)
+      const aggregateUrl = bbox
+        ? `/api/tracks/live?domain=Space&scope=aggregate&bbox=${encodeURIComponent(bbox)}`
+        : '/api/tracks/live?domain=Space&scope=aggregate'
+      const payload = await trackedFetchJson<SpaceAggregateFeatureCollection>('live-space-aggregates', aggregateUrl)
+      return payload.features
+        .filter((feature) => Array.isArray(feature.geometry?.coordinates))
+        .map((feature) => ({
+          constellation: feature.properties.constellation,
+          count: feature.properties.count,
+          lon: feature.geometry!.coordinates[0],
+          lat: feature.geometry!.coordinates[1],
+        }))
+    },
+    refetchOnWindowFocus: false,
+    refetchInterval: playback.mode === 'live' ? 20_000 : false,
+    staleTime: 5_000,
+    retry: false,
   })
 
   useEffect(() => {
@@ -230,11 +237,14 @@ function SentinelApp() {
     replaceDomainViewportAssets('Air', liveViewportQuery.data?.air ?? [])
     replaceDomainViewportAssets('Maritime', liveViewportQuery.data?.maritime ?? [])
     replaceDomainViewportAssets('Space', liveViewportQuery.data?.space ?? [])
-    setSpaceAggregates(liveViewportQuery.data?.spaceAggregates ?? [])
     if (allViewportAssets.length > 0) {
       upsertAssets(allViewportAssets)
     }
-  }, [liveViewportQuery.data, replaceDomainViewportAssets, setSpaceAggregates, upsertAssets])
+  }, [liveViewportQuery.data, replaceDomainViewportAssets, upsertAssets])
+
+  useEffect(() => {
+    setSpaceAggregates(spaceAggregateQuery.data ?? [])
+  }, [spaceAggregateQuery.data, setSpaceAggregates])
 
   const selectedAssetDetailQuery = useQuery({
     queryKey: ['selected-asset-detail', selectedDomain, selectedTrackId],
