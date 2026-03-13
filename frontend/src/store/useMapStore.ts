@@ -177,6 +177,7 @@ interface MapStore {
 
   // Investigation context — set when analyst opens an alert
   investigationContext: InvestigationContext | null
+  focusAlert: (alert: AlertItem, options?: { preserveWindow?: boolean }) => void
   openInvestigation: (alert: AlertItem) => void
   closeInvestigation: () => void
 
@@ -393,7 +394,7 @@ export const useMapStore = create<MapStore>()(
 
     // ── Investigation context ─────────────────────────────────────
     investigationContext: null,
-    openInvestigation: (alert) => {
+    focusAlert: (alert, options) => {
       const { flyTo, selectAsset, setTimeWindow, setCurrentTime, setPlaybackMode, triageAlert } = get()
       const { viewportAssets, selectedAssetDetail } = useLiveDataStore.getState()
       // Fly to the track's last known position
@@ -406,11 +407,13 @@ export const useMapStore = create<MapStore>()(
       }
       // Open the asset card for this track
       selectAsset(alert.trackId, alert.domain)
-      // Snap timeline ±30 min around the alert trigger time
       const alertTime = new Date(alert.triggeredAt)
-      const windowStart = new Date(alertTime.getTime() - 30 * 60_000)
-      const windowEnd   = new Date(Math.max(alertTime.getTime() + 30 * 60_000, Date.now()))
-      setTimeWindow({ start: windowStart, end: windowEnd })
+      if (!options?.preserveWindow) {
+        // Snap timeline ±30 min around the alert trigger time
+        const windowStart = new Date(alertTime.getTime() - 30 * 60_000)
+        const windowEnd   = new Date(Math.max(alertTime.getTime() + 30 * 60_000, Date.now()))
+        setTimeWindow({ start: windowStart, end: windowEnd })
+      }
       setCurrentTime(alertTime)
       setPlaybackMode('replay')
       // Advance triage state
@@ -426,6 +429,7 @@ export const useMapStore = create<MapStore>()(
         },
       })
     },
+    openInvestigation: (alert) => get().focusAlert(alert),
     closeInvestigation: () => set({ investigationContext: null }),
 
     // ── Panels ──────────────────────────────────────────────────

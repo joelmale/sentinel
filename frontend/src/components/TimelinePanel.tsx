@@ -81,19 +81,21 @@ function LiveDot() {
 
 function TransportBtn({
   onClick, title, children, active = false, large = false,
-}: { onClick: () => void; title: string; children: React.ReactNode; active?: boolean; large?: boolean }) {
+  disabled = false,
+}: { onClick: () => void; title: string; children: React.ReactNode; active?: boolean; large?: boolean; disabled?: boolean }) {
   const [hover, setHover] = useState(false)
   return (
-    <button onClick={onClick} title={title}
+    <button onClick={onClick} title={title} disabled={disabled}
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       style={{
         width: large ? 40 : 32, height: large ? 40 : 32,
         borderRadius: large ? '50%' : 8, border: '1px solid',
-        borderColor: active || hover ? 'rgba(20,184,166,0.6)' : 'rgba(71,85,105,0.5)',
-        background: active ? 'rgba(13,148,136,0.4)' : hover ? 'rgba(71,85,105,0.5)' : 'rgba(30,41,59,0.6)',
-        color: active ? '#5eead4' : hover ? '#e2e8f0' : '#94a3b8',
+        borderColor: disabled ? 'rgba(51,65,85,0.35)' : active || hover ? 'rgba(20,184,166,0.6)' : 'rgba(71,85,105,0.5)',
+        background: disabled ? 'rgba(15,23,42,0.35)' : active ? 'rgba(13,148,136,0.4)' : hover ? 'rgba(71,85,105,0.5)' : 'rgba(30,41,59,0.6)',
+        color: disabled ? '#475569' : active ? '#5eead4' : hover ? '#e2e8f0' : '#94a3b8',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: large ? 16 : 12, cursor: 'pointer', transition: 'all 0.15s', flexShrink: 0,
+        fontSize: large ? 16 : 12, cursor: disabled ? 'not-allowed' : 'pointer', transition: 'all 0.15s', flexShrink: 0,
+        opacity: disabled ? 0.7 : 1,
       }}
     >
       {children}
@@ -272,6 +274,7 @@ export function TimelinePanel() {
     pendingAlerts,
     investigationContext,
     layers,
+    focusAlert,
     setPlaybackMode, setCurrentTime, setTimeWindow, setSpeedMultiplier, tickPlayback,
   } = useMapStore()
   const { uiViewportAssets } = useLiveDataStore()
@@ -335,6 +338,31 @@ export function TimelinePanel() {
         }
       })
   }, [pendingAlerts, investigationContext, layers, playback.timeWindow.end, playback.timeWindow.start])
+
+  const activeWindowAlertIndex = useMemo(() => (
+    windowAlerts.findIndex((alert) => alert.alertId === investigationContext?.alertId)
+  ), [windowAlerts, investigationContext])
+
+  const previousWindowAlert = useMemo(() => {
+    if (windowAlerts.length === 0) return null
+    if (activeWindowAlertIndex > 0) return windowAlerts[activeWindowAlertIndex - 1]
+    const currentMs = playback.currentTime.getTime()
+    const candidates = windowAlerts.filter((alert) => alert.timestampMs < currentMs)
+    return candidates.at(-1) ?? null
+  }, [windowAlerts, activeWindowAlertIndex, playback.currentTime])
+
+  const nextWindowAlert = useMemo(() => {
+    if (windowAlerts.length === 0) return null
+    if (activeWindowAlertIndex >= 0 && activeWindowAlertIndex < windowAlerts.length - 1) {
+      return windowAlerts[activeWindowAlertIndex + 1]
+    }
+    const currentMs = playback.currentTime.getTime()
+    return windowAlerts.find((alert) => alert.timestampMs > currentMs) ?? null
+  }, [windowAlerts, activeWindowAlertIndex, playback.currentTime])
+
+  const jumpToWindowAlert = useCallback((alert: (typeof windowAlerts)[number]) => {
+    focusAlert(alert, { preserveWindow: true })
+  }, [focusAlert])
 
   function enterReplay(presetMs?: number) {
     const end   = new Date()
@@ -512,9 +540,10 @@ export function TimelinePanel() {
             <div style={{ position:'relative', padding:'4px 0' }}>
               <div style={{ position:'absolute', left:0, right:0, top:'50%', height:4, borderRadius:4, marginTop:-2, background:scrubBg, pointerEvents:'none' }} />
               {windowAlerts.map((alert) => (
-                <div
+                <button
                   key={alert.alertId}
                   title={`${alert.domain} · ${alert.ruleName ?? alert.ruleId} · ${fmtUtc(new Date(alert.triggeredAt))}`}
+                  onClick={() => jumpToWindowAlert(alert)}
                   style={{
                     position: 'absolute',
                     left: `calc(${alert.pct}% - 5px)`,
@@ -528,7 +557,8 @@ export function TimelinePanel() {
                     boxShadow: alert.isActive
                       ? `0 0 0 3px ${DOMAIN_COLORS[alert.domain]}33`
                       : `0 0 0 2px ${DOMAIN_COLORS[alert.domain]}1F`,
-                    pointerEvents: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
                     zIndex: alert.isActive ? 2 : 1,
                   }}
                 />
@@ -550,13 +580,18 @@ export function TimelinePanel() {
                   Alerts
                 </span>
                 {windowAlerts.slice(0, 5).map((alert) => (
-                  <span
+                  <button
                     key={alert.alertId}
+                    onClick={() => jumpToWindowAlert(alert)}
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
                       gap: 5,
                       fontSize: 10,
+                      border: 'none',
+                      background: 'transparent',
+                      padding: 0,
+                      cursor: 'pointer',
                       color: alert.isActive ? '#e2e8f0' : '#94a3b8',
                     }}
                     title={`${alert.domain} · ${alert.ruleName ?? alert.ruleId}`}
@@ -571,7 +606,7 @@ export function TimelinePanel() {
                       }}
                     />
                     {alert.ruleName ?? alert.ruleId}
-                  </span>
+                  </button>
                 ))}
                 {windowAlerts.length > 5 && (
                   <span style={{ fontSize: 10, color: '#64748b' }}>+{windowAlerts.length - 5} more</span>
@@ -583,11 +618,25 @@ export function TimelinePanel() {
           {/* ROW 3: Transport + speed + back to live */}
           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
             <TransportBtn onClick={() => setCurrentTime(playback.timeWindow.start)} title="Jump to start">⏮</TransportBtn>
+            <TransportBtn
+              onClick={() => previousWindowAlert && jumpToWindowAlert(previousWindowAlert)}
+              title="Jump to previous alert"
+              disabled={!previousWindowAlert}
+            >
+              ←!
+            </TransportBtn>
             <TransportBtn onClick={() => setCurrentTime(new Date(Math.max(playback.timeWindow.start.getTime(), playback.currentTime.getTime()-300_000)))} title="Back 5 minutes">−5m</TransportBtn>
             <TransportBtn large active={isPlaying} onClick={() => setPlaybackMode(isPlaying ? 'paused' : 'replay')} title={isPlaying ? 'Pause' : 'Play'}>
               {isPlaying ? '⏸' : '▶'}
             </TransportBtn>
             <TransportBtn onClick={() => setCurrentTime(new Date(Math.min(playback.timeWindow.end.getTime(), playback.currentTime.getTime()+300_000)))} title="Forward 5 minutes">+5m</TransportBtn>
+            <TransportBtn
+              onClick={() => nextWindowAlert && jumpToWindowAlert(nextWindowAlert)}
+              title="Jump to next alert"
+              disabled={!nextWindowAlert}
+            >
+              !→
+            </TransportBtn>
             <TransportBtn onClick={() => setCurrentTime(playback.timeWindow.end)} title="Jump to end">⏭</TransportBtn>
 
             <div style={{ width:1, height:24, background:'rgba(71,85,105,.4)', margin:'0 4px', flexShrink:0 }} />
