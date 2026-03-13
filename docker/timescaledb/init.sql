@@ -50,6 +50,21 @@ CREATE TABLE entity_identifiers (
 CREATE INDEX idx_entity_identifiers_entity
     ON entity_identifiers (entity_id, last_seen DESC);
 
+CREATE TABLE asset_identity_resolutions (
+    source_domain         source_domain   NOT NULL,
+    source_feed           TEXT            NOT NULL,
+    track_id              TEXT            NOT NULL,
+    entity_id             UUID            NOT NULL REFERENCES entities(entity_id),
+    resolution_confidence DOUBLE PRECISION,
+    resolution_basis      JSONB           DEFAULT '{}'::jsonb,
+    first_resolved_at     TIMESTAMPTZ     DEFAULT NOW(),
+    last_resolved_at      TIMESTAMPTZ     DEFAULT NOW(),
+    PRIMARY KEY (source_domain, source_feed, track_id)
+);
+
+CREATE INDEX idx_asset_identity_resolutions_entity
+    ON asset_identity_resolutions (entity_id, last_resolved_at DESC);
+
 CREATE TABLE sources (
     source_feed         TEXT            PRIMARY KEY,
     source_domain       source_domain   NOT NULL,

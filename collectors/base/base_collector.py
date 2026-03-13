@@ -248,6 +248,19 @@ class BaseCollector(ABC):
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS asset_identity_resolutions (
+                source_domain source_domain NOT NULL,
+                source_feed TEXT NOT NULL,
+                track_id TEXT NOT NULL,
+                entity_id UUID NOT NULL REFERENCES entities(entity_id),
+                resolution_confidence DOUBLE PRECISION,
+                resolution_basis JSONB DEFAULT '{}'::jsonb,
+                first_resolved_at TIMESTAMPTZ DEFAULT NOW(),
+                last_resolved_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (source_domain, source_feed, track_id)
+            )
+            """,
+            """
             CREATE TABLE IF NOT EXISTS sources (
                 source_feed TEXT PRIMARY KEY,
                 source_domain source_domain NOT NULL,
@@ -445,6 +458,7 @@ class BaseCollector(ABC):
             """,
             "CREATE INDEX IF NOT EXISTS idx_entities_type_domain ON entities (entity_type, source_domain, updated_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_entity_identifiers_entity ON entity_identifiers (entity_id, last_seen DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_asset_identity_resolutions_entity ON asset_identity_resolutions (entity_id, last_resolved_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_source_runs_feed_started ON source_runs (source_feed, started_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_entity_assertions_entity_time ON entity_assertions (entity_id, asserted_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_entity_assertions_attr ON entity_assertions (attribute_key, asserted_at DESC)",
@@ -471,10 +485,115 @@ class BaseCollector(ABC):
     def _disruption_entity_id(self, source_feed: str, external_event_id: str) -> UUID:
         return uuid5(NAMESPACE_URL, f"sentinel:disruption:{source_feed}:{external_event_id}")
 
+    def _entity_id_for_event(self, event: dict) -> UUID:
+        resolved = event.get("_entity_id")
+        if isinstance(resolved, UUID):
+            return resolved
+        return self._asset_entity_id(event["source_domain"], str(event["track_id"]))
+
+    def _candidate_identifier_rows_for_asset(
+        self,
+        event: dict,
+        *,
+        entity_id: UUID | None = None,
+    ) -> list[tuple[str, str, str, bool, float]]:
+        metadata = _public_metadata(event.get("metadata"))
+        rows: list[tuple[str, str, str, bool, float]] = []
+
+        def add_identifier(id_type: str, raw_value: object, source_feed: str, is_primary: bool, confidence: float) -> None:
+            if raw_value in (None, "", []):
+                return
+            id_value = str(raw_value).strip()
+            if not id_value:
+                return
+            candidate = (id_type, id_value, source_feed, is_primary, confidence)
+            if candidate not in rows:
+                rows.append(candidate)
+
+        primary_id_type = self._identifier_type_for_domain(event["source_domain"])
+        add_identifier(primary_id_type, event["track_id"], "", True, 1.0)
+        add_identifier("feed_track_id", event["track_id"], event["source_feed"], False, 0.95)
+
+        if event["source_domain"] == "Air":
+            add_identifier("registration", metadata.get("registration"), "", False, 0.85)
+            add_identifier("tail_number", metadata.get("registration"), "", False, 0.85)
+        elif event["source_domain"] == "Maritime":
+            add_identifier("imo", metadata.get("imo"), "", False, 0.9)
+        elif event["source_domain"] == "Space":
+            add_identifier("intl_designator", metadata.get("intl_designator"), "", False, 0.9)
+            add_identifier("catalog_name", metadata.get("object_name") or event.get("callsign"), "", False, 0.55)
+
+        return rows
+
+    async def _resolve_asset_entity_id(self, conn: asyncpg.Connection, event: dict) -> UUID:
+        cached = await conn.fetchrow("""
+            SELECT entity_id
+            FROM asset_identity_resolutions
+            WHERE source_domain = $1::source_domain
+              AND source_feed = $2
+              AND track_id = $3
+        """, event["source_domain"], event["source_feed"], str(event["track_id"]))
+        if cached and cached["entity_id"] is not None:
+            return cached["entity_id"]
+
+        candidates = self._candidate_identifier_rows_for_asset(event)
+        resolved_entity_id: UUID | None = None
+        resolution_basis = {"mode": "deterministic_fallback", "matched_identifiers": []}
+        resolution_confidence = 0.5
+
+        for id_type, id_value, source_feed, _is_primary, confidence in candidates:
+            row = await conn.fetchrow("""
+                SELECT entity_id
+                FROM entity_identifiers
+                WHERE id_type = $1
+                  AND id_value = $2
+                  AND (source_feed = $3 OR source_feed = '' OR $3 = '')
+                ORDER BY confidence DESC, last_seen DESC
+                LIMIT 1
+            """, id_type, id_value, source_feed)
+            if row and row["entity_id"] is not None:
+                resolved_entity_id = row["entity_id"]
+                resolution_basis = {
+                    "mode": "identifier_match",
+                    "matched_identifiers": [{
+                        "id_type": id_type,
+                        "id_value": id_value,
+                        "source_feed": source_feed,
+                    }],
+                }
+                resolution_confidence = max(confidence, 0.8)
+                break
+
+        if resolved_entity_id is None:
+            resolved_entity_id = self._asset_entity_id(event["source_domain"], str(event["track_id"]))
+
+        observed_at = event["timestamp"] if isinstance(event["timestamp"], datetime) else datetime.fromisoformat(str(event["timestamp"]).replace("Z", "+00:00"))
+        await conn.execute("""
+            INSERT INTO asset_identity_resolutions (
+                source_domain, source_feed, track_id, entity_id,
+                resolution_confidence, resolution_basis, first_resolved_at, last_resolved_at
+            )
+            VALUES ($1::source_domain, $2, $3, $4, $5, $6::jsonb, $7, $7)
+            ON CONFLICT (source_domain, source_feed, track_id) DO UPDATE SET
+                entity_id = EXCLUDED.entity_id,
+                resolution_confidence = EXCLUDED.resolution_confidence,
+                resolution_basis = EXCLUDED.resolution_basis,
+                last_resolved_at = EXCLUDED.last_resolved_at
+        """,
+            event["source_domain"],
+            event["source_feed"],
+            str(event["track_id"]),
+            resolved_entity_id,
+            resolution_confidence,
+            json.dumps(resolution_basis),
+            observed_at,
+        )
+        return resolved_entity_id
+
     def _entity_rows_for_assets(self, events: list[dict]) -> list[tuple[UUID, str, str, str | None, str, str]]:
         rows: dict[UUID, tuple[UUID, str, str, str | None, str, str]] = {}
         for event in events:
-            entity_id = self._asset_entity_id(event["source_domain"], str(event["track_id"]))
+            entity_id = self._entity_id_for_event(event)
             rows[entity_id] = (
                 entity_id,
                 "asset",
@@ -512,30 +631,19 @@ class BaseCollector(ABC):
         rows: dict[tuple[str, str, str], tuple[UUID, str, str, str, bool, float, datetime, datetime, str]] = {}
         for event in events:
             observed_at = event["timestamp"] if isinstance(event["timestamp"], datetime) else datetime.fromisoformat(str(event["timestamp"]).replace("Z", "+00:00"))
-            entity_id = self._asset_entity_id(event["source_domain"], str(event["track_id"]))
-            primary_id_type = self._identifier_type_for_domain(event["source_domain"])
-            rows[(primary_id_type, str(event["track_id"]), "")] = (
-                entity_id,
-                primary_id_type,
-                str(event["track_id"]),
-                "",
-                True,
-                1.0,
-                observed_at,
-                observed_at,
-                json.dumps({"source_domain": event["source_domain"]}),
-            )
-            rows[("feed_track_id", str(event["track_id"]), event["source_feed"])] = (
-                entity_id,
-                "feed_track_id",
-                str(event["track_id"]),
-                event["source_feed"],
-                False,
-                0.95,
-                observed_at,
-                observed_at,
-                json.dumps({"source_domain": event["source_domain"]}),
-            )
+            entity_id = self._entity_id_for_event(event)
+            for id_type, id_value, source_feed, is_primary, confidence in self._candidate_identifier_rows_for_asset(event, entity_id=entity_id):
+                rows[(id_type, id_value, source_feed)] = (
+                    entity_id,
+                    id_type,
+                    id_value,
+                    source_feed,
+                    is_primary,
+                    confidence,
+                    observed_at,
+                    observed_at,
+                    json.dumps({"source_domain": event["source_domain"]}),
+                )
         return list(rows.values())
 
     def _identifier_rows_for_disruptions(self, events: list[dict]) -> list[tuple[UUID, str, str, str, bool, float, datetime, datetime, str]]:
@@ -616,7 +724,7 @@ class BaseCollector(ABC):
         for event in events:
             metadata = _public_metadata(event.get("metadata"))
             observed_at = event["timestamp"] if isinstance(event["timestamp"], datetime) else datetime.fromisoformat(str(event["timestamp"]).replace("Z", "+00:00"))
-            entity_id = self._asset_entity_id(event["source_domain"], str(event["track_id"]))
+            entity_id = self._entity_id_for_event(event)
             for key in stable_keys:
                 value = metadata.get(key)
                 if value in (None, "", []):
@@ -703,7 +811,7 @@ class BaseCollector(ABC):
         }
         for event in events:
             metadata = _public_metadata(event.get("metadata"))
-            entity_id = self._asset_entity_id(event["source_domain"], str(event["track_id"]))
+            entity_id = self._entity_id_for_event(event)
             rows[entity_id] = (
                 entity_id,
                 event["source_domain"],
@@ -899,6 +1007,12 @@ class BaseCollector(ABC):
             return value
 
         async with self._db.acquire() as conn:
+            asset_events = [*history_events, *current_state_events]
+            if asset_events:
+                for event in asset_events:
+                    if not isinstance(event.get("_entity_id"), UUID):
+                        event["_entity_id"] = await self._resolve_asset_entity_id(conn, event)
+
             entity_rows = self._entity_rows_for_assets(current_state_events) + self._entity_rows_for_disruptions(disruption_events)
             if entity_rows:
                 await conn.executemany("""
@@ -996,7 +1110,7 @@ class BaseCollector(ABC):
                 """, [
                     (
                         self._observation_id(e),
-                        self._asset_entity_id(e["source_domain"], str(e["track_id"])),
+                        self._entity_id_for_event(e),
                         e["source_domain"],
                         e["source_feed"],
                         str((e.get("metadata") or {}).get("source_record_id") or f"{e['source_feed']}:{e['track_id']}:{e['timestamp']}"),
@@ -1030,7 +1144,7 @@ class BaseCollector(ABC):
                 """, [
                     (
                         self._observation_id(e),
-                        self._asset_entity_id(e["source_domain"], str(e["track_id"])),
+                        self._entity_id_for_event(e),
                         self._observation_id(e),
                         str((e.get("metadata") or {}).get("source_record_id") or f"{e['source_feed']}:{e['track_id']}:{e['timestamp']}"),
                         e["source_domain"], e["source_feed"], e["track_id"],
@@ -1078,7 +1192,7 @@ class BaseCollector(ABC):
                         classification = EXCLUDED.classification
                 """, [
                     (
-                        self._asset_entity_id(e["source_domain"], str(e["track_id"])),
+                        self._entity_id_for_event(e),
                         e["source_domain"], e["source_feed"], e["track_id"],
                         e.get("callsign"),
                         e.get("lon"), e.get("lat"),
@@ -1133,7 +1247,7 @@ class BaseCollector(ABC):
                         fused_at = NOW()
                 """, [
                     (
-                        self._asset_entity_id(e["source_domain"], str(e["track_id"])),
+                        self._entity_id_for_event(e),
                         e["source_domain"],
                         e["source_feed"],
                         e["track_id"],
