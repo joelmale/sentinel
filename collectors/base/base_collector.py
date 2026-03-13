@@ -120,6 +120,7 @@ class BaseCollector(ABC):
         self._db: asyncpg.Pool | None = None
         self._redis: aioredis.Redis | None = None
         self._running = False
+        self._source_run_id: UUID | None = None
 
     # ── Abstract interface ────────────────────────────────────────
     @abstractmethod
@@ -134,6 +135,8 @@ class BaseCollector(ABC):
             min_size=2, max_size=5,
         )
         await self._ensure_storage_model()
+        await self._register_source()
+        await self._start_source_run()
         self._redis = await aioredis.from_url(
             self.redis_url, encoding="utf-8", decode_responses=True
         )
@@ -148,6 +151,7 @@ class BaseCollector(ABC):
         logger.info(f"[{self.FEED_NAME}] Collector started (interval={self.poll_interval}s)")
 
     async def shutdown(self):
+        await self._finish_source_run("stopped")
         if self._db:
             await self._db.close()
         if self._redis:
@@ -172,6 +176,7 @@ class BaseCollector(ABC):
             except Exception as exc:
                 consecutive_errors += 1
                 backoff = min(60, 2 ** consecutive_errors)
+                await self._record_source_run_error(str(exc))
                 logger.error(
                     f"[{self.FEED_NAME}] Fetch error (attempt {consecutive_errors}): {exc}. "
                     f"Backing off {backoff}s"
@@ -207,6 +212,11 @@ class BaseCollector(ABC):
             tasks.append(self._publish_to_redis(publish_events))
         if tasks:
             await asyncio.gather(*tasks)
+        await self._update_source_run(
+            batches_delta=1 if events else 0,
+            events_delta=len(events),
+            success=bool(events),
+        )
 
     async def _ensure_storage_model(self) -> None:
         statements = [
@@ -235,6 +245,36 @@ class BaseCollector(ABC):
                 last_seen TIMESTAMPTZ DEFAULT NOW(),
                 metadata JSONB DEFAULT '{}'::jsonb,
                 UNIQUE (id_type, id_value, source_feed)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS sources (
+                source_feed TEXT PRIMARY KEY,
+                source_domain source_domain NOT NULL,
+                provider TEXT,
+                collector_name TEXT,
+                default_trust_score DOUBLE PRECISION DEFAULT 0.7,
+                update_profile JSONB DEFAULT '{}'::jsonb,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS source_runs (
+                run_id UUID PRIMARY KEY,
+                source_feed TEXT NOT NULL REFERENCES sources(source_feed),
+                source_domain source_domain NOT NULL,
+                collector_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'starting',
+                started_at TIMESTAMPTZ DEFAULT NOW(),
+                last_heartbeat TIMESTAMPTZ DEFAULT NOW(),
+                last_success_at TIMESTAMPTZ,
+                ended_at TIMESTAMPTZ,
+                batches_written INTEGER DEFAULT 0,
+                events_written INTEGER DEFAULT 0,
+                last_error TEXT,
+                metadata JSONB DEFAULT '{}'::jsonb
             )
             """,
             "ALTER TABLE track_events ADD COLUMN IF NOT EXISTS entity_id UUID",
@@ -303,6 +343,7 @@ class BaseCollector(ABC):
             """,
             "CREATE INDEX IF NOT EXISTS idx_entities_type_domain ON entities (entity_type, source_domain, updated_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_entity_identifiers_entity ON entity_identifiers (entity_id, last_seen DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_source_runs_feed_started ON source_runs (source_feed, started_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_track_events_entity_ts ON track_events (entity_id, timestamp DESC)",
             "CREATE INDEX IF NOT EXISTS idx_asset_states_entity ON asset_states (entity_id)",
             "CREATE INDEX IF NOT EXISTS idx_disruption_events_entity ON disruption_events (entity_id)",
@@ -431,6 +472,67 @@ class BaseCollector(ABC):
             "collector": self.FEED_NAME,
             "observed_at": event["timestamp"] if isinstance(event["timestamp"], str) else event["timestamp"].isoformat(),
         }
+
+    async def _register_source(self) -> None:
+        async with self._db.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO sources (
+                    source_feed, source_domain, provider, collector_name,
+                    default_trust_score, update_profile, metadata
+                )
+                VALUES ($1, $2::source_domain, $3, $4, $5, $6::jsonb, $7::jsonb)
+                ON CONFLICT (source_feed) DO UPDATE SET
+                    source_domain = EXCLUDED.source_domain,
+                    provider = EXCLUDED.provider,
+                    collector_name = EXCLUDED.collector_name,
+                    default_trust_score = EXCLUDED.default_trust_score,
+                    update_profile = EXCLUDED.update_profile,
+                    metadata = sources.metadata || EXCLUDED.metadata,
+                    updated_at = NOW()
+            """, self.FEED_NAME, self.DOMAIN, self.FEED_NAME, self.__class__.__name__, self.DEFAULT_SOURCE_TRUST_SCORE,
+                 json.dumps({"poll_interval_sec": self.poll_interval}),
+                 json.dumps({"collector_class": self.__class__.__name__}))
+
+    async def _start_source_run(self) -> None:
+        self._source_run_id = uuid4()
+        async with self._db.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO source_runs (
+                    run_id, source_feed, source_domain, collector_name, status, metadata
+                )
+                VALUES ($1, $2, $3::source_domain, $4, 'running', $5::jsonb)
+            """, self._source_run_id, self.FEED_NAME, self.DOMAIN, self.__class__.__name__,
+                 json.dumps({"poll_interval_sec": self.poll_interval}))
+
+    async def _update_source_run(self, *, batches_delta: int = 0, events_delta: int = 0, success: bool = False, error: str | None = None) -> None:
+        if self._source_run_id is None:
+            return
+        async with self._db.acquire() as conn:
+            await conn.execute("""
+                UPDATE source_runs
+                SET last_heartbeat = NOW(),
+                    last_success_at = CASE WHEN $2 THEN NOW() ELSE last_success_at END,
+                    batches_written = batches_written + $3,
+                    events_written = events_written + $4,
+                    status = CASE WHEN $5::text IS NULL THEN 'running' ELSE 'degraded' END,
+                    last_error = COALESCE($5::text, last_error)
+                WHERE run_id = $1
+            """, self._source_run_id, success, batches_delta, events_delta, error)
+
+    async def _record_source_run_error(self, error: str) -> None:
+        await self._update_source_run(error=error)
+
+    async def _finish_source_run(self, status: str) -> None:
+        if self._source_run_id is None or self._db is None:
+            return
+        async with self._db.acquire() as conn:
+            await conn.execute("""
+                UPDATE source_runs
+                SET status = $2,
+                    last_heartbeat = NOW(),
+                    ended_at = NOW()
+                WHERE run_id = $1
+            """, self._source_run_id, status)
 
     def _events_for_track_history(self, events: list[dict]) -> list[dict]:
         return events

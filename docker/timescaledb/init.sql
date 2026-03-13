@@ -50,6 +50,37 @@ CREATE TABLE entity_identifiers (
 CREATE INDEX idx_entity_identifiers_entity
     ON entity_identifiers (entity_id, last_seen DESC);
 
+CREATE TABLE sources (
+    source_feed         TEXT            PRIMARY KEY,
+    source_domain       source_domain   NOT NULL,
+    provider            TEXT,
+    collector_name      TEXT,
+    default_trust_score DOUBLE PRECISION DEFAULT 0.7,
+    update_profile      JSONB           DEFAULT '{}'::jsonb,
+    metadata            JSONB           DEFAULT '{}'::jsonb,
+    created_at          TIMESTAMPTZ     DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ     DEFAULT NOW()
+);
+
+CREATE TABLE source_runs (
+    run_id              UUID            PRIMARY KEY,
+    source_feed         TEXT            NOT NULL REFERENCES sources(source_feed),
+    source_domain       source_domain   NOT NULL,
+    collector_name      TEXT            NOT NULL,
+    status              TEXT            NOT NULL DEFAULT 'starting',
+    started_at          TIMESTAMPTZ     DEFAULT NOW(),
+    last_heartbeat      TIMESTAMPTZ     DEFAULT NOW(),
+    last_success_at     TIMESTAMPTZ,
+    ended_at            TIMESTAMPTZ,
+    batches_written     INTEGER         DEFAULT 0,
+    events_written      INTEGER         DEFAULT 0,
+    last_error          TEXT,
+    metadata            JSONB           DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX idx_source_runs_feed_started
+    ON source_runs (source_feed, started_at DESC);
+
 -- ── Core track events table ───────────────────────────────────────
 -- Every position report / state update from every domain lands here.
 -- This is a TimescaleDB hypertable partitioned by timestamp.
