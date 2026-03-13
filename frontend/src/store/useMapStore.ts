@@ -63,7 +63,7 @@ export type LayerMap = Record<SourceDomain | 'Annotations', LayerState>
 const DEFAULT_LAYERS: LayerMap = {
   Air:         { visibility: 'hidden', opacity: 0.9 },
   Maritime:    { visibility: 'hidden', opacity: 0.9 },
-  Space:       { visibility: 'hidden', opacity: 0.8 },
+  Space:       { visibility: 'muted', opacity: 0.8 },
   GPS:         { visibility: 'hidden', opacity: 0.7 },
   Infra:       { visibility: 'hidden', opacity: 0.6 },
   Annotations: { visibility: 'hidden', opacity: 1.0 },
@@ -204,6 +204,12 @@ interface MapStore {
   // Space track duration selector
   spaceTrackDuration: '1h' | '24h' | 'orbit'
   setSpaceTrackDuration: (d: '1h' | '24h' | 'orbit') => void
+  spacePriorityOnly: boolean
+  toggleSpacePriorityOnly: () => void
+  expandedSpaceConstellations: Set<string>
+  toggleExpandedSpaceConstellation: (constellation: string) => void
+  watchedSpaceTrackIds: Set<string>
+  setWatchedSpaceTrackIds: (ids: Set<string>) => void
 
   // Orbital track points for selected Space asset (populated by App.tsx query)
   selectedOrbitPoints: Array<{ lon: number; lat: number; alt_km?: number; timestamp: number }>
@@ -434,6 +440,18 @@ export const useMapStore = create<MapStore>()(
     // ── Space track duration ─────────────────────────────────────
     spaceTrackDuration: '1h',
     setSpaceTrackDuration: (spaceTrackDuration) => set({ spaceTrackDuration }),
+    spacePriorityOnly: true,
+    toggleSpacePriorityOnly: () => set((s) => ({ spacePriorityOnly: !s.spacePriorityOnly })),
+    expandedSpaceConstellations: new Set<string>(),
+    toggleExpandedSpaceConstellation: (constellation) =>
+      set((s) => {
+        const next = new Set(s.expandedSpaceConstellations)
+        if (next.has(constellation)) next.delete(constellation)
+        else next.add(constellation)
+        return { expandedSpaceConstellations: next }
+      }),
+    watchedSpaceTrackIds: new Set<string>(),
+    setWatchedSpaceTrackIds: (ids) => set({ watchedSpaceTrackIds: ids }),
 
     // ── Orbital track points ─────────────────────────────────────
     selectedOrbitPoints: [],

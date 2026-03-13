@@ -34,6 +34,8 @@ const DOMAIN_COLORS: Record<string, string> = {
   Air: '#60a5fa', Maritime: '#22d3ee', Space: '#c084fc', GPS: '#f87171', Infra: '#f59e0b',
 }
 
+const DOMAIN_ORDER: SourceDomain[] = ['Air', 'Maritime', 'Space', 'GPS', 'Infra']
+
 const TRIAGE_LABEL: Record<AlertTriage, string> = {
   new:          'NEW',
   acknowledged: 'ACK',
@@ -205,6 +207,10 @@ export function AlertQueuePanel() {
     investigationContext,
     openInvestigation,
     layers,
+    liveAssets,
+    selectedTrackId,
+    selectedDomain,
+    setLayerEnabled,
   } = useMapStore()
 
   const [open, setOpen] = useState(true)
@@ -285,6 +291,39 @@ export function AlertQueuePanel() {
     ? allAlerts
     : allAlerts.filter((a) => a.triage === tab)
 
+  const injectDemoAlert = () => {
+    const selectedAsset = selectedTrackId && selectedDomain
+      ? liveAssets.get(`${selectedDomain}:${selectedTrackId}`)
+      : null
+
+    const fallbackAsset = Array.from(liveAssets.values()).find(
+      (asset) => layers[asset.source_domain as keyof typeof layers]?.visibility !== 'hidden'
+    ) ?? Array.from(liveAssets.values())[0]
+
+    const asset = selectedAsset ?? fallbackAsset
+    const fallbackDomain = DOMAIN_ORDER.find((candidate) => layers[candidate]?.visibility !== 'hidden') ?? 'Air'
+    const domain = asset?.source_domain ?? fallbackDomain
+    const trackId = asset?.track_id ?? 'DEMO-TRACK-001'
+    const nowIso = new Date().toISOString()
+    const suffix = Math.random().toString(36).slice(2, 7).toUpperCase()
+
+    // Demo alerts should always be visible in the queue, even if the fallback
+    // domain is currently hidden in the workspace.
+    setLayerEnabled(domain, true)
+    setTab('new')
+
+    addAlert({
+      alertId: `demo:${domain}:${trackId}:${suffix}`,
+      ruleId: 'demo-incident',
+      ruleName: asset
+        ? `Demo investigation alert · ${domain} track`
+        : 'Demo investigation alert · synthetic target',
+      trackId,
+      domain,
+      triggeredAt: nowIso,
+    })
+  }
+
   // ── Collapsed button ─────────────────────────────────────────
   if (!open) {
     return (
@@ -364,6 +403,23 @@ export function AlertQueuePanel() {
             INVESTIGATING
           </span>
         )}
+        <button
+          onClick={injectDemoAlert}
+          style={{
+            border: '1px solid rgba(96,165,250,0.30)',
+            background: 'rgba(59,130,246,0.12)',
+            color: '#93c5fd',
+            borderRadius: 8,
+            padding: '4px 8px',
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: '0.06em',
+            cursor: 'pointer',
+          }}
+          title="Create a synthetic alert to test the investigation workflow"
+        >
+          Demo Alert
+        </button>
         <button
           onClick={() => setOpen(false)}
           style={{

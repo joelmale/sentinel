@@ -45,6 +45,7 @@ function SentinelApp() {
     setSelectedTrackHistory,
     clearSelectedTrackHistory,
     spaceTrackDuration,
+    setWatchedSpaceTrackIds,
     setSelectedOrbitPoints,
     clearSelectedOrbitPoints,
     layers,
@@ -180,6 +181,20 @@ function SentinelApp() {
     staleTime: 30_000,
   })
 
+  const spaceWatchPriorityQuery = useQuery({
+    queryKey: ['space-watch-priority'],
+    queryFn: async (): Promise<SpaceWatchDashboardPayload> => {
+      const response = await fetch('/api/satellites/watchlist/status')
+      if (!response.ok) {
+        throw new Error(`space watch priority failed: ${response.status}`)
+      }
+      return response.json()
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+
   const domainStatusQuery = useQuery({
     queryKey: ['domain-status', domainDashboardOpen],
     enabled: Boolean(domainDashboardOpen),
@@ -263,6 +278,15 @@ function SentinelApp() {
     setSelectedOrbitPoints,
     clearSelectedOrbitPoints,
   ])
+
+  useEffect(() => {
+    const watchedIds = new Set(
+      (spaceWatchPriorityQuery.data?.items ?? [])
+        .filter((item) => item.enabled && item.norad_id != null)
+        .map((item) => String(item.norad_id))
+    )
+    setWatchedSpaceTrackIds(watchedIds)
+  }, [spaceWatchPriorityQuery.data, setWatchedSpaceTrackIds])
 
   // Route WebSocket messages into the shared store
   const handleWsMessage = useCallback((msg: WsMessage) => {

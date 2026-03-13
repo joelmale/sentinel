@@ -510,6 +510,10 @@ export function SourcePanel() {
     declutterMode,
     toggleDeclutterMode,
     setGroupExcludedTracks,
+    spacePriorityOnly,
+    toggleSpacePriorityOnly,
+    expandedSpaceConstellations,
+    toggleExpandedSpaceConstellation,
   } = useMapStore()
 
   // Which domains have their track list expanded
@@ -704,6 +708,17 @@ export function SourcePanel() {
     () => Object.values(groupFilters).reduce((total, values) => total + (values?.size ?? 0), 0),
     [groupFilters]
   )
+  const largeSpaceConstellations = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const asset of assetsByDomain.get('Space') ?? []) {
+      const constellation = getConstellation(asset.callsign)
+      counts.set(constellation, (counts.get(constellation) ?? 0) + 1)
+    }
+    return Array.from(counts.entries())
+      .filter(([, count]) => count >= 50)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+  }, [assetsByDomain])
 
   const toggleExpanded = (d: SourceDomain) => {
     setExpanded((prev) => {
@@ -1678,6 +1693,68 @@ export function SourcePanel() {
                 </div>
               )
             })}
+
+            <SectionLabel label="Space Rendering" />
+            <div style={{ padding: '8px 12px 10px', display: 'grid', gap: 10 }}>
+              <div style={summaryBlockStyle}>
+                <div style={summaryLabelStyle}>Priority set</div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <div style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.45 }}>
+                    Selected, alerted, watched, and search-matching satellites stay interactive.
+                  </div>
+                  <button
+                    onClick={toggleSpacePriorityOnly}
+                    style={{
+                      border: `1px solid ${spacePriorityOnly ? 'rgba(192,132,252,0.42)' : 'rgba(100,116,139,0.35)'}`,
+                      background: spacePriorityOnly ? 'rgba(168,85,247,0.16)' : 'rgba(30,41,59,0.55)',
+                      color: spacePriorityOnly ? '#d8b4fe' : '#cbd5e1',
+                      borderRadius: 999,
+                      padding: '6px 10px',
+                      fontSize: 10,
+                      fontWeight: 800,
+                      letterSpacing: '0.08em',
+                      textTransform: 'uppercase',
+                      cursor: 'pointer',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {spacePriorityOnly ? 'Priority only' : 'All individuals'}
+                  </button>
+                </div>
+              </div>
+              {largeSpaceConstellations.length > 0 && (
+                <div style={summaryBlockStyle}>
+                  <div style={summaryLabelStyle}>Expanded constellations</div>
+                  <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.45, marginBottom: 8 }}>
+                    Large constellations stay aggregated by default. Expand only when needed.
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {largeSpaceConstellations.map(([constellation, count]) => {
+                      const expanded = expandedSpaceConstellations.has(constellation)
+                      return (
+                        <button
+                          key={constellation}
+                          onClick={() => toggleExpandedSpaceConstellation(constellation)}
+                          style={{
+                            border: `1px solid ${expanded ? 'rgba(96,165,250,0.45)' : 'rgba(100,116,139,0.35)'}`,
+                            background: expanded ? 'rgba(59,130,246,0.16)' : 'rgba(15,23,42,0.52)',
+                            color: expanded ? '#bfdbfe' : '#cbd5e1',
+                            borderRadius: 999,
+                            padding: '4px 8px',
+                            fontSize: 10,
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                          title={`${expanded ? 'Collapse' : 'Expand'} ${constellation}`}
+                        >
+                          {constellation} · {count}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
 
             <SectionLabel label="Context Layers" />
 

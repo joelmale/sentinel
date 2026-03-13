@@ -36,7 +36,7 @@ import { _GlobeView as GlobeView } from '@deck.gl/core'
 import { ScatterplotLayer, PathLayer, TextLayer, GeoJsonLayer, BitmapLayer } from '@deck.gl/layers'
 import { TileLayer } from '@deck.gl/geo-layers'
 import type { MapViewState, Layer } from '@deck.gl/core'
-import Map from 'react-map-gl/maplibre'
+import MapLibreMap from 'react-map-gl/maplibre'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
 import { useMapStore } from '@/store/useMapStore'
@@ -101,8 +101,43 @@ interface MapCanvasProps {
 type HoverObject =
   | { kind: 'track'; item: TrackEventProperties }
   | { kind: 'disruption'; item: DisruptionEvent }
+  | { kind: 'spaceAggregate'; item: { constellation: string; count: number } }
   | { kind: 'underseaCable'; item: { name?: string; id?: string } }
   | { kind: 'landingPoint'; item: { name?: string; id?: string; lon?: number; lat?: number } }
+
+type SpaceAggregate = {
+  constellation: string
+  count: number
+  lon: number
+  lat: number
+}
+
+const LARGE_CONSTELLATION_THRESHOLD = 50
+
+function circularMeanLongitude(longitudes: number[]): number {
+  if (longitudes.length === 0) return 0
+  const { x, y } = longitudes.reduce(
+    (sum, lon) => {
+      const radians = (lon * Math.PI) / 180
+      sum.x += Math.cos(radians)
+      sum.y += Math.sin(radians)
+      return sum
+    },
+    { x: 0, y: 0 }
+  )
+  return (Math.atan2(y / longitudes.length, x / longitudes.length) * 180) / Math.PI
+}
+
+function buildSpaceAggregate(constellation: string, assets: TrackEventProperties[]): SpaceAggregate | null {
+  const valid = assets.filter((asset) => typeof asset.lon === 'number' && typeof asset.lat === 'number')
+  if (valid.length === 0) return null
+  return {
+    constellation,
+    count: valid.length,
+    lon: circularMeanLongitude(valid.map((asset) => asset.lon as number)),
+    lat: valid.reduce((sum, asset) => sum + (asset.lat as number), 0) / valid.length,
+  }
+}
 
 function clampZoom(nextZoom: number): number {
   return Math.max(1.5, Math.min(18, nextZoom))
@@ -148,6 +183,11 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     selectedLandingPoint,
     selectedTrackHistory,
     selectedOrbitPoints,
+    pendingAlerts,
+    investigationContext,
+    watchedSpaceTrackIds,
+    spacePriorityOnly,
+    expandedSpaceConstellations,
   } = useMapStore()
   const [hoverInfo, setHoverInfo] = useState<{ x: number; y: number; object: HoverObject } | null>(null)
   const [renderWarning, setRenderWarning] = useState<string | null>(null)
@@ -223,6 +263,28 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     }
     return set
   }, [visibleAssets, workspaceSearch])
+
+  const spacePriorityKeys = useMemo(() => {
+    const keys = new Set<string>()
+    if (selectedDomain === 'Space' && selectedTrackId) {
+      keys.add(`Space:${selectedTrackId}`)
+    }
+    if (investigationContext?.domain === 'Space') {
+      keys.add(`Space:${investigationContext.trackId}`)
+    }
+    for (const alert of pendingAlerts) {
+      if (alert.domain === 'Space') keys.add(`Space:${alert.trackId}`)
+    }
+    for (const watchedId of watchedSpaceTrackIds) {
+      keys.add(`Space:${watchedId}`)
+    }
+    if (searchMatchSet !== null) {
+      for (const key of searchMatchSet) {
+        if (key.startsWith('Space:')) keys.add(key)
+      }
+    }
+    return keys
+  }, [selectedDomain, selectedTrackId, investigationContext, pendingAlerts, watchedSpaceTrackIds, searchMatchSet])
 
   // Per-asset alpha helper: applies search-based declutter dimming
   const getAlpha = useCallback((d: TrackEventProperties, baseAlpha = 255): number => {
@@ -592,20 +654,108 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
 
     // ── Space / Satellites: live positions ───────────────────────
     if (layers.Space.visibility !== 'hidden') {
-      const selectedSpaceAsset = visibleAssets.find(
-        (a) =>
-          a.source_domain === 'Space' &&
-          a.track_id === selectedTrackId &&
-          selectedDomain === 'Space' &&
-          typeof a.lon === 'number' &&
-          typeof a.lat === 'number',
+      const spaceAssets = visibleAssets.filter(
+        (a) => a.source_domain === 'Space' && typeof a.lon === 'number' && typeof a.lat === 'number',
       )
 
+      const selectedSpaceAsset = spaceAssets.find(
+        (a) =>
+          a.track_id === selectedTrackId &&
+          selectedDomain === 'Space',
+      )
+
+      const prioritySpaceAssets = spaceAssets.filter((asset) => spacePriorityKeys.has(`Space:${asset.track_id}`))
+      const backgroundSpaceAssets = spaceAssets.filter((asset) => !spacePriorityKeys.has(`Space:${asset.track_id}`))
+
+      const groupedByConstellation = new Map<string, TrackEventProperties[]>()
+      for (const asset of backgroundSpaceAssets) {
+        const constellation = getConstellation(asset.callsign)
+        if (!groupedByConstellation.has(constellation)) groupedByConstellation.set(constellation, [])
+        groupedByConstellation.get(constellation)!.push(asset)
+      }
+
+      const aggregateSpaceData: SpaceAggregate[] = []
+      const expandedSpaceAssets: TrackEventProperties[] = []
+      const inlineBackgroundSpaceAssets: TrackEventProperties[] = []
+
+      for (const [constellation, assets] of groupedByConstellation.entries()) {
+        const isLargeConstellation = assets.length >= LARGE_CONSTELLATION_THRESHOLD
+        const isExpanded = expandedSpaceConstellations.has(constellation)
+
+        if (spacePriorityOnly || (isLargeConstellation && !isExpanded)) {
+          const aggregate = buildSpaceAggregate(constellation, assets)
+          if (aggregate) aggregateSpaceData.push(aggregate)
+          continue
+        }
+
+        if (isExpanded) expandedSpaceAssets.push(...assets)
+        else inlineBackgroundSpaceAssets.push(...assets)
+      }
+
+      if (aggregateSpaceData.length > 0) {
+        ls.push(new ScatterplotLayer<SpaceAggregate>({
+          id: 'space-aggregate-halos',
+          data: aggregateSpaceData,
+          getPosition: (d) => [d.lon, d.lat],
+          getRadius: (d) => Math.min(30, 10 + Math.sqrt(d.count) * 1.6),
+          radiusUnits: 'pixels',
+          stroked: true,
+          filled: true,
+          lineWidthUnits: 'pixels',
+          getLineWidth: 1.5,
+          getLineColor: [192, 132, 252, 180],
+          getFillColor: [88, 28, 135, 70],
+          pickable: true,
+          opacity: domainOpacity('Space') * 0.75,
+          onHover: ({ x, y, object }: { x: number; y: number; object?: SpaceAggregate }) =>
+            setHoverInfo(object ? { x, y, object: { kind: 'spaceAggregate', item: { constellation: object.constellation, count: object.count } } } : null),
+        }))
+
+        ls.push(new TextLayer<SpaceAggregate>({
+          id: 'space-aggregate-labels',
+          data: aggregateSpaceData,
+          getPosition: (d) => [d.lon, d.lat],
+          getText: (d) => d.constellation === 'Unknown' ? `${d.count}` : `${d.constellation} · ${d.count}`,
+          getColor: [233, 213, 255, 230],
+          getSize: 11,
+          sizeUnits: 'pixels',
+          getTextAnchor: 'middle',
+          getAlignmentBaseline: 'center',
+          characterSet: 'auto',
+          fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+          fontWeight: 700,
+          pickable: false,
+          opacity: domainOpacity('Space'),
+        }))
+      }
+
+      const nonPriorityVisibleIndividuals = [...inlineBackgroundSpaceAssets, ...expandedSpaceAssets]
+      if (!spacePriorityOnly && nonPriorityVisibleIndividuals.length > 0) {
+        ls.push(new TextLayer<TrackEventProperties>({
+          id: 'space-background-icons',
+          data: nonPriorityVisibleIndividuals,
+          getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
+          getText: () => '·',
+          getColor: [148, 163, 184, 95],
+          getSize: 14,
+          sizeUnits: 'pixels',
+          pickable: true,
+          opacity: domainOpacity('Space') * 0.5,
+          getTextAnchor: 'middle',
+          getAlignmentBaseline: 'center',
+          characterSet: 'auto',
+          fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+          fontSettings: { sdf: true, fontSize: 64 },
+          onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
+            setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
+          onClick: ({ object }) =>
+            object && selectAsset(object.track_id, object.source_domain),
+        }))
+      }
+
       ls.push(new TextLayer<TrackEventProperties>({
-        id: 'space-live-icons',
-        data: visibleAssets.filter(
-          (a) => a.source_domain === 'Space' && typeof a.lon === 'number' && typeof a.lat === 'number',
-        ),
+        id: 'space-priority-icons',
+        data: prioritySpaceAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
         getText: () => '🛰',
         getColor: (d: TrackEventProperties) => {
@@ -786,6 +936,9 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     selectedLandingPoint,
     selectedTrackHistory,
     selectedOrbitPoints,
+    spacePriorityOnly,
+    expandedSpaceConstellations,
+    spacePriorityKeys,
     hoverInfo,
     showTrails,
     showCocom,
@@ -887,7 +1040,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         >
           {/* MapLibre is only active in flat map modes — GlobeView uses TileLayer instead */}
           {!globeView && (
-            <Map
+            <MapLibreMap
               cursor={deckCursor}
               mapStyle={simpleMap ? SIMPLE_MAP_STYLE : MAP_STYLE}
               onLoad={(evt) => {
@@ -907,7 +1060,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         </DeckGL>
       ) : (
         <div className="absolute inset-0">
-          <Map
+          <MapLibreMap
             style={{ width: '100%', height: '100%' }}
             mapStyle={simpleMap ? SIMPLE_MAP_STYLE : MAP_STYLE}
           />
@@ -996,6 +1149,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
             ? (hoverInfo.object.item.callsign ?? hoverInfo.object.item.track_id)
             : hoverInfo.object.kind === 'disruption'
               ? (hoverInfo.object.item.title ?? hoverInfo.object.item.external_event_id)
+              : hoverInfo.object.kind === 'spaceAggregate'
+                ? `${hoverInfo.object.item.constellation} · ${hoverInfo.object.item.count}`
               : (hoverInfo.object.item.name ?? hoverInfo.object.item.id ?? 'Unnamed feature')}
         </div>
       )}
