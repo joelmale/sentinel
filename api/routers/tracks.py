@@ -14,6 +14,7 @@ import asyncio
 import csv
 import io
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -28,6 +29,25 @@ from models.track_event import SourceDomain
 
 router = APIRouter(tags=["Tracks"])
 logger = logging.getLogger(__name__)
+
+
+def _ensure_tz(dt: datetime | None) -> datetime | None:
+    """Guard against timezone-naive datetimes from some asyncpg configurations."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _sanitize_json_value(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _sanitize_json_value(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    return value
 
 
 @router.get("/tracks/domain-status", summary="Operational status summary for a domain")
@@ -110,14 +130,6 @@ async def get_domain_status(
         bincraft_meta = {row["source_feed"]: row for row in bc_result.mappings().all()}
     except Exception:
         logger.debug("[tracks.domain-status] bincraft metadata query failed for %s (non-critical)", domain.value)
-
-    def _ensure_tz(dt: datetime | None) -> datetime | None:
-        """Guard against timezone-naive datetimes from some asyncpg configurations."""
-        if dt is None:
-            return None
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt
 
     try:
         classification_counts: dict[str, int] = {}
@@ -405,9 +417,12 @@ async def get_live_assets(
 
     features = []
     for row in rows:
+        lon = row["lon"]
+        lat = row["lat"]
+        last_seen = _ensure_tz(row["last_seen"])
         geometry = None
-        if row["lon"] is not None and row["lat"] is not None:
-            geometry = {"type": "Point", "coordinates": [row["lon"], row["lat"]]}
+        if isinstance(lon, (int, float)) and isinstance(lat, (int, float)) and math.isfinite(lon) and math.isfinite(lat):
+            geometry = {"type": "Point", "coordinates": [lon, lat]}
         features.append({
             "type": "Feature",
             "geometry": geometry,
@@ -415,12 +430,12 @@ async def get_live_assets(
                 "source_domain": row["source_domain"],
                 "track_id": row["track_id"],
                 "callsign": row["callsign"],
-                "altitude_m": row["altitude_m"],
-                "heading_deg": row["heading_deg"],
-                "speed_mps": row["speed_mps"],
-                "last_seen": row["last_seen"].isoformat(),
+                "altitude_m": _sanitize_json_value(row["altitude_m"]),
+                "heading_deg": _sanitize_json_value(row["heading_deg"]),
+                "speed_mps": _sanitize_json_value(row["speed_mps"]),
+                "last_seen": last_seen.isoformat() if last_seen else None,
                 "classification": row["classification"],
-                **(row["metadata"] or {}),
+                **_sanitize_json_value(row["metadata"] or {}),
             },
         })
 

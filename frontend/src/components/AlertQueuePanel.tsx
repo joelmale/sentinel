@@ -20,6 +20,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useDrag } from '@/hooks/useDrag'
 import { useMapStore } from '@/store/useMapStore'
 import type { AlertItem, AlertTriage } from '@/store/useMapStore'
 import type { SourceDomain } from '@/types/track'
@@ -198,6 +199,41 @@ function Tab({
   )
 }
 
+function DragDots({ dragRef, isDragging }: { dragRef: React.Ref<HTMLDivElement>; isDragging: boolean }) {
+  return (
+    <div
+      ref={dragRef}
+      title="Drag to move panel"
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '1fr 1fr',
+        gap: '3px',
+        padding: '6px 8px',
+        cursor: isDragging ? 'grabbing' : 'grab',
+        flexShrink: 0,
+        borderRadius: 6,
+        background: 'transparent',
+        transition: 'background 0.15s',
+      }}
+      onMouseEnter={(e) => {
+        const handle = e.currentTarget as HTMLDivElement
+        handle.style.background = 'rgba(148,163,184,0.18)'
+      }}
+      onMouseLeave={(e) => {
+        const handle = e.currentTarget as HTMLDivElement
+        handle.style.background = 'transparent'
+      }}
+    >
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div
+          key={i}
+          style={{ width: 4, height: 4, borderRadius: '50%', background: '#64748b' }}
+        />
+      ))}
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────
 export function AlertQueuePanel() {
   const {
@@ -212,6 +248,9 @@ export function AlertQueuePanel() {
     selectedDomain,
     setLayerEnabled,
   } = useMapStore()
+  const { offset, dragHandleRef, isDragging } = useDrag({
+    storageKey: 'sentinel.alertQueuePosition',
+  })
 
   const [open, setOpen] = useState(true)
   const [tab, setTab] = useState<'all' | AlertTriage>('all')
@@ -331,6 +370,7 @@ export function AlertQueuePanel() {
         onClick={() => setOpen(true)}
         style={{
           position: 'fixed', bottom: 182, right: 12, zIndex: 25,
+          transform: `translate(${offset.x}px, ${offset.y}px)`,
           display: 'flex', alignItems: 'center', gap: 8,
           padding: '9px 14px', borderRadius: 12,
           background: counts.new > 0
@@ -360,6 +400,7 @@ export function AlertQueuePanel() {
   return (
     <div style={{
       position: 'fixed', bottom: 182, right: 12, zIndex: 25,
+      transform: `translate(${offset.x}px, ${offset.y}px)`,
       width: 340, maxHeight: 500,
       background: 'rgba(10, 15, 30, 0.97)',
       border: '1px solid rgba(255,255,255,0.08)',
@@ -378,6 +419,7 @@ export function AlertQueuePanel() {
         background: 'rgba(30,41,59,0.65)',
         flexShrink: 0,
       }}>
+        <DragDots dragRef={dragHandleRef} isDragging={isDragging} />
         <span style={{ fontSize: 14 }}>🚨</span>
         <span style={{
           fontSize: 11, fontWeight: 800, letterSpacing: '0.15em',

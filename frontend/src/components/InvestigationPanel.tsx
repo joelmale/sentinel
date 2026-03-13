@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { format } from 'date-fns'
+import { useDrag } from '@/hooks/useDrag'
 import { useMapStore } from '@/store/useMapStore'
 import type { DisruptionEvent, SourceDomain, TrackEventProperties } from '@/types/track'
 
@@ -68,6 +69,41 @@ function bboxAround(asset: TrackEventProperties, degrees: number): string | null
   return `${minLon},${minLat},${maxLon},${maxLat}`
 }
 
+function DragDots({ dragRef, isDragging }: { dragRef: React.Ref<HTMLDivElement>; isDragging: boolean }) {
+  return (
+    <div
+      ref={dragRef}
+      title="Drag to move panel"
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '1fr 1fr',
+        gap: '3px',
+        padding: '6px 8px',
+        cursor: isDragging ? 'grabbing' : 'grab',
+        flexShrink: 0,
+        borderRadius: 6,
+        background: 'transparent',
+        transition: 'background 0.15s',
+      }}
+      onMouseEnter={(e) => {
+        const handle = e.currentTarget as HTMLDivElement
+        handle.style.background = 'rgba(148,163,184,0.18)'
+      }}
+      onMouseLeave={(e) => {
+        const handle = e.currentTarget as HTMLDivElement
+        handle.style.background = 'transparent'
+      }}
+    >
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div
+          key={i}
+          style={{ width: 4, height: 4, borderRadius: '50%', background: '#64748b' }}
+        />
+      ))}
+    </div>
+  )
+}
+
 export function InvestigationPanel() {
   const {
     investigationContext,
@@ -83,6 +119,9 @@ export function InvestigationPanel() {
     selectAsset,
     flyTo,
   } = useMapStore()
+  const { offset, dragHandleRef, isDragging } = useDrag({
+    storageKey: 'sentinel.investigationPanelPosition',
+  })
 
   const [nearbyDisruptions, setNearbyDisruptions] = useState<DisruptionEvent[]>([])
   const [nearbyAnnotations, setNearbyAnnotations] = useState<AnnotationFeature[]>([])
@@ -213,6 +252,7 @@ export function InvestigationPanel() {
         position: 'fixed',
         top: 88,
         right: assetCardOpen ? 352 : 12,
+        transform: `translate(${offset.x}px, ${offset.y}px)`,
         width: 340,
         maxHeight: 'calc(100vh - 120px)',
         zIndex: 24,
@@ -237,6 +277,7 @@ export function InvestigationPanel() {
           borderBottom: '1px solid rgba(255,255,255,0.07)',
         }}
       >
+        <DragDots dragRef={dragHandleRef} isDragging={isDragging} />
         <span style={{ fontSize: 13 }}>Investigation</span>
         <span
           style={{
