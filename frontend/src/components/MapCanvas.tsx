@@ -222,15 +222,22 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
   const [renderWarning, setRenderWarning] = useState<string | null>(null)
   const [rendererDisabled, setRendererDisabled] = useState(false)
   const [cocomFailed, setCocomFailed] = useState(false)
+  const [localViewport, setLocalViewport] = useState(viewport)
   const faultHandledRef = useRef(false)
   const resizeFaultSeenRef = useRef(false)
+  const interactionActiveRef = useRef(false)
+
+  useEffect(() => {
+    if (interactionActiveRef.current) return
+    setLocalViewport(viewport)
+  }, [viewport])
 
   const viewState: MapViewState = {
-    longitude: viewport.longitude,
-    latitude:  viewport.latitude,
-    zoom:      viewport.zoom,
-    bearing:   viewport.bearing,
-    pitch:     viewport.pitch,
+    longitude: localViewport.longitude,
+    latitude:  localViewport.latitude,
+    zoom:      localViewport.zoom,
+    bearing:   localViewport.bearing,
+    pitch:     localViewport.pitch,
   }
 
   // Filter assets: hidden layers and filtered classifications are excluded entirely.
@@ -434,9 +441,9 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
 
     // ── Undersea cables ─────────────────────────────────────────
     if (showUnderseaCables) {
-      const landingPointRadius = Math.min(10, Math.max(3, viewport.zoom * 0.9))
+      const landingPointRadius = Math.min(10, Math.max(3, localViewport.zoom * 0.9))
       const landingPointPickRadius = Math.min(22, Math.max(10, landingPointRadius + 8))
-      const landingPointsInteractive = viewport.zoom >= LANDING_POINT_INTERACTIVE_ZOOM
+      const landingPointsInteractive = localViewport.zoom >= LANDING_POINT_INTERACTIVE_ZOOM
 
       ls.push(new GeoJsonLayer({
         id: 'undersea-cables',
@@ -1037,7 +1044,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     mapMode,
     declutterMode,
     searchMatchSet,
-    viewport.zoom,
+    localViewport.zoom,
   ])
 
   useEffect(() => {
@@ -1070,7 +1077,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     : 'grab'
 
   const scaleBar = useMemo(() => {
-    const metersPerPixel = 156543.03392 * Math.cos((viewport.latitude * Math.PI) / 180) / (2 ** viewport.zoom)
+    const metersPerPixel = 156543.03392 * Math.cos((localViewport.latitude * Math.PI) / 180) / (2 ** localViewport.zoom)
     const idealMeters = Math.max(1, metersPerPixel * 120)
     const distanceMeters = niceDistance(idealMeters)
     const widthPx = distanceMeters / metersPerPixel
@@ -1078,20 +1085,20 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       label: formatScaleDistance(distanceMeters),
       widthPx: Math.max(36, Math.min(160, widthPx)),
     }
-  }, [viewport.latitude, viewport.zoom])
+  }, [localViewport.latitude, localViewport.zoom])
 
   const zoomContext = useMemo(() => {
-    if (viewport.zoom < 2.5) return 'Global view'
-    if (viewport.zoom < LANDING_POINT_INTERACTIVE_ZOOM) {
+    if (localViewport.zoom < 2.5) return 'Global view'
+    if (localViewport.zoom < LANDING_POINT_INTERACTIVE_ZOOM) {
       return showUnderseaCables ? `Regional view · zoom to ${LANDING_POINT_INTERACTIVE_ZOOM}+ for landing points` : 'Regional view'
     }
-    if (viewport.zoom < 7) {
+    if (localViewport.zoom < 7) {
       return showUnderseaCables ? 'Infrastructure selection enabled' : 'Operational view'
     }
     return 'Local detail view'
-  }, [showUnderseaCables, viewport.zoom])
+  }, [showUnderseaCables, localViewport.zoom])
 
-  const compassVisible = globeView || Math.abs(viewport.bearing) > 0.5 || Math.abs(viewport.pitch) > 0.5
+  const compassVisible = globeView || Math.abs(localViewport.bearing) > 0.5 || Math.abs(localViewport.pitch) > 0.5
 
   return (
     <div
@@ -1108,9 +1115,21 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           views={globeView ? new GlobeView({ id: 'globe' }) : undefined}
           viewState={viewState}
           useDevicePixels={1}
-          onViewStateChange={({ viewState: vs }) =>
-            setViewport(vs as unknown as typeof viewport)
-          }
+          onViewStateChange={({ viewState: vs, interactionState }) => {
+            const nextViewport = vs as unknown as typeof viewport
+            setLocalViewport(nextViewport)
+
+            const interacting = Boolean(
+              interactionState?.isDragging ||
+              interactionState?.isZooming ||
+              interactionState?.isPanning ||
+              interactionState?.isRotating,
+            )
+            interactionActiveRef.current = interacting
+            if (!interacting) {
+              setViewport(nextViewport)
+            }
+          }}
           getCursor={({ isDragging }) => (isDragging ? 'grabbing' : deckCursor)}
           controller={true}
           layers={deckLayerBuild.layers}
@@ -1184,13 +1203,17 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         }}
       >
         <div style={mapChromeOverlayStyle}>
-          <div style={zoomReadoutStyle}>Zoom {viewport.zoom.toFixed(1)}</div>
+          <div style={zoomReadoutStyle}>Zoom {localViewport.zoom.toFixed(1)}</div>
           <div style={zoomContextStyle}>{zoomContext}</div>
           <div style={zoomButtonsRowStyle}>
             <button
               type="button"
               style={mapButtonStyle}
-              onClick={() => setViewport({ zoom: clampZoom(viewport.zoom + 0.8) })}
+              onClick={() => {
+                const next = { ...localViewport, zoom: clampZoom(localViewport.zoom + 0.8) }
+                setLocalViewport(next)
+                setViewport(next)
+              }}
               aria-label="Zoom in"
             >
               +
@@ -1198,7 +1221,11 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
             <button
               type="button"
               style={mapButtonStyle}
-              onClick={() => setViewport({ zoom: clampZoom(viewport.zoom - 0.8) })}
+              onClick={() => {
+                const next = { ...localViewport, zoom: clampZoom(localViewport.zoom - 0.8) }
+                setLocalViewport(next)
+                setViewport(next)
+              }}
               aria-label="Zoom out"
             >
               -
@@ -1206,8 +1233,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           </div>
         </div>
         {showUnderseaCables && (
-          <div style={thresholdBadgeStyle(viewport.zoom >= LANDING_POINT_INTERACTIVE_ZOOM)}>
-            {viewport.zoom >= LANDING_POINT_INTERACTIVE_ZOOM
+          <div style={thresholdBadgeStyle(localViewport.zoom >= LANDING_POINT_INTERACTIVE_ZOOM)}>
+            {localViewport.zoom >= LANDING_POINT_INTERACTIVE_ZOOM
               ? 'Landing points selectable'
               : `Zoom to ${LANDING_POINT_INTERACTIVE_ZOOM}+ to select landing points`}
           </div>
@@ -1216,7 +1243,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           <button
             type="button"
             style={mapActionStyle}
-            onClick={() => setViewport(UNDERSEA_NETWORK_FOCUS_VIEW)}
+            onClick={() => {
+              setLocalViewport(UNDERSEA_NETWORK_FOCUS_VIEW)
+              setViewport(UNDERSEA_NETWORK_FOCUS_VIEW)
+            }}
           >
             Focus undersea network
           </button>
@@ -1229,13 +1259,17 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           <button
             type="button"
             style={compassStyle}
-            onClick={() => setViewport({ bearing: 0, pitch: 0 })}
+            onClick={() => {
+              const next = { ...localViewport, bearing: 0, pitch: 0 }
+              setLocalViewport(next)
+              setViewport(next)
+            }}
             title="Reset map bearing and pitch"
           >
             <span
               style={{
                 ...compassNeedleStyle,
-                transform: `rotate(${-viewport.bearing}deg)`,
+                transform: `rotate(${-localViewport.bearing}deg)`,
               }}
             >
               ↑

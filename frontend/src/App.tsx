@@ -59,11 +59,19 @@ function SentinelApp() {
   const [domainDashboardOpen, setDomainDashboardOpen] = useState<'Air' | 'Maritime' | null>(null)
   const [disruptionDashboardOpen, setDisruptionDashboardOpen] = useState<'GPS' | 'Infra' | null>(null)
   const settingsRef = useRef<HTMLDivElement | null>(null)
+  const wsBatchRef = useRef<TrackEventProperties[]>([])
+  const wsFrameRef = useRef<number | null>(null)
   const { mapMode, setMapMode, showTrails, toggleShowTrails, globeView, toggleGlobeView } = useMapStore()
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000)
     return () => clearInterval(id)
+  }, [])
+
+  useEffect(() => () => {
+    if (wsFrameRef.current !== null) {
+      cancelAnimationFrame(wsFrameRef.current)
+    }
   }, [])
 
   useEffect(() => {
@@ -266,10 +274,28 @@ function SentinelApp() {
     setWatchedSpaceTrackIds(watchedIds)
   }, [spaceWatchPriorityQuery.data, setWatchedSpaceTrackIds])
 
+  const flushWsBatch = useCallback(() => {
+    wsFrameRef.current = null
+    if (wsBatchRef.current.length === 0) return
+
+    const latestByKey = new Map<string, TrackEventProperties>()
+    for (const event of wsBatchRef.current) {
+      latestByKey.set(`${event.source_domain}:${event.track_id}`, event)
+    }
+    wsBatchRef.current = []
+    upsertAssets(Array.from(latestByKey.values()))
+  }, [upsertAssets])
+
+  const scheduleWsFlush = useCallback(() => {
+    if (wsFrameRef.current !== null) return
+    wsFrameRef.current = requestAnimationFrame(flushWsBatch)
+  }, [flushWsBatch])
+
   // Route WebSocket messages into the shared store
   const handleWsMessage = useCallback((msg: WsMessage) => {
     if (msg.type === 'track_events') {
-      upsertAssets(msg.events)
+      wsBatchRef.current.push(...msg.events)
+      scheduleWsFlush()
     } else if (msg.type === 'alert') {
       addAlert({
         alertId: msg.rule_id + ':' + msg.track_id,
@@ -280,7 +306,7 @@ function SentinelApp() {
         triggeredAt: new Date().toISOString(),
       })
     }
-  }, [upsertAssets, addAlert])
+  }, [addAlert, scheduleWsFlush])
 
   // Live stream only active in live mode
   useLiveStream({
