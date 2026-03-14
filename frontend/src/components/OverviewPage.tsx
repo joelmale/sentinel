@@ -59,6 +59,7 @@ export function OverviewPage({
   const topMovers = dashboard?.activity.top_movers ?? []
   const topAois = dashboard?.activity.top_aois ?? []
   const resumeSession = dashboard?.activity.resume_session
+  const sectionMeta = dashboard?.meta ?? {}
 
   return (
     <div
@@ -122,6 +123,8 @@ export function OverviewPage({
             <div style={messageCardStyle}>
               Overview unavailable on this backend: {unsupportedReason}. You can still open the map or analyst browser.
             </div>
+          ) : sectionMeta.summary?.status === 'failed' ? (
+            <div style={messageCardStyle}>Domain summary unavailable: {sectionMeta.summary.error ?? 'query failed'}</div>
           ) : loading ? (
             <div style={messageCardStyle}>Loading domain overview…</div>
           ) : error ? (
@@ -182,6 +185,8 @@ export function OverviewPage({
             <div style={panelShellStyle}>
               {unsupportedReason ? (
                 <div style={emptyPanelStyle}>Priority queue unavailable until overview support is enabled on the API.</div>
+              ) : sectionMeta.alerts?.status === 'failed' ? (
+                <div style={emptyPanelStyle}>Priority queue unavailable: {sectionMeta.alerts.error ?? 'query failed'}</div>
               ) : loading ? (
                 <div style={messageCardStyle}>Loading alerts…</div>
               ) : priorityItems.length === 0 ? (
@@ -233,6 +238,8 @@ export function OverviewPage({
                   <div style={subsectionLabelStyle}>Source Health</div>
                   {unsupportedReason ? (
                     <div style={emptyPanelStyle}>Operational status unavailable until overview support is enabled on the API.</div>
+                  ) : sectionMeta.ops?.status === 'failed' ? (
+                    <div style={emptyPanelStyle}>Operational status unavailable: {sectionMeta.ops.error ?? 'query failed'}</div>
                   ) : sourceHealth.length === 0 ? (
                     <div style={emptyPanelStyle}>No source health data returned.</div>
                   ) : (
@@ -284,6 +291,8 @@ export function OverviewPage({
               <div style={{ display: 'grid', gap: 10 }}>
                 {unsupportedReason ? (
                   <div style={emptyPanelStyle}>Activity pivots unavailable until overview support is enabled on the API.</div>
+                ) : sectionMeta.activity?.status === 'failed' ? (
+                  <div style={emptyPanelStyle}>Activity pivots unavailable: {sectionMeta.activity.error ?? 'query failed'}</div>
                 ) : activity.length === 0 ? (
                   <div style={emptyPanelStyle}>No recent activity buckets available.</div>
                 ) : (
@@ -314,6 +323,8 @@ export function OverviewPage({
               <div style={subsectionLabelStyle}>Top Movers</div>
               {unsupportedReason ? (
                 <div style={emptyPanelStyle}>Top movers unavailable until overview support is enabled on the API.</div>
+              ) : sectionMeta.activity?.status === 'failed' ? (
+                <div style={emptyPanelStyle}>Top movers unavailable because pivot queries failed.</div>
               ) : topMovers.length === 0 ? (
                 <div style={emptyPanelStyle}>No domain movers returned.</div>
               ) : (
@@ -337,6 +348,8 @@ export function OverviewPage({
               <div style={subsectionLabelStyle}>Top AOIs</div>
               {unsupportedReason ? (
                 <div style={emptyPanelStyle}>AOI pivots unavailable until overview support is enabled on the API.</div>
+              ) : sectionMeta.activity?.status === 'failed' ? (
+                <div style={emptyPanelStyle}>AOI pivots unavailable because pivot queries failed.</div>
               ) : topAois.length === 0 ? (
                 <div style={emptyPanelStyle}>No active AOIs are currently persisted.</div>
               ) : (
@@ -360,6 +373,8 @@ export function OverviewPage({
               <div style={subsectionLabelStyle}>Resume Session</div>
               {unsupportedReason ? (
                 <div style={emptyPanelStyle}>Resume session unavailable until overview support is enabled on the API.</div>
+              ) : sectionMeta.activity?.status === 'failed' ? (
+                <div style={emptyPanelStyle}>Resume session unavailable because pivot queries failed.</div>
               ) : resumeSession ? (
                 <div style={{ display: 'grid', gap: 10 }}>
                   <div>

@@ -11,7 +11,7 @@ This file tracks the overview-hardening work block. Implementation stops after P
 - [x] Phase 3: Precomputed domain summary source
 - [x] Phase 4: Real alert queue semantics
 - [x] Phase 5: Trustworthy ops panel data
-- [ ] Phase 6: Section-level failure reporting and panel isolation
+- [x] Phase 6: Section-level failure reporting and panel isolation
 - [ ] Phase 7: Fast pivots real vs deferred
 - [ ] Phase 8: Overview-specific perf instrumentation
 - [ ] Phase 9: Explicit multi-worker cache strategy
@@ -130,4 +130,9 @@ Completed work:
 - Switched the landing summary strip to show the real client websocket state from frontend perf state.
 
 ### Phase 6
-Status: Pending
+Status: Completed
+
+Completed work:
+- Added per-section overview status/error metadata for summary, alerts, ops, and pivots.
+- Updated overview rendering to degrade panel-by-panel when a section fails.
+- Kept unsupported-backend fallback separate from query-level section failures.

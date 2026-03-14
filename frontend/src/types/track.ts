@@ -228,6 +228,7 @@ export interface OverviewDashboardResponse {
   alerts: OverviewAlertsResponse
   ops: OverviewOpsResponse
   activity: OverviewActivityResponse
+  meta: OverviewSectionMetaMap
 }
 
 export interface OverviewCoreResponse {
@@ -235,10 +236,24 @@ export interface OverviewCoreResponse {
   summary: OverviewSummaryResponse
   alerts: OverviewAlertsResponse
   ops: OverviewOpsResponse
+  meta: OverviewSectionMetaMap
 }
 
 export interface OverviewPivotsResponse {
   activity: OverviewActivityResponse
+  meta: OverviewSectionMetaMap
+}
+
+export interface OverviewSectionMeta {
+  status: 'ok' | 'degraded' | 'failed'
+  error: string | null
+}
+
+export interface OverviewSectionMetaMap {
+  summary?: OverviewSectionMeta
+  alerts?: OverviewSectionMeta
+  ops?: OverviewSectionMeta
+  activity?: OverviewSectionMeta
 }
 
 export interface HealthResponse {

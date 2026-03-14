@@ -618,7 +618,14 @@ function SentinelApp() {
   const totalTracked = uiGlobalSummary?.total ?? globalSummary?.total ?? 0
   const staleTracked = uiGlobalSummary?.stale_total ?? globalSummary?.stale_total ?? 0
   const overviewDashboard: OverviewDashboardResponse | undefined = overviewCoreQuery.data
-    ? { ...overviewCoreQuery.data, ...(overviewPivotsQuery.data ?? { activity: undefined }) } as OverviewDashboardResponse
+    ? {
+      ...overviewCoreQuery.data,
+      ...(overviewPivotsQuery.data ?? { activity: undefined, meta: {} }),
+      meta: {
+        ...(overviewCoreQuery.data.meta ?? {}),
+        ...(overviewPivotsQuery.data?.meta ?? {}),
+      },
+    } as OverviewDashboardResponse
     : undefined
   const overviewCounts = Object.fromEntries(
     (overviewDashboard?.summary.domains ?? []).map((domain) => [domain.domain, domain.live_count])

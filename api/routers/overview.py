@@ -85,6 +85,11 @@ def _empty_core(now: datetime) -> dict[str, Any]:
         "summary": dashboard["summary"],
         "alerts": dashboard["alerts"],
         "ops": dashboard["ops"],
+        "meta": {
+            "summary": {"status": "ok", "error": None},
+            "alerts": {"status": "ok", "error": None},
+            "ops": {"status": "ok", "error": None},
+        },
     }
 
 
@@ -92,6 +97,9 @@ def _empty_pivots(now: datetime) -> dict[str, Any]:
     dashboard = _empty_dashboard(now)
     return {
         "activity": dashboard["activity"],
+        "meta": {
+            "activity": {"status": "ok", "error": None},
+        },
     }
 
 
@@ -275,24 +283,31 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
 
     try:
         summary_rows = (await db.execute(summary_sql)).mappings().all()
-    except Exception:
+    except Exception as exc:
         summary_rows = []
+        core["meta"]["summary"] = {"status": "failed", "error": str(exc)}
     try:
         alert_rows = (await db.execute(alerts_sql)).mappings().all()
-    except Exception:
+    except Exception as exc:
         alert_rows = []
+        core["meta"]["alerts"] = {"status": "failed", "error": str(exc)}
     try:
         ops_rows = (await db.execute(ops_sql)).mappings().all()
-    except Exception:
+    except Exception as exc:
         ops_rows = []
+        core["meta"]["ops"] = {"status": "failed", "error": str(exc)}
     try:
         watchlist_row = (await db.execute(watchlist_sql)).mappings().first()
-    except Exception:
+    except Exception as exc:
         watchlist_row = None
+        if core["meta"]["ops"]["status"] == "ok":
+            core["meta"]["ops"] = {"status": "degraded", "error": str(exc)}
     try:
         disruption_rows = (await db.execute(disruptions_sql)).mappings().all()
-    except Exception:
+    except Exception as exc:
         disruption_rows = []
+        if core["meta"]["ops"]["status"] == "ok":
+            core["meta"]["ops"] = {"status": "degraded", "error": str(exc)}
 
     domains: list[dict[str, Any]] = []
     for row in summary_rows:
@@ -450,12 +465,15 @@ async def _load_pivots(db: AsyncSession, now: datetime) -> dict[str, Any]:
 
     try:
         activity_rows = (await db.execute(activity_sql)).mappings().all()
-    except Exception:
+    except Exception as exc:
         activity_rows = []
+        pivots["meta"]["activity"] = {"status": "failed", "error": str(exc)}
     try:
         mover_rows = (await db.execute(movers_sql)).mappings().all()
-    except Exception:
+    except Exception as exc:
         mover_rows = []
+        if pivots["meta"]["activity"]["status"] == "ok":
+            pivots["meta"]["activity"] = {"status": "degraded", "error": str(exc)}
 
     activity_by_domain: dict[str, list[dict[str, Any]]] = {domain.value: [] for domain in SourceDomain}
     for row in activity_rows:
