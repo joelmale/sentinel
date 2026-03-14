@@ -10,7 +10,15 @@ router = APIRouter(tags=["Health"])
 
 @router.get("/health", summary="Liveness check")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "version": "0.1.0",
+        "capabilities": {
+            "overview_dashboard": True,
+            "overview_core": True,
+            "overview_pivots": True,
+        },
+    }
 
 
 @router.get("/health/ready", summary="Readiness check — verifies DB + Redis")

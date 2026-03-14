@@ -34,6 +34,7 @@ import { useMapStore } from '@/store/useMapStore'
 import { usePerfStore } from '@/store/usePerfStore'
 import type {
   DisruptionEventResponse,
+  HealthResponse,
   LiveSummaryResponse,
   OverviewAlertItem,
   OverviewDashboardResponse,
@@ -162,6 +163,22 @@ function SentinelApp() {
     }
   }, [])
 
+  const healthQuery = useQuery({
+    queryKey: ['health-capabilities'],
+    enabled: workspaceView === 'overview',
+    queryFn: async (): Promise<HealthResponse> => {
+      return trackedFetchJson<HealthResponse>('health-capabilities', '/health')
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
+    retry: false,
+  })
+
+  const overviewCapability = healthQuery.data?.capabilities?.overview_dashboard === true
+  const overviewUnsupportedReason = workspaceView === 'overview' && healthQuery.isSuccess && !overviewCapability
+    ? 'backend does not advertise overview routes yet'
+    : null
+
   const liveSummaryQuery = useQuery({
     queryKey: ['live-assets-summary'],
     enabled: workspaceView !== 'overview',
@@ -245,7 +262,7 @@ function SentinelApp() {
 
   const overviewDashboardQuery = useQuery({
     queryKey: ['overview-dashboard'],
-    enabled: workspaceView === 'overview',
+    enabled: workspaceView === 'overview' && overviewCapability,
     queryFn: async (): Promise<OverviewDashboardResponse> => {
       return trackedFetchJson<OverviewDashboardResponse>('overview-dashboard', '/api/overview/dashboard')
     },
@@ -883,8 +900,9 @@ function SentinelApp() {
       {workspaceView === 'overview' ? (
         <OverviewPage
           dashboard={overviewDashboardQuery.data}
-          loading={overviewDashboardQuery.isLoading}
+          loading={healthQuery.isLoading || overviewDashboardQuery.isLoading}
           error={overviewDashboardQuery.error instanceof Error ? overviewDashboardQuery.error.message : null}
+          unsupportedReason={overviewUnsupportedReason}
           onOpenMap={() => setWorkspaceView('map')}
           onOpenTable={() => setWorkspaceView('table')}
           onOpenDomainMap={(domain) => openScopedMap(domain)}

@@ -229,6 +229,16 @@ export interface OverviewDashboardResponse {
   activity: OverviewActivityResponse
 }
 
+export interface HealthResponse {
+  status: string
+  version?: string
+  capabilities?: {
+    overview_dashboard?: boolean
+    overview_core?: boolean
+    overview_pivots?: boolean
+  }
+}
+
 export type SatelliteFieldStatus = 'authoritative' | 'inferred' | 'derived' | 'curated' | 'missing'
 export type SatelliteEnrichmentConfidence = 'high' | 'medium' | 'low'
 

@@ -21,6 +21,7 @@ type OverviewPageProps = {
   dashboard: OverviewDashboardResponse | undefined
   loading: boolean
   error: string | null
+  unsupportedReason?: string | null
   onOpenMap: () => void
   onOpenTable: () => void
   onOpenDomainMap: (domain: SourceDomain) => void
@@ -34,6 +35,7 @@ export function OverviewPage({
   dashboard,
   loading,
   error,
+  unsupportedReason,
   onOpenMap,
   onOpenTable,
   onOpenDomainMap,
@@ -112,7 +114,11 @@ export function OverviewPage({
 
         <section style={{ display: 'grid', gap: 12 }}>
           <div style={sectionLabelStyle}>Domain Summary</div>
-          {loading ? (
+          {unsupportedReason ? (
+            <div style={messageCardStyle}>
+              Overview unavailable on this backend: {unsupportedReason}. You can still open the map or analyst browser.
+            </div>
+          ) : loading ? (
             <div style={messageCardStyle}>Loading domain overview…</div>
           ) : error ? (
             <div style={messageCardStyle}>Overview unavailable: {error}</div>
@@ -170,7 +176,9 @@ export function OverviewPage({
           <div style={{ display: 'grid', gap: 12 }}>
             <div style={sectionLabelStyle}>Priority Queue</div>
             <div style={panelShellStyle}>
-              {loading ? (
+              {unsupportedReason ? (
+                <div style={emptyPanelStyle}>Priority queue unavailable until overview support is enabled on the API.</div>
+              ) : loading ? (
                 <div style={messageCardStyle}>Loading alerts…</div>
               ) : priorityItems.length === 0 ? (
                 <div style={emptyPanelStyle}>No active alerts in the current operational window.</div>
@@ -215,7 +223,9 @@ export function OverviewPage({
               <div style={{ display: 'grid', gap: 16 }}>
                 <section style={{ display: 'grid', gap: 8 }}>
                   <div style={subsectionLabelStyle}>Source Health</div>
-                  {sourceHealth.length === 0 ? (
+                  {unsupportedReason ? (
+                    <div style={emptyPanelStyle}>Operational status unavailable until overview support is enabled on the API.</div>
+                  ) : sourceHealth.length === 0 ? (
                     <div style={emptyPanelStyle}>No source health data returned.</div>
                   ) : (
                     <div style={scrollListStyle}>
@@ -263,7 +273,9 @@ export function OverviewPage({
             <article style={pivotCardStyle}>
               <div style={subsectionLabelStyle}>Activity</div>
               <div style={{ display: 'grid', gap: 10 }}>
-                {activity.length === 0 ? (
+                {unsupportedReason ? (
+                  <div style={emptyPanelStyle}>Activity pivots unavailable until overview support is enabled on the API.</div>
+                ) : activity.length === 0 ? (
                   <div style={emptyPanelStyle}>No recent activity buckets available.</div>
                 ) : (
                   activity.map((series) => (
@@ -291,7 +303,9 @@ export function OverviewPage({
 
             <article style={pivotCardStyle}>
               <div style={subsectionLabelStyle}>Top Movers</div>
-              {topMovers.length === 0 ? (
+              {unsupportedReason ? (
+                <div style={emptyPanelStyle}>Top movers unavailable until overview support is enabled on the API.</div>
+              ) : topMovers.length === 0 ? (
                 <div style={emptyPanelStyle}>No domain movers returned.</div>
               ) : (
                 <div style={scrollListStyle}>
@@ -312,7 +326,9 @@ export function OverviewPage({
 
             <article style={pivotCardStyle}>
               <div style={subsectionLabelStyle}>Top AOIs</div>
-              {topAois.length === 0 ? (
+              {unsupportedReason ? (
+                <div style={emptyPanelStyle}>AOI pivots unavailable until overview support is enabled on the API.</div>
+              ) : topAois.length === 0 ? (
                 <div style={emptyPanelStyle}>No active AOIs are currently persisted.</div>
               ) : (
                 <div style={scrollListStyle}>
@@ -333,7 +349,9 @@ export function OverviewPage({
 
             <article style={pivotCardStyle}>
               <div style={subsectionLabelStyle}>Resume Session</div>
-              {resumeSession ? (
+              {unsupportedReason ? (
+                <div style={emptyPanelStyle}>Resume session unavailable until overview support is enabled on the API.</div>
+              ) : resumeSession ? (
                 <div style={{ display: 'grid', gap: 10 }}>
                   <div>
                     <div style={statusTitleStyle}>{resumeSession.title}</div>
