@@ -10,7 +10,7 @@ This file tracks the overview-hardening work block. Implementation stops after P
 - [x] Phase 2: Split overview core vs pivots
 - [x] Phase 3: Precomputed domain summary source
 - [x] Phase 4: Real alert queue semantics
-- [ ] Phase 5: Trustworthy ops panel data
+- [x] Phase 5: Trustworthy ops panel data
 - [ ] Phase 6: Section-level failure reporting and panel isolation
 - [ ] Phase 7: Fast pivots real vs deferred
 - [ ] Phase 8: Overview-specific perf instrumentation
@@ -122,7 +122,12 @@ Completed work:
 - Limited `Investigate` actions to alerts that actually have a usable track target.
 
 ### Phase 5
-Status: Pending
+Status: Completed
+
+Completed work:
+- Added recent source run error-rate calculations to overview ops data.
+- Updated overview ops rendering to show recent error rates when available.
+- Switched the landing summary strip to show the real client websocket state from frontend perf state.
 
 ### Phase 6
 Status: Pending

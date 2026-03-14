@@ -22,6 +22,8 @@ type OverviewPageProps = {
   loading: boolean
   error: string | null
   unsupportedReason?: string | null
+  clientWsConnected: boolean
+  clientReconnects: number
   onOpenMap: () => void
   onOpenTable: () => void
   onOpenDomainMap: (domain: SourceDomain) => void
@@ -36,6 +38,8 @@ export function OverviewPage({
   loading,
   error,
   unsupportedReason,
+  clientWsConnected,
+  clientReconnects,
   onOpenMap,
   onOpenTable,
   onOpenDomainMap,
@@ -106,9 +110,9 @@ export function OverviewPage({
             </span>
           </div>
           <div style={summaryStatStyle}>
-            <span style={summaryStatLabelStyle}>Landing Mode</span>
-            <span style={summaryStatValueStyle}>Overview</span>
-            <span style={summaryStatMetaStyle}>Summary-first cold start</span>
+            <span style={summaryStatLabelStyle}>Client Stream</span>
+            <span style={summaryStatValueStyle}>{clientWsConnected ? 'Live' : 'Offline'}</span>
+            <span style={summaryStatMetaStyle}>{clientReconnects} reconnects</span>
           </div>
         </section>
 
@@ -239,6 +243,7 @@ export function OverviewPage({
                             <span style={statusTitleStyle}>{item.source_feed}</span>
                             <span style={miniMetaStyle}>
                               {item.domain} · {item.lag_minutes != null ? `${Math.round(item.lag_minutes)} min lag` : 'No lag telemetry'}
+                              {item.error_rate != null ? ` · ${Math.round(item.error_rate * 100)}% errors` : ''}
                             </span>
                           </div>
                           <span style={healthBadgeStyle(item.health)}>{item.health}</span>

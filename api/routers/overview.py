@@ -206,31 +206,50 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
             FROM sources s
             LEFT JOIN source_runs sr ON sr.source_feed = s.source_feed
             ORDER BY s.source_feed, sr.started_at DESC
+        ),
+        recent_run_stats AS (
+            SELECT
+                source_feed,
+                COUNT(*) AS run_count,
+                AVG(CASE WHEN status IN ('failed', 'error') THEN 1.0 ELSE 0.0 END) AS error_rate
+            FROM (
+                SELECT
+                    source_feed,
+                    status,
+                    ROW_NUMBER() OVER (PARTITION BY source_feed ORDER BY started_at DESC) AS rn
+                FROM source_runs
+            ) ranked
+            WHERE rn <= 20
+            GROUP BY source_feed
         )
         SELECT
-            source_feed,
-            source_domain,
+            lr.source_feed,
+            lr.source_domain,
             CASE
-                WHEN status IS NULL THEN 'down'
-                WHEN status <> 'running' THEN 'degraded'
-                WHEN last_success_at IS NULL THEN 'stale'
-                WHEN last_success_at < NOW() - INTERVAL '15 minutes' THEN 'stale'
+                WHEN lr.status IS NULL THEN 'down'
+                WHEN lr.last_success_at IS NULL THEN 'stale'
+                WHEN lr.last_success_at < NOW() - INTERVAL '15 minutes' THEN 'stale'
+                WHEN COALESCE(rrs.error_rate, 0) >= 0.5 THEN 'degraded'
+                WHEN lr.status <> 'running' THEN 'degraded'
                 ELSE 'healthy'
             END AS health,
-            lag_minutes,
-            last_success_at,
-            last_error
-        FROM latest_runs
+            lr.lag_minutes,
+            lr.last_success_at,
+            lr.last_error,
+            rrs.error_rate
+        FROM latest_runs lr
+        LEFT JOIN recent_run_stats rrs ON rrs.source_feed = lr.source_feed
         ORDER BY
             CASE
-                WHEN status IS NULL THEN 0
-                WHEN status <> 'running' THEN 1
-                WHEN last_success_at IS NULL THEN 2
-                WHEN last_success_at < NOW() - INTERVAL '15 minutes' THEN 3
+                WHEN lr.status IS NULL THEN 0
+                WHEN lr.last_success_at IS NULL THEN 1
+                WHEN lr.last_success_at < NOW() - INTERVAL '15 minutes' THEN 2
+                WHEN COALESCE(rrs.error_rate, 0) >= 0.5 THEN 3
+                WHEN lr.status <> 'running' THEN 4
                 ELSE 4
             END,
-            lag_minutes DESC NULLS LAST,
-            source_feed
+            lr.lag_minutes DESC NULLS LAST,
+            lr.source_feed
         LIMIT 10
     """)
     watchlist_sql = text("""
@@ -354,7 +373,7 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
         "health": row["health"],
         "lag_minutes": round(float(row["lag_minutes"]), 1) if row["lag_minutes"] is not None else None,
         "last_success_at": _iso_or_none(row["last_success_at"]),
-        "error_rate": None,
+        "error_rate": round(float(row["error_rate"]), 2) if row["error_rate"] is not None else None,
         "last_error": row["last_error"],
     } for row in ops_rows]
 

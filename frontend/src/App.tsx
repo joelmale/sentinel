@@ -127,6 +127,8 @@ function SentinelApp() {
   } = useMapStore()
   const perfPanelOpen = usePerfStore((state) => state.panelOpen)
   const setPerfPanelOpen = usePerfStore((state) => state.setPanelOpen)
+  const wsConnected = usePerfStore((state) => state.ws.connected)
+  const wsReconnects = usePerfStore((state) => state.ws.reconnects)
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000)
@@ -929,6 +931,8 @@ function SentinelApp() {
           loading={healthQuery.isLoading || overviewCoreQuery.isLoading}
           error={overviewCoreQuery.error instanceof Error ? overviewCoreQuery.error.message : null}
           unsupportedReason={overviewUnsupportedReason}
+          clientWsConnected={wsConnected}
+          clientReconnects={wsReconnects}
           onOpenMap={() => setWorkspaceView('map')}
           onOpenTable={() => setWorkspaceView('table')}
           onOpenDomainMap={(domain) => openScopedMap(domain)}
