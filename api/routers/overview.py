@@ -78,15 +78,25 @@ def _empty_dashboard(now: datetime) -> dict[str, Any]:
     }
 
 
-@router.get("/dashboard", summary="Bundled overview payload for the landing workspace")
-async def get_overview_dashboard(
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    global _overview_cache, _overview_cache_expires_at
-    now = datetime.now(timezone.utc)
-    if _overview_cache is not None and _overview_cache_expires_at is not None and now < _overview_cache_expires_at:
-        return _overview_cache
+def _empty_core(now: datetime) -> dict[str, Any]:
+    dashboard = _empty_dashboard(now)
+    return {
+        "header": dashboard["header"],
+        "summary": dashboard["summary"],
+        "alerts": dashboard["alerts"],
+        "ops": dashboard["ops"],
+    }
 
+
+def _empty_pivots(now: datetime) -> dict[str, Any]:
+    dashboard = _empty_dashboard(now)
+    return {
+        "activity": dashboard["activity"],
+    }
+
+
+async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
+    core = _empty_core(now)
     summary_sql = text("""
         WITH domain_windows AS (
             SELECT 'Air'::source_domain AS domain, NOW() - INTERVAL '30 minutes' AS cutoff, '30m' AS window_label
@@ -259,76 +269,27 @@ async def get_overview_dashboard(
         GROUP BY source_domain
         ORDER BY source_domain
     """)
-    activity_sql = text("""
-        SELECT
-            source_domain,
-            bucket,
-            asset_count
-        FROM track_events_1min
-        WHERE bucket >= NOW() - INTERVAL '60 minutes'
-        ORDER BY source_domain, bucket ASC
-    """)
-    movers_sql = text("""
-        WITH current_window AS (
-            SELECT source_domain, classification, COUNT(DISTINCT track_id) AS count_now
-            FROM track_events
-            WHERE timestamp >= NOW() - INTERVAL '15 minutes'
-            GROUP BY source_domain, classification
-        ),
-        previous_window AS (
-            SELECT source_domain, classification, COUNT(DISTINCT track_id) AS count_prev
-            FROM track_events
-            WHERE timestamp >= NOW() - INTERVAL '30 minutes'
-              AND timestamp < NOW() - INTERVAL '15 minutes'
-            GROUP BY source_domain, classification
-        )
-        SELECT
-            COALESCE(c.source_domain, p.source_domain) AS source_domain,
-            COALESCE(c.classification, p.classification, 'Unknown') AS classification,
-            COALESCE(c.count_now, 0) - COALESCE(p.count_prev, 0) AS delta
-        FROM current_window c
-        FULL OUTER JOIN previous_window p
-          ON c.source_domain = p.source_domain
-         AND COALESCE(c.classification, 'Unknown') = COALESCE(p.classification, 'Unknown')
-        ORDER BY ABS(COALESCE(c.count_now, 0) - COALESCE(p.count_prev, 0)) DESC
-        LIMIT 6
-    """)
 
-    dashboard = _empty_dashboard(now)
     try:
         summary_rows = (await db.execute(summary_sql)).mappings().all()
     except Exception:
         summary_rows = []
-
     try:
         alert_rows = (await db.execute(alerts_sql)).mappings().all()
     except Exception:
         alert_rows = []
-
     try:
         ops_rows = (await db.execute(ops_sql)).mappings().all()
     except Exception:
         ops_rows = []
-
     try:
         watchlist_row = (await db.execute(watchlist_sql)).mappings().first()
     except Exception:
         watchlist_row = None
-
     try:
         disruption_rows = (await db.execute(disruptions_sql)).mappings().all()
     except Exception:
         disruption_rows = []
-
-    try:
-        activity_rows = (await db.execute(activity_sql)).mappings().all()
-    except Exception:
-        activity_rows = []
-
-    try:
-        mover_rows = (await db.execute(movers_sql)).mappings().all()
-    except Exception:
-        mover_rows = []
 
     domains: list[dict[str, Any]] = []
     for row in summary_rows:
@@ -387,6 +348,10 @@ async def get_overview_dashboard(
         "last_error": row["last_error"],
     } for row in ops_rows]
 
+    stale_sources = sum(1 for row in source_health if row["health"] in {"stale", "degraded", "down"})
+    degraded_sources = sum(1 for row in source_health if row["health"] in {"degraded", "down"})
+    latest_success = next((row["last_success_at"] for row in source_health if row["last_success_at"]), None)
+    watchlist = dict(watchlist_row) if watchlist_row is not None else {}
     disruptions = [{
         "domain": row["source_domain"],
         "active_events": int(row["active_events"] or 0),
@@ -394,52 +359,141 @@ async def get_overview_dashboard(
         "impacted_assets": int(row["impacted_assets"] or 0),
     } for row in disruption_rows]
 
+    core["header"]["alerts"] = {
+        "active": active_alerts,
+        "investigating": investigating_alerts,
+        "critical": critical_alerts,
+    }
+    core["header"]["ingest"] = {
+        "degraded_sources": degraded_sources,
+        "stale_sources": stale_sources,
+        "last_success_at": latest_success,
+    }
+    core["summary"]["domains"] = domains
+    core["alerts"]["items"] = items
+    core["ops"]["source_health"] = source_health
+    core["ops"]["watchlist"] = {
+        "enabled": int(watchlist.get("enabled_count") or 0),
+        "active_tracks": int(watchlist.get("active_track_count") or 0),
+        "stale_entries": int(watchlist.get("stale_count") or 0),
+        "priority_items": int(watchlist.get("priority_count") or 0),
+    }
+    core["ops"]["disruptions"] = disruptions
+    return core
+
+
+async def _load_pivots(db: AsyncSession, now: datetime) -> dict[str, Any]:
+    pivots = _empty_pivots(now)
+    activity_sql = text("""
+        SELECT
+            source_domain,
+            bucket,
+            asset_count
+        FROM track_events_1min
+        WHERE bucket >= NOW() - INTERVAL '60 minutes'
+        ORDER BY source_domain, bucket ASC
+    """)
+    movers_sql = text("""
+        WITH current_window AS (
+            SELECT source_domain, classification, COUNT(DISTINCT track_id) AS count_now
+            FROM track_events
+            WHERE timestamp >= NOW() - INTERVAL '15 minutes'
+            GROUP BY source_domain, classification
+        ),
+        previous_window AS (
+            SELECT source_domain, classification, COUNT(DISTINCT track_id) AS count_prev
+            FROM track_events
+            WHERE timestamp >= NOW() - INTERVAL '30 minutes'
+              AND timestamp < NOW() - INTERVAL '15 minutes'
+            GROUP BY source_domain, classification
+        )
+        SELECT
+            COALESCE(c.source_domain, p.source_domain) AS source_domain,
+            COALESCE(c.classification, p.classification, 'Unknown') AS classification,
+            COALESCE(c.count_now, 0) - COALESCE(p.count_prev, 0) AS delta
+        FROM current_window c
+        FULL OUTER JOIN previous_window p
+          ON c.source_domain = p.source_domain
+         AND COALESCE(c.classification, 'Unknown') = COALESCE(p.classification, 'Unknown')
+        ORDER BY ABS(COALESCE(c.count_now, 0) - COALESCE(p.count_prev, 0)) DESC
+        LIMIT 6
+    """)
+
+    try:
+        activity_rows = (await db.execute(activity_sql)).mappings().all()
+    except Exception:
+        activity_rows = []
+    try:
+        mover_rows = (await db.execute(movers_sql)).mappings().all()
+    except Exception:
+        mover_rows = []
+
     activity_by_domain: dict[str, list[dict[str, Any]]] = {domain.value: [] for domain in SourceDomain}
     for row in activity_rows:
         activity_by_domain[row["source_domain"]].append({
             "ts": _iso_or_none(row["bucket"]),
             "count": int(row["asset_count"] or 0),
         })
-
-    top_movers = [{
+    pivots["activity"]["activity"] = [
+        {"domain": domain, "buckets": buckets}
+        for domain, buckets in activity_by_domain.items()
+    ]
+    pivots["activity"]["top_movers"] = [{
         "label": row["classification"] or "Unknown",
         "domain": row["source_domain"],
         "delta": int(row["delta"] or 0),
         "reason": "15-minute distinct-track delta",
     } for row in mover_rows]
+    return pivots
 
-    stale_sources = sum(1 for row in source_health if row["health"] in {"stale", "degraded", "down"})
-    degraded_sources = sum(1 for row in source_health if row["health"] in {"degraded", "down"})
-    latest_success = next((row["last_success_at"] for row in source_health if row["last_success_at"]), None)
 
-    watchlist = dict(watchlist_row) if watchlist_row is not None else {}
-
-    dashboard["header"]["alerts"] = {
-        "active": active_alerts,
-        "investigating": investigating_alerts,
-        "critical": critical_alerts,
+@router.get("/core", summary="Primary landing overview payload")
+async def get_overview_core(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    global _overview_cache, _overview_cache_expires_at
+    now = datetime.now(timezone.utc)
+    if _overview_cache is not None and _overview_cache_expires_at is not None and now < _overview_cache_expires_at:
+        return _overview_cache["core"]
+    core = await _load_core(db, now)
+    pivots = await _load_pivots(db, now)
+    _overview_cache = {
+        "core": core,
+        "pivots": pivots,
+        "dashboard": {**core, **pivots},
     }
-    dashboard["header"]["ingest"] = {
-        "degraded_sources": degraded_sources,
-        "stale_sources": stale_sources,
-        "last_success_at": latest_success,
-    }
-    dashboard["summary"]["domains"] = domains
-    dashboard["alerts"]["items"] = items
-    dashboard["ops"]["source_health"] = source_health
-    dashboard["ops"]["watchlist"] = {
-        "enabled": int(watchlist.get("enabled_count") or 0),
-        "active_tracks": int(watchlist.get("active_track_count") or 0),
-        "stale_entries": int(watchlist.get("stale_count") or 0),
-        "priority_items": int(watchlist.get("priority_count") or 0),
-    }
-    dashboard["ops"]["disruptions"] = disruptions
-    dashboard["activity"]["activity"] = [
-        {"domain": domain, "buckets": buckets}
-        for domain, buckets in activity_by_domain.items()
-    ]
-    dashboard["activity"]["top_movers"] = top_movers
+    _overview_cache_expires_at = now + OVERVIEW_CACHE_TTL
+    return core
 
-    _overview_cache = dashboard
+
+@router.get("/pivots", summary="Secondary overview pivot payload")
+async def get_overview_pivots(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    global _overview_cache, _overview_cache_expires_at
+    now = datetime.now(timezone.utc)
+    if _overview_cache is not None and _overview_cache_expires_at is not None and now < _overview_cache_expires_at:
+        return _overview_cache["pivots"]
+    core = await _load_core(db, now)
+    pivots = await _load_pivots(db, now)
+    _overview_cache = {
+        "core": core,
+        "pivots": pivots,
+        "dashboard": {**core, **pivots},
+    }
+    _overview_cache_expires_at = now + OVERVIEW_CACHE_TTL
+    return pivots
+
+
+@router.get("/dashboard", summary="Bundled overview payload for compatibility")
+async def get_overview_dashboard(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    global _overview_cache, _overview_cache_expires_at
+    now = datetime.now(timezone.utc)
+    if _overview_cache is not None and _overview_cache_expires_at is not None and now < _overview_cache_expires_at:
+        return _overview_cache["dashboard"]
+    core = await _load_core(db, now)
+    pivots = await _load_pivots(db, now)
+    dashboard = {**core, **pivots}
+    _overview_cache = {
+        "core": core,
+        "pivots": pivots,
+        "dashboard": dashboard,
+    }
     _overview_cache_expires_at = now + OVERVIEW_CACHE_TTL
     return dashboard

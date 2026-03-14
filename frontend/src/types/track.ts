@@ -229,6 +229,17 @@ export interface OverviewDashboardResponse {
   activity: OverviewActivityResponse
 }
 
+export interface OverviewCoreResponse {
+  header: OverviewHeaderResponse
+  summary: OverviewSummaryResponse
+  alerts: OverviewAlertsResponse
+  ops: OverviewOpsResponse
+}
+
+export interface OverviewPivotsResponse {
+  activity: OverviewActivityResponse
+}
+
 export interface HealthResponse {
   status: string
   version?: string

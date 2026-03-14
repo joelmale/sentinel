@@ -37,7 +37,9 @@ import type {
   HealthResponse,
   LiveSummaryResponse,
   OverviewAlertItem,
+  OverviewCoreResponse,
   OverviewDashboardResponse,
+  OverviewPivotsResponse,
   SourceDomain,
   TrackEventProperties,
   TrackFeatureCollection,
@@ -107,6 +109,7 @@ function SentinelApp() {
   const [disclaimerOpen, setDisclaimerOpen] = useState(false)
   const [spaceDashboardOpen, setSpaceDashboardOpen] = useState(false)
   const [priorityPrefetchEnabled, setPriorityPrefetchEnabled] = useState(false)
+  const [overviewPivotsEnabled, setOverviewPivotsEnabled] = useState(false)
   const [domainDashboardOpen, setDomainDashboardOpen] = useState<'Air' | 'Maritime' | null>(null)
   const [disruptionDashboardOpen, setDisruptionDashboardOpen] = useState<'GPS' | 'Infra' | null>(null)
   const settingsRef = useRef<HTMLDivElement | null>(null)
@@ -178,6 +181,15 @@ function SentinelApp() {
   const overviewUnsupportedReason = workspaceView === 'overview' && healthQuery.isSuccess && !overviewCapability
     ? 'backend does not advertise overview routes yet'
     : null
+
+  useEffect(() => {
+    if (workspaceView !== 'overview' || !overviewCapability) {
+      setOverviewPivotsEnabled(false)
+      return
+    }
+    const id = window.setTimeout(() => setOverviewPivotsEnabled(true), 750)
+    return () => window.clearTimeout(id)
+  }, [workspaceView, overviewCapability])
 
   const liveSummaryQuery = useQuery({
     queryKey: ['live-assets-summary'],
@@ -260,15 +272,26 @@ function SentinelApp() {
     staleTime: 5_000,
   })
 
-  const overviewDashboardQuery = useQuery({
-    queryKey: ['overview-dashboard'],
+  const overviewCoreQuery = useQuery({
+    queryKey: ['overview-core'],
     enabled: workspaceView === 'overview' && overviewCapability,
-    queryFn: async (): Promise<OverviewDashboardResponse> => {
-      return trackedFetchJson<OverviewDashboardResponse>('overview-dashboard', '/api/overview/dashboard')
+    queryFn: async (): Promise<OverviewCoreResponse> => {
+      return trackedFetchJson<OverviewCoreResponse>('overview-core', '/api/overview/core')
     },
     refetchOnWindowFocus: false,
     staleTime: 60_000,
     refetchInterval: 60_000,
+  })
+
+  const overviewPivotsQuery = useQuery({
+    queryKey: ['overview-pivots'],
+    enabled: workspaceView === 'overview' && overviewCapability && overviewPivotsEnabled,
+    queryFn: async (): Promise<OverviewPivotsResponse> => {
+      return trackedFetchJson<OverviewPivotsResponse>('overview-pivots', '/api/overview/pivots')
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
+    refetchInterval: 120_000,
   })
 
   useEffect(() => {
@@ -592,14 +615,17 @@ function SentinelApp() {
 
   const totalTracked = uiGlobalSummary?.total ?? globalSummary?.total ?? 0
   const staleTracked = uiGlobalSummary?.stale_total ?? globalSummary?.stale_total ?? 0
+  const overviewDashboard: OverviewDashboardResponse | undefined = overviewCoreQuery.data
+    ? { ...overviewCoreQuery.data, ...(overviewPivotsQuery.data ?? { activity: undefined }) } as OverviewDashboardResponse
+    : undefined
   const overviewCounts = Object.fromEntries(
-    (overviewDashboardQuery.data?.summary.domains ?? []).map((domain) => [domain.domain, domain.live_count])
+    (overviewDashboard?.summary.domains ?? []).map((domain) => [domain.domain, domain.live_count])
   ) as Partial<Record<keyof typeof counts, number>>
   const overviewStaleCounts = Object.fromEntries(
-    (overviewDashboardQuery.data?.summary.domains ?? []).map((domain) => [domain.domain, domain.stale_count])
+    (overviewDashboard?.summary.domains ?? []).map((domain) => [domain.domain, domain.stale_count])
   ) as Partial<Record<keyof typeof staleCounts, number>>
   const overviewDomainWindows = Object.fromEntries(
-    (overviewDashboardQuery.data?.summary.domains ?? []).map((domain) => [domain.domain, domain.freshness_window])
+    (overviewDashboard?.summary.domains ?? []).map((domain) => [domain.domain, domain.freshness_window])
   ) as Partial<Record<keyof typeof domainWindows, string>>
   const headerCounts = workspaceView === 'overview'
     ? { ...counts, ...overviewCounts }
@@ -611,10 +637,10 @@ function SentinelApp() {
     ? { ...domainWindows, ...overviewDomainWindows }
     : domainWindows
   const headerTotalTracked = workspaceView === 'overview'
-    ? (overviewDashboardQuery.data?.summary.domains ?? []).reduce((sum, domain) => sum + domain.live_count, 0)
+    ? (overviewDashboard?.summary.domains ?? []).reduce((sum, domain) => sum + domain.live_count, 0)
     : totalTracked
   const headerStaleTracked = workspaceView === 'overview'
-    ? (overviewDashboardQuery.data?.summary.domains ?? []).reduce((sum, domain) => sum + domain.stale_count, 0)
+    ? (overviewDashboard?.summary.domains ?? []).reduce((sum, domain) => sum + domain.stale_count, 0)
     : staleTracked
   const statItems = [
     { icon: '✈', key: 'Air', color: '#60a5fa' },
@@ -899,9 +925,9 @@ function SentinelApp() {
 
       {workspaceView === 'overview' ? (
         <OverviewPage
-          dashboard={overviewDashboardQuery.data}
-          loading={healthQuery.isLoading || overviewDashboardQuery.isLoading}
-          error={overviewDashboardQuery.error instanceof Error ? overviewDashboardQuery.error.message : null}
+          dashboard={overviewDashboard}
+          loading={healthQuery.isLoading || overviewCoreQuery.isLoading}
+          error={overviewCoreQuery.error instanceof Error ? overviewCoreQuery.error.message : null}
           unsupportedReason={overviewUnsupportedReason}
           onOpenMap={() => setWorkspaceView('map')}
           onOpenTable={() => setWorkspaceView('table')}

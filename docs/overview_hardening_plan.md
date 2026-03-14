@@ -7,7 +7,7 @@ This file tracks the overview-hardening work block. Implementation stops after P
 ## Phase Checklist
 
 - [x] Phase 1: Capability handshake and degraded fallback
-- [ ] Phase 2: Split overview core vs pivots
+- [x] Phase 2: Split overview core vs pivots
 - [ ] Phase 3: Precomputed domain summary source
 - [ ] Phase 4: Real alert queue semantics
 - [ ] Phase 5: Trustworthy ops panel data
@@ -99,7 +99,12 @@ Completed work:
 - Added degraded overview fallback copy when backend overview support is unavailable.
 
 ### Phase 2
-Status: Pending
+Status: Completed
+
+Completed work:
+- Split overview API into `/api/overview/core` and `/api/overview/pivots`.
+- Kept `/api/overview/dashboard` as a compatibility wrapper.
+- Updated frontend to load `core` first and lazy-load `pivots` after initial landing render.
 
 ### Phase 3
 Status: Pending
