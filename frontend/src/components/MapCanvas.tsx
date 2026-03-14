@@ -215,6 +215,19 @@ function isPointInBounds(lon: number | undefined, lat: number | undefined, bound
   return lat >= bounds.south && lat <= bounds.north && isLonInBounds(lon, bounds)
 }
 
+function getRenderPosition(
+  lon: number | undefined,
+  lat: number | undefined,
+  altitudeM: number | undefined,
+  useAltitude: boolean,
+): [number, number] | [number, number, number] {
+  const x = lon ?? 0
+  const y = lat ?? 0
+  if (!useAltitude) return [x, y]
+  const z = typeof altitudeM === 'number' && Number.isFinite(altitudeM) ? Math.max(0, altitudeM) : 0
+  return [x, y, z]
+}
+
 export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProps) {
   const {
     viewport,
@@ -470,6 +483,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     if (!ls) return 1
     return ls.visibility === 'muted' ? ls.opacity * 0.25 : ls.opacity
   }, [layers])
+
+  const useSpaceAltitude = globeView
 
   const deckLayerBuild = useMemo(() => {
     const buildStarted = performance.now()
@@ -932,7 +947,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         ls.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'space-background-points',
           data: nonPriorityVisibleIndividuals,
-          getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
+          getPosition: (d) => getRenderPosition(d.lon, d.lat, d.altitude_m, useSpaceAltitude),
           getRadius: 2.5,
           radiusUnits: 'pixels',
           stroked: false,
@@ -950,7 +965,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       ls.push(new TextLayer<TrackEventProperties>({
         id: 'space-priority-icons',
         data: prioritySpaceAssets,
-        getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
+        getPosition: (d) => getRenderPosition(d.lon, d.lat, d.altitude_m, useSpaceAltitude),
         getText: () => '🛰',
         getColor: (d: TrackEventProperties) => {
           const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
@@ -976,7 +991,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         ls.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'space-selected-ring',
           data: [selectedSpaceAsset],
-          getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
+          getPosition: (d) => getRenderPosition(d.lon, d.lat, d.altitude_m, useSpaceAltitude),
           getRadius: 14,
           radiusUnits: 'pixels',
           stroked: true,
@@ -993,7 +1008,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           id: 'space-trails',
           data: spaceTrails,
           getPath: (d: { positions: Array<{ lon: number; lat: number; timestamp: number }> }) =>
-            d.positions.map((p) => [p.lon, p.lat] as [number, number]),
+            d.positions.map((p) => [p.lon, p.lat, 0] as [number, number, number]),
           getColor: (d: { visibility: 'visible' | 'ghost' | 'hidden' }) =>
             d.visibility === 'ghost' ? [100, 116, 139, 35] : [148, 163, 184, 90],
           getWidth: 1.2,
@@ -1011,7 +1026,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           id: 'space-orbital-track',
           data: [{ positions: selectedOrbitPoints }],
           getPath: (d: { positions: typeof selectedOrbitPoints }) =>
-            d.positions.map(p => [p.lon, p.lat] as [number, number]),
+            d.positions.map(p => [p.lon, p.lat, Math.max(0, (p.alt_km ?? 0) * 1000)] as [number, number, number]),
           getColor: [192, 132, 252, 200], // purple-400
           getWidth: 2,
           widthUnits: 'pixels',
@@ -1174,6 +1189,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     searchMatchSet,
     localViewport.zoom,
     cullBounds,
+    useSpaceAltitude,
   ])
 
   useEffect(() => {

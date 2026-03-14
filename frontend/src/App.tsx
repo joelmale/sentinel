@@ -23,6 +23,7 @@ import { AlertQueuePanel } from '@/components/AlertQueuePanel'
 import { InvestigationPanel } from '@/components/InvestigationPanel'
 import { PerformancePanel } from '@/components/PerformancePanel'
 import { TrackBrowserView } from '@/components/TrackBrowserView'
+import { OverviewPage } from '@/components/OverviewPage'
 import { SpaceWatchDashboard, type SpaceWatchDashboardPayload } from '@/components/SpaceWatchDashboard'
 import { DomainStatusDashboard, type DomainStatusDashboardPayload } from '@/components/DomainStatusDashboard'
 import { DisruptionDashboard, type DisruptionDashboardPayload } from '@/components/DisruptionDashboard'
@@ -34,6 +35,7 @@ import { usePerfStore } from '@/store/usePerfStore'
 import type {
   DisruptionEventResponse,
   LiveSummaryResponse,
+  OverviewDashboardResponse,
   TrackEventProperties,
   TrackFeatureCollection,
   WsMessage,
@@ -61,7 +63,7 @@ const queryClient = new QueryClient({
 
 const APP_VERSION = '0.02'
 const DISCLAIMER_STORAGE_KEY = 'sentinel.evaluationDisclaimerAccepted'
-type WorkspaceView = 'map' | 'table'
+type WorkspaceView = 'overview' | 'map' | 'table'
 
 function SentinelApp() {
   const {
@@ -93,7 +95,7 @@ function SentinelApp() {
   } = useLiveDataStore()
   const [annotationPos, setAnnotationPos] = useState<{ lon: number; lat: number } | null>(null)
   const [now, setNow] = useState(new Date())
-  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('map')
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('overview')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [disclaimerOpen, setDisclaimerOpen] = useState(false)
   const [spaceDashboardOpen, setSpaceDashboardOpen] = useState(false)
@@ -156,6 +158,7 @@ function SentinelApp() {
 
   const liveSummaryQuery = useQuery({
     queryKey: ['live-assets-summary'],
+    enabled: workspaceView !== 'overview',
     queryFn: async (): Promise<LiveSummaryResponse> => {
       return trackedFetchJson<LiveSummaryResponse>('live-assets-summary', '/api/tracks/live?scope=summary')
     },
@@ -185,6 +188,7 @@ function SentinelApp() {
       layers.Space.visibility,
       selectedDomain,
     ],
+    enabled: workspaceView === 'map',
     queryFn: async (): Promise<{
       air: TrackEventProperties[]
       maritime: TrackEventProperties[]
@@ -231,6 +235,17 @@ function SentinelApp() {
     refetchOnWindowFocus: false,
     refetchInterval: playback.mode === 'live' ? 20_000 : false,
     staleTime: 5_000,
+  })
+
+  const overviewDashboardQuery = useQuery({
+    queryKey: ['overview-dashboard'],
+    enabled: workspaceView === 'overview',
+    queryFn: async (): Promise<OverviewDashboardResponse> => {
+      return trackedFetchJson<OverviewDashboardResponse>('overview-dashboard', '/api/overview/dashboard')
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
   })
 
   useEffect(() => {
@@ -554,6 +569,30 @@ function SentinelApp() {
 
   const totalTracked = uiGlobalSummary?.total ?? globalSummary?.total ?? 0
   const staleTracked = uiGlobalSummary?.stale_total ?? globalSummary?.stale_total ?? 0
+  const overviewCounts = Object.fromEntries(
+    (overviewDashboardQuery.data?.summary.domains ?? []).map((domain) => [domain.domain, domain.live_count])
+  ) as Partial<Record<keyof typeof counts, number>>
+  const overviewStaleCounts = Object.fromEntries(
+    (overviewDashboardQuery.data?.summary.domains ?? []).map((domain) => [domain.domain, domain.stale_count])
+  ) as Partial<Record<keyof typeof staleCounts, number>>
+  const overviewDomainWindows = Object.fromEntries(
+    (overviewDashboardQuery.data?.summary.domains ?? []).map((domain) => [domain.domain, domain.freshness_window])
+  ) as Partial<Record<keyof typeof domainWindows, string>>
+  const headerCounts = workspaceView === 'overview'
+    ? { ...counts, ...overviewCounts }
+    : counts
+  const headerStaleCounts = workspaceView === 'overview'
+    ? { ...staleCounts, ...overviewStaleCounts }
+    : staleCounts
+  const headerDomainWindows = workspaceView === 'overview'
+    ? { ...domainWindows, ...overviewDomainWindows }
+    : domainWindows
+  const headerTotalTracked = workspaceView === 'overview'
+    ? (overviewDashboardQuery.data?.summary.domains ?? []).reduce((sum, domain) => sum + domain.live_count, 0)
+    : totalTracked
+  const headerStaleTracked = workspaceView === 'overview'
+    ? (overviewDashboardQuery.data?.summary.domains ?? []).reduce((sum, domain) => sum + domain.stale_count, 0)
+    : staleTracked
   const statItems = [
     { icon: '✈', key: 'Air', color: '#60a5fa' },
     { icon: '⚓', key: 'Maritime', color: '#22d3ee' },
@@ -618,24 +657,33 @@ function SentinelApp() {
           <div style={{ display: 'flex', alignItems: 'stretch', gap: 8, justifyContent: 'center', overflow: 'hidden' }}>
             <button
               type="button"
-              onClick={() => setWorkspaceView((current) => current === 'map' ? 'table' : 'map')}
+              onClick={() => setWorkspaceView((current) => {
+                if (current === 'overview') return 'map'
+                return current === 'map' ? 'table' : 'overview'
+              })}
               style={{
                 ...headerCardStyle,
                 minWidth: 92,
                 cursor: 'pointer',
-                borderColor: workspaceView === 'table' ? 'rgba(94,234,212,0.4)' : 'rgba(255,255,255,0.08)',
+                borderColor: workspaceView !== 'map' ? 'rgba(94,234,212,0.4)' : 'rgba(255,255,255,0.08)',
               }}
             >
               <span style={headerLabelStyle}>View</span>
-              <span style={{ ...headerValueStyle, color: workspaceView === 'table' ? '#5eead4' : '#e2e8f0', fontSize: 22 }}>
-                {workspaceView === 'table' ? 'Table' : 'Map'}
+              <span style={{ ...headerValueStyle, color: workspaceView !== 'map' ? '#5eead4' : '#e2e8f0', fontSize: 22 }}>
+                {workspaceView === 'overview' ? 'Overview' : workspaceView === 'table' ? 'Table' : 'Map'}
               </span>
-              <span style={headerMetaStyle}>{workspaceView === 'table' ? 'Analyst browser' : 'Geospatial workspace'}</span>
+              <span style={headerMetaStyle}>
+                {workspaceView === 'overview'
+                  ? 'Mission landing'
+                  : workspaceView === 'table'
+                    ? 'Analyst browser'
+                    : 'Geospatial workspace'}
+              </span>
             </button>
             <div style={headerCardStyle}>
               <span style={headerLabelStyle}>Tracked</span>
-              <span style={headerValueStyle}>{totalTracked.toLocaleString()}</span>
-              <span style={headerMetaStyle}>{staleTracked > 0 ? `Unique seen in live windows · ${staleTracked.toLocaleString()} stale hidden` : 'Unique seen in live windows'}</span>
+              <span style={headerValueStyle}>{headerTotalTracked.toLocaleString()}</span>
+              <span style={headerMetaStyle}>{headerStaleTracked > 0 ? `Unique seen in live windows · ${headerStaleTracked.toLocaleString()} stale hidden` : 'Unique seen in live windows'}</span>
             </div>
             {statItems.map(({ icon, key, color }) => (
               <div
@@ -673,11 +721,11 @@ function SentinelApp() {
                 <span style={headerLabelStyle}>{key}</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span style={{ fontSize: 14 }}>{icon}</span>
-                  <span style={{ ...headerValueStyle, color }}>{(counts[key] ?? 0).toLocaleString()}</span>
+                  <span style={{ ...headerValueStyle, color }}>{(headerCounts[key] ?? 0).toLocaleString()}</span>
                 </div>
                 <span style={headerMetaStyle}>
-                  {key === 'GPS' ? `Unique cells · ${domainWindows[key]}` : `Unique tracks · ${domainWindows[key]}`}
-                  {(staleCounts[key] ?? 0) > 0 ? ` · ${(staleCounts[key] ?? 0).toLocaleString()} stale` : ''}
+                  {key === 'GPS' ? `Unique cells · ${headerDomainWindows[key]}` : `Unique tracks · ${headerDomainWindows[key]}`}
+                  {(headerStaleCounts[key] ?? 0) > 0 ? ` · ${(headerStaleCounts[key] ?? 0).toLocaleString()} stale` : ''}
                 </span>
               </div>
             ))}
@@ -779,7 +827,15 @@ function SentinelApp() {
         </div>
       </div>
 
-      {workspaceView === 'map' ? (
+      {workspaceView === 'overview' ? (
+        <OverviewPage
+          dashboard={overviewDashboardQuery.data}
+          loading={overviewDashboardQuery.isLoading}
+          error={overviewDashboardQuery.error instanceof Error ? overviewDashboardQuery.error.message : null}
+          onOpenMap={() => setWorkspaceView('map')}
+          onOpenTable={() => setWorkspaceView('table')}
+        />
+      ) : workspaceView === 'map' ? (
         <>
           {/* ── Map canvas (fills everything) ─────────────────────── */}
           {/* zIndex: 1 creates a stacking context so DeckGL's internal z-index:0

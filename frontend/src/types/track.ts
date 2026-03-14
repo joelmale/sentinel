@@ -91,6 +91,144 @@ export interface LiveSummaryResponse {
   stale_domains: Record<SourceDomain, number>
 }
 
+export type OverviewHealth = 'healthy' | 'stale' | 'degraded' | 'down'
+
+export interface OverviewHeaderResponse {
+  generated_at: string
+  connection: {
+    ws_connected: boolean
+    api_ok: boolean
+    reconnects: number
+  }
+  alerts: {
+    active: number
+    investigating: number
+    critical: number
+  }
+  ingest: {
+    degraded_sources: number
+    stale_sources: number
+    last_success_at: string | null
+  }
+}
+
+export interface OverviewDomainSummary {
+  domain: SourceDomain
+  live_count: number
+  stale_count: number
+  active_alerts: number
+  degraded_sources: number
+  freshness_window: string
+  top_change: {
+    label: string
+    delta: number
+    direction: 'up' | 'down' | 'flat'
+  } | null
+}
+
+export interface OverviewSummaryResponse {
+  generated_at: string
+  domains: OverviewDomainSummary[]
+}
+
+export interface OverviewAlertItem {
+  alert_id: string
+  domain: SourceDomain
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  title: string
+  subtitle: string | null
+  triggered_at: string
+  confidence: number | null
+  why: string[]
+  entity_id: string | null
+  track_id: string | null
+  bbox: [number, number, number, number] | null
+  source_count: number
+  investigation_ready: boolean
+}
+
+export interface OverviewAlertsResponse {
+  generated_at: string
+  items: OverviewAlertItem[]
+}
+
+export interface OverviewSourceHealthItem {
+  source_feed: string
+  domain: SourceDomain
+  health: OverviewHealth
+  lag_minutes: number | null
+  last_success_at: string | null
+  error_rate: number | null
+}
+
+export interface OverviewWatchlistSummary {
+  enabled: number
+  active_tracks: number
+  stale_entries: number
+  priority_items: number
+}
+
+export interface OverviewDisruptionSummaryItem {
+  domain: Extract<SourceDomain, 'GPS' | 'Infra'>
+  active_events: number
+  high_severity: number
+  impacted_assets: number
+}
+
+export interface OverviewOpsResponse {
+  generated_at: string
+  source_health: OverviewSourceHealthItem[]
+  watchlist: OverviewWatchlistSummary
+  disruptions: OverviewDisruptionSummaryItem[]
+}
+
+export interface OverviewActivityBucket {
+  ts: string
+  count: number
+}
+
+export interface OverviewActivitySeries {
+  domain: SourceDomain
+  buckets: OverviewActivityBucket[]
+}
+
+export interface OverviewTopMover {
+  label: string
+  domain: SourceDomain
+  delta: number
+  reason: string
+}
+
+export interface OverviewTopAoi {
+  id: string
+  name: string
+  active_alerts: number
+  impacted_assets: number
+}
+
+export interface OverviewResumeSession {
+  investigation_id: string
+  title: string
+  updated_at: string
+  domain: SourceDomain
+}
+
+export interface OverviewActivityResponse {
+  generated_at: string
+  activity: OverviewActivitySeries[]
+  top_movers: OverviewTopMover[]
+  top_aois: OverviewTopAoi[]
+  resume_session: OverviewResumeSession | null
+}
+
+export interface OverviewDashboardResponse {
+  header: OverviewHeaderResponse
+  summary: OverviewSummaryResponse
+  alerts: OverviewAlertsResponse
+  ops: OverviewOpsResponse
+  activity: OverviewActivityResponse
+}
+
 export type SatelliteFieldStatus = 'authoritative' | 'inferred' | 'derived' | 'curated' | 'missing'
 export type SatelliteEnrichmentConfidence = 'high' | 'medium' | 'low'
 
