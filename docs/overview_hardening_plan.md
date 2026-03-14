@@ -112,6 +112,7 @@ Status: Completed
 Completed work:
 - Rebased overview domain summary counts onto `asset_current_state` freshness windows instead of raw `track_events` landing scans.
 - Kept the same freshness semantics while reducing cold-start query cost.
+- Added a fallback to `track_events` live-window counts when `asset_current_state` is empty, so overview counts still populate during rebuild/reset scenarios.
 
 ### Phase 4
 Status: Completed

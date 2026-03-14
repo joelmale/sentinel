@@ -117,6 +117,7 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
             SELECT
                 dw.domain,
                 dw.window_label,
+                COUNT(acs.*) AS state_row_count,
                 COUNT(*) FILTER (WHERE acs.last_seen >= dw.cutoff) AS live_count,
                 COUNT(*) FILTER (WHERE acs.last_seen < dw.cutoff) AS stale_count,
                 COUNT(*) FILTER (WHERE acs.last_seen >= NOW() - INTERVAL '15 minutes') AS count_15m,
@@ -128,6 +129,21 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
             LEFT JOIN asset_current_state acs
               ON acs.source_domain = dw.domain
             GROUP BY dw.domain, dw.window_label
+        ),
+        history_counts AS (
+            SELECT
+                dw.domain,
+                COUNT(DISTINCT te.track_id) FILTER (WHERE te.timestamp >= dw.cutoff) AS live_count,
+                COUNT(DISTINCT te.track_id) FILTER (WHERE te.timestamp >= NOW() - INTERVAL '15 minutes') AS count_15m,
+                COUNT(DISTINCT te.track_id) FILTER (
+                    WHERE te.timestamp >= NOW() - INTERVAL '30 minutes'
+                      AND te.timestamp < NOW() - INTERVAL '15 minutes'
+                ) AS prev_count_15m
+            FROM domain_windows dw
+            LEFT JOIN track_events te
+              ON te.source_domain = dw.domain
+             AND te.timestamp >= NOW() - INTERVAL '30 minutes'
+            GROUP BY dw.domain
         ),
         alert_counts AS (
             SELECT
@@ -159,13 +175,26 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
         SELECT
             sc.domain,
             sc.window_label,
-            COALESCE(sc.live_count, 0) AS live_count,
-            COALESCE(sc.stale_count, 0) AS stale_count,
+            CASE
+                WHEN COALESCE(sc.state_row_count, 0) > 0 THEN COALESCE(sc.live_count, 0)
+                ELSE COALESCE(hc.live_count, 0)
+            END AS live_count,
+            CASE
+                WHEN COALESCE(sc.state_row_count, 0) > 0 THEN COALESCE(sc.stale_count, 0)
+                ELSE 0
+            END AS stale_count,
             COALESCE(ac.active_alerts, 0) AS active_alerts,
             COALESCE(dc.degraded_sources, 0) AS degraded_sources,
-            COALESCE(sc.count_15m, 0) AS count_15m,
-            COALESCE(sc.prev_count_15m, 0) AS prev_count_15m
+            CASE
+                WHEN COALESCE(sc.state_row_count, 0) > 0 THEN COALESCE(sc.count_15m, 0)
+                ELSE COALESCE(hc.count_15m, 0)
+            END AS count_15m,
+            CASE
+                WHEN COALESCE(sc.state_row_count, 0) > 0 THEN COALESCE(sc.prev_count_15m, 0)
+                ELSE COALESCE(hc.prev_count_15m, 0)
+            END AS prev_count_15m
         FROM state_counts sc
+        LEFT JOIN history_counts hc ON hc.domain = sc.domain
         LEFT JOIN alert_counts ac ON ac.domain = sc.domain
         LEFT JOIN degraded_counts dc ON dc.domain = sc.domain
         ORDER BY sc.domain
