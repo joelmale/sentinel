@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react'
-import type { OverviewDashboardResponse, OverviewDomainSummary } from '@/types/track'
+import type { OverviewAlertItem, OverviewDashboardResponse, OverviewDomainSummary, SourceDomain } from '@/types/track'
 
 const domainColors: Record<OverviewDomainSummary['domain'], string> = {
   Air: '#60a5fa',
@@ -23,9 +23,25 @@ type OverviewPageProps = {
   error: string | null
   onOpenMap: () => void
   onOpenTable: () => void
+  onOpenDomainMap: (domain: SourceDomain) => void
+  onOpenDomainTable: (domain: SourceDomain) => void
+  onInvestigateAlert: (alert: OverviewAlertItem) => void
+  onOpenAlertMap: (alert: OverviewAlertItem) => void
+  onResumeInvestigation: () => void
 }
 
-export function OverviewPage({ dashboard, loading, error, onOpenMap, onOpenTable }: OverviewPageProps) {
+export function OverviewPage({
+  dashboard,
+  loading,
+  error,
+  onOpenMap,
+  onOpenTable,
+  onOpenDomainMap,
+  onOpenDomainTable,
+  onInvestigateAlert,
+  onOpenAlertMap,
+  onResumeInvestigation,
+}: OverviewPageProps) {
   const domains = dashboard?.summary.domains ?? []
   const alerts = dashboard?.header.alerts
   const ingest = dashboard?.header.ingest
@@ -136,6 +152,14 @@ export function OverviewPage({ dashboard, loading, error, onOpenMap, onOpenTable
                       </div>
                     </div>
                   </div>
+                  <div style={domainActionRowStyle}>
+                    <button type="button" style={rowActionStyle} onClick={() => onOpenDomainTable(domain.domain)}>
+                      Open browser
+                    </button>
+                    <button type="button" style={rowActionStyle} onClick={() => onOpenDomainMap(domain.domain)}>
+                      Open map
+                    </button>
+                  </div>
                 </article>
               ))}
             </div>
@@ -169,9 +193,14 @@ export function OverviewPage({ dashboard, loading, error, onOpenMap, onOpenTable
                         <span style={miniMetaStyle}>
                           {item.confidence != null ? `${Math.round(item.confidence * 100)}% confidence` : 'No confidence score'}
                         </span>
-                        <button type="button" style={rowActionStyle} onClick={onOpenMap}>
-                          Open map
-                        </button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <button type="button" style={rowActionStyle} onClick={() => onOpenAlertMap(item)}>
+                            Open map
+                          </button>
+                          <button type="button" style={rowActionStyle} onClick={() => onInvestigateAlert(item)}>
+                            Investigate
+                          </button>
+                        </div>
                       </div>
                     </article>
                   ))}
@@ -310,7 +339,7 @@ export function OverviewPage({ dashboard, loading, error, onOpenMap, onOpenTable
                     <div style={statusTitleStyle}>{resumeSession.title}</div>
                     <div style={miniMetaStyle}>{resumeSession.domain} · updated {formatAge(resumeSession.updated_at)} ago</div>
                   </div>
-                  <button type="button" style={primaryActionStyle} onClick={onOpenMap}>
+                  <button type="button" style={primaryActionStyle} onClick={onResumeInvestigation}>
                     Resume Investigation
                   </button>
                 </div>
@@ -676,6 +705,12 @@ const domainMetaGridStyle: CSSProperties = {
   display: 'grid',
   gridTemplateColumns: '1fr 1fr',
   gap: 10,
+}
+
+const domainActionRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
 }
 
 const miniLabelStyle: CSSProperties = {

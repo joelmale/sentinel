@@ -38,16 +38,29 @@ function fmtRelative(iso: string | null | undefined): string {
   }
 }
 
-export function TrackBrowserView({ assets, loading }: { assets: TrackEventProperties[]; loading: boolean }) {
+export function TrackBrowserView({
+  assets,
+  loading,
+  initialDomain = 'All',
+}: {
+  assets: TrackEventProperties[]
+  loading: boolean
+  initialDomain?: SourceDomain | 'All'
+}) {
   const { selectAsset, flyTo } = useMapStore()
   const [search, setSearch] = useState('')
-  const [selectedDomain, setSelectedDomain] = useState<SourceDomain | 'All'>('All')
+  const [selectedDomain, setSelectedDomain] = useState<SourceDomain | 'All'>(initialDomain)
   const [selectedClassification, setSelectedClassification] = useState<string>('All')
   const [selectedFeed, setSelectedFeed] = useState<string>('All')
   const [selectedSpaceCategory, setSelectedSpaceCategory] = useState<string>('All')
   const [sortKey, setSortKey] = useState<SortKey>('timestamp')
   const [page, setPage] = useState(0)
   const [selectedAssetKey, setSelectedAssetKey] = useState<string | null>(null)
+
+  useEffect(() => {
+    setSelectedDomain(initialDomain)
+    setPage(0)
+  }, [initialDomain])
 
   const classifications = useMemo(() => (
     Array.from(new Set(assets.map((asset) => asset.classification ?? 'Unknown'))).sort()

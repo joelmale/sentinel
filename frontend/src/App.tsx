@@ -35,7 +35,9 @@ import { usePerfStore } from '@/store/usePerfStore'
 import type {
   DisruptionEventResponse,
   LiveSummaryResponse,
+  OverviewAlertItem,
   OverviewDashboardResponse,
+  SourceDomain,
   TrackEventProperties,
   TrackFeatureCollection,
   WsMessage,
@@ -81,6 +83,9 @@ function SentinelApp() {
     setSelectedOrbitPoints,
     clearSelectedOrbitPoints,
     layers,
+    setLayerEnabled,
+    flyTo,
+    openInvestigation,
   } = useMapStore()
   const {
     globalSummary,
@@ -96,6 +101,7 @@ function SentinelApp() {
   const [annotationPos, setAnnotationPos] = useState<{ lon: number; lat: number } | null>(null)
   const [now, setNow] = useState(new Date())
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('overview')
+  const [browserInitialDomain, setBrowserInitialDomain] = useState<SourceDomain | 'All'>('All')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [disclaimerOpen, setDisclaimerOpen] = useState(false)
   const [spaceDashboardOpen, setSpaceDashboardOpen] = useState(false)
@@ -610,6 +616,53 @@ function SentinelApp() {
     setDisclaimerOpen(false)
   }, [])
 
+  const focusBbox = useCallback((bbox: [number, number, number, number]) => {
+    const [west, south, east, north] = bbox
+    const lonSpan = east >= west ? east - west : 360 - west + east
+    const latSpan = Math.max(0.5, north - south)
+    const dominantSpan = Math.max(latSpan, Math.max(1, lonSpan))
+    const zoom = dominantSpan > 120 ? 2 : dominantSpan > 60 ? 3 : dominantSpan > 20 ? 4 : dominantSpan > 8 ? 5 : 7
+    const centerLon = east >= west
+      ? (west + east) / 2
+      : ((((west + (east + 360)) / 2) + 540) % 360) - 180
+    flyTo(centerLon, (south + north) / 2, zoom)
+  }, [flyTo])
+
+  const openScopedMap = useCallback((domain?: SourceDomain, bbox?: [number, number, number, number]) => {
+    if (domain) {
+      const allDomains = ['Air', 'Maritime', 'Space', 'GPS', 'Infra'] as const
+      allDomains.forEach((layerDomain) => {
+        setLayerEnabled(layerDomain, layerDomain === domain)
+      })
+    }
+    setWorkspaceView('map')
+    if (bbox) {
+      window.setTimeout(() => focusBbox(bbox), 0)
+    }
+  }, [focusBbox, setLayerEnabled])
+
+  const openScopedTable = useCallback((domain?: SourceDomain) => {
+    setBrowserInitialDomain(domain ?? 'All')
+    setWorkspaceView('table')
+  }, [])
+
+  const investigateOverviewAlert = useCallback((alert: OverviewAlertItem) => {
+    if (alert.track_id) {
+      openInvestigation({
+        alertId: alert.alert_id,
+        ruleId: 'overview',
+        ruleName: alert.title,
+        trackId: alert.track_id,
+        domain: alert.domain,
+        triggeredAt: alert.triggered_at,
+        triage: 'new',
+      })
+      setWorkspaceView('map')
+      return
+    }
+    openScopedMap(alert.domain, alert.bbox ?? undefined)
+  }, [openInvestigation, openScopedMap])
+
   return (
     <div className="relative w-screen h-screen bg-slate-950">
       <div
@@ -834,6 +887,11 @@ function SentinelApp() {
           error={overviewDashboardQuery.error instanceof Error ? overviewDashboardQuery.error.message : null}
           onOpenMap={() => setWorkspaceView('map')}
           onOpenTable={() => setWorkspaceView('table')}
+          onOpenDomainMap={(domain) => openScopedMap(domain)}
+          onOpenDomainTable={(domain) => openScopedTable(domain)}
+          onInvestigateAlert={investigateOverviewAlert}
+          onOpenAlertMap={(alert) => openScopedMap(alert.domain, alert.bbox ?? undefined)}
+          onResumeInvestigation={() => setWorkspaceView('map')}
         />
       ) : workspaceView === 'map' ? (
         <>
@@ -865,6 +923,7 @@ function SentinelApp() {
         <TrackBrowserView
           assets={browserAssetsQuery.data ?? []}
           loading={browserAssetsQuery.isLoading}
+          initialDomain={browserInitialDomain}
         />
       )}
 
