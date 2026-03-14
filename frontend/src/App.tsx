@@ -250,8 +250,8 @@ function SentinelApp() {
       return trackedFetchJson<OverviewDashboardResponse>('overview-dashboard', '/api/overview/dashboard')
     },
     refetchOnWindowFocus: false,
-    staleTime: 30_000,
-    refetchInterval: 30_000,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
   })
 
   useEffect(() => {

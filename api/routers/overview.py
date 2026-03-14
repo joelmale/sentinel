@@ -11,6 +11,9 @@ from db.connection import get_db
 from models.track_event import SourceDomain
 
 router = APIRouter(prefix="/overview", tags=["Overview"])
+OVERVIEW_CACHE_TTL = timedelta(seconds=20)
+_overview_cache: dict[str, Any] | None = None
+_overview_cache_expires_at: datetime | None = None
 
 
 def _iso_or_none(value: Any) -> str | None:
@@ -23,11 +26,67 @@ def _iso_or_none(value: Any) -> str | None:
     return str(value)
 
 
+def _empty_dashboard(now: datetime) -> dict[str, Any]:
+    return {
+        "header": {
+            "generated_at": now.isoformat(),
+            "connection": {
+                "ws_connected": False,
+                "api_ok": True,
+                "reconnects": 0,
+            },
+            "alerts": {
+                "active": 0,
+                "investigating": 0,
+                "critical": 0,
+            },
+            "ingest": {
+                "degraded_sources": 0,
+                "stale_sources": 0,
+                "last_success_at": None,
+            },
+        },
+        "summary": {
+            "generated_at": now.isoformat(),
+            "domains": [],
+        },
+        "alerts": {
+            "generated_at": now.isoformat(),
+            "items": [],
+        },
+        "ops": {
+            "generated_at": now.isoformat(),
+            "source_health": [],
+            "watchlist": {
+                "enabled": 0,
+                "active_tracks": 0,
+                "stale_entries": 0,
+                "priority_items": 0,
+            },
+            "disruptions": [],
+        },
+        "activity": {
+            "generated_at": now.isoformat(),
+            "activity": [
+                {"domain": domain.value, "buckets": []}
+                for domain in SourceDomain
+            ],
+            "top_movers": [],
+            "top_aois": [],
+            "resume_session": None,
+        },
+    }
+
+
 @router.get("/dashboard", summary="Bundled overview payload for the landing workspace")
 async def get_overview_dashboard(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    global _overview_cache, _overview_cache_expires_at
     now = datetime.now(timezone.utc)
+    if _overview_cache is not None and _overview_cache_expires_at is not None and now < _overview_cache_expires_at:
+        return _overview_cache
+
     summary_sql = text("""
         WITH domain_windows AS (
             SELECT 'Air'::source_domain AS domain, NOW() - INTERVAL '30 minutes' AS cutoff, '30m' AS window_label
@@ -235,13 +294,41 @@ async def get_overview_dashboard(
         LIMIT 6
     """)
 
-    summary_rows = (await db.execute(summary_sql)).mappings().all()
-    alert_rows = (await db.execute(alerts_sql)).mappings().all()
-    ops_rows = (await db.execute(ops_sql)).mappings().all()
-    watchlist_row = (await db.execute(watchlist_sql)).mappings().first()
-    disruption_rows = (await db.execute(disruptions_sql)).mappings().all()
-    activity_rows = (await db.execute(activity_sql)).mappings().all()
-    mover_rows = (await db.execute(movers_sql)).mappings().all()
+    dashboard = _empty_dashboard(now)
+    try:
+        summary_rows = (await db.execute(summary_sql)).mappings().all()
+    except Exception:
+        summary_rows = []
+
+    try:
+        alert_rows = (await db.execute(alerts_sql)).mappings().all()
+    except Exception:
+        alert_rows = []
+
+    try:
+        ops_rows = (await db.execute(ops_sql)).mappings().all()
+    except Exception:
+        ops_rows = []
+
+    try:
+        watchlist_row = (await db.execute(watchlist_sql)).mappings().first()
+    except Exception:
+        watchlist_row = None
+
+    try:
+        disruption_rows = (await db.execute(disruptions_sql)).mappings().all()
+    except Exception:
+        disruption_rows = []
+
+    try:
+        activity_rows = (await db.execute(activity_sql)).mappings().all()
+    except Exception:
+        activity_rows = []
+
+    try:
+        mover_rows = (await db.execute(movers_sql)).mappings().all()
+    except Exception:
+        mover_rows = []
 
     domains: list[dict[str, Any]] = []
     for row in summary_rows:
@@ -327,52 +414,32 @@ async def get_overview_dashboard(
 
     watchlist = dict(watchlist_row) if watchlist_row is not None else {}
 
-    return {
-        "header": {
-            "generated_at": now.isoformat(),
-            "connection": {
-                "ws_connected": False,
-                "api_ok": True,
-                "reconnects": 0,
-            },
-            "alerts": {
-                "active": active_alerts,
-                "investigating": investigating_alerts,
-                "critical": critical_alerts,
-            },
-            "ingest": {
-                "degraded_sources": degraded_sources,
-                "stale_sources": stale_sources,
-                "last_success_at": latest_success,
-            },
-        },
-        "summary": {
-            "generated_at": now.isoformat(),
-            "domains": domains,
-        },
-        "alerts": {
-            "generated_at": now.isoformat(),
-            "items": items,
-        },
-        "ops": {
-            "generated_at": now.isoformat(),
-            "source_health": source_health,
-            "watchlist": {
-                "enabled": int(watchlist.get("enabled_count") or 0),
-                "active_tracks": int(watchlist.get("active_track_count") or 0),
-                "stale_entries": int(watchlist.get("stale_count") or 0),
-                "priority_items": int(watchlist.get("priority_count") or 0),
-            },
-            "disruptions": disruptions,
-        },
-        "activity": {
-            "generated_at": now.isoformat(),
-            "activity": [
-                {"domain": domain, "buckets": buckets}
-                for domain, buckets in activity_by_domain.items()
-            ],
-            "top_movers": top_movers,
-            "top_aois": [],
-            "resume_session": None,
-        },
+    dashboard["header"]["alerts"] = {
+        "active": active_alerts,
+        "investigating": investigating_alerts,
+        "critical": critical_alerts,
     }
+    dashboard["header"]["ingest"] = {
+        "degraded_sources": degraded_sources,
+        "stale_sources": stale_sources,
+        "last_success_at": latest_success,
+    }
+    dashboard["summary"]["domains"] = domains
+    dashboard["alerts"]["items"] = items
+    dashboard["ops"]["source_health"] = source_health
+    dashboard["ops"]["watchlist"] = {
+        "enabled": int(watchlist.get("enabled_count") or 0),
+        "active_tracks": int(watchlist.get("active_track_count") or 0),
+        "stale_entries": int(watchlist.get("stale_count") or 0),
+        "priority_items": int(watchlist.get("priority_count") or 0),
+    }
+    dashboard["ops"]["disruptions"] = disruptions
+    dashboard["activity"]["activity"] = [
+        {"domain": domain, "buckets": buckets}
+        for domain, buckets in activity_by_domain.items()
+    ]
+    dashboard["activity"]["top_movers"] = top_movers
+
+    _overview_cache = dashboard
+    _overview_cache_expires_at = now + OVERVIEW_CACHE_TTL
+    return dashboard
