@@ -192,7 +192,9 @@ export function OverviewPage({
                       </div>
                       <div style={{ display: 'grid', gap: 4 }}>
                         <div style={alertTitleStyle}>{item.title}</div>
-                        <div style={alertSubtitleStyle}>{item.subtitle ?? `${item.domain} alert`}</div>
+                        <div style={alertSubtitleStyle}>
+                          {item.subtitle ?? `${item.domain} alert`} · {item.status}
+                        </div>
                       </div>
                       <div style={alertWhyStyle}>
                         {(item.why ?? []).slice(0, 2).join(' · ') || 'Alert criteria met'}
@@ -205,9 +207,11 @@ export function OverviewPage({
                           <button type="button" style={rowActionStyle} onClick={() => onOpenAlertMap(item)}>
                             Open map
                           </button>
-                          <button type="button" style={rowActionStyle} onClick={() => onInvestigateAlert(item)}>
-                            Investigate
-                          </button>
+                          {item.investigation_ready && (
+                            <button type="button" style={rowActionStyle} onClick={() => onInvestigateAlert(item)}>
+                              Investigate
+                            </button>
+                          )}
                         </div>
                       </div>
                     </article>

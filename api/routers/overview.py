@@ -172,6 +172,7 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
             ae.id::text AS alert_id,
             ar.domain,
             ar.name AS title,
+            ar.conditions,
             ae.track_id,
             ae.triggered_at,
             ae.status,
@@ -179,6 +180,7 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
             acs.entity_id::text AS entity_id,
             acs.state_confidence AS confidence,
             acs.classification,
+            acs.last_seen,
             COALESCE(sc.source_count, 1) AS source_count
         FROM alert_events ae
         JOIN alert_rules ar ON ar.id = ae.rule_id
@@ -296,23 +298,49 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
     critical_alerts = 0
     for row in alert_rows:
         payload = row["payload"] or {}
+        conditions = row["conditions"] or {}
         status = row["status"] or "open"
-        severity = "critical" if "military" in (row["title"] or "").lower() or row["domain"] == "GPS" else "high" if status == "open" else "medium"
+        classification_condition = conditions.get("classification")
+        bbox_condition = conditions.get("bbox")
+        severity = payload.get("severity")
+        if severity not in {"critical", "high", "medium", "low"}:
+            if classification_condition in {"Military", "Government"}:
+                severity = "critical"
+            elif row["domain"] in {"GPS", "Infra"}:
+                severity = "high"
+            elif status == "open":
+                severity = "high"
+            elif status == "acknowledged":
+                severity = "medium"
+            else:
+                severity = "low"
         if status == "open":
             active_alerts += 1
         if status == "acknowledged":
             investigating_alerts += 1
         if severity == "critical":
             critical_alerts += 1
+        why: list[str] = []
+        if classification_condition:
+            why.append(f"Rule classification: {classification_condition}")
+        if bbox_condition:
+            why.append("AOI constrained")
+        if row["classification"]:
+            why.append(f"Current class: {row['classification']}")
+        if row["last_seen"]:
+            why.append(f"Last seen: {_iso_or_none(row['last_seen'])}")
+        if not why:
+            why.append(f"Rule status: {status}")
         items.append({
             "alert_id": row["alert_id"],
             "domain": row["domain"],
+            "status": status,
             "severity": severity,
             "title": row["title"] or row["track_id"] or "Alert",
             "subtitle": row["track_id"],
             "triggered_at": _iso_or_none(row["triggered_at"]),
             "confidence": row["confidence"],
-            "why": [f"Status: {status}", f"Sources: {int(row['source_count'] or 1)}"],
+            "why": why,
             "entity_id": row["entity_id"],
             "track_id": row["track_id"],
             "bbox": payload.get("bbox"),

@@ -9,7 +9,7 @@ This file tracks the overview-hardening work block. Implementation stops after P
 - [x] Phase 1: Capability handshake and degraded fallback
 - [x] Phase 2: Split overview core vs pivots
 - [x] Phase 3: Precomputed domain summary source
-- [ ] Phase 4: Real alert queue semantics
+- [x] Phase 4: Real alert queue semantics
 - [ ] Phase 5: Trustworthy ops panel data
 - [ ] Phase 6: Section-level failure reporting and panel isolation
 - [ ] Phase 7: Fast pivots real vs deferred
@@ -114,7 +114,12 @@ Completed work:
 - Kept the same freshness semantics while reducing cold-start query cost.
 
 ### Phase 4
-Status: Pending
+Status: Completed
+
+Completed work:
+- Added rule-condition and current-state context to overview alert rows.
+- Added real alert status to the overview payload.
+- Limited `Investigate` actions to alerts that actually have a usable track target.
 
 ### Phase 5
 Status: Pending

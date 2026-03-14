@@ -134,6 +134,7 @@ export interface OverviewSummaryResponse {
 export interface OverviewAlertItem {
   alert_id: string
   domain: SourceDomain
+  status: string
   severity: 'critical' | 'high' | 'medium' | 'low'
   title: string
   subtitle: string | null
