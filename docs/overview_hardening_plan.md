@@ -8,7 +8,7 @@ This file tracks the overview-hardening work block. Implementation stops after P
 
 - [x] Phase 1: Capability handshake and degraded fallback
 - [x] Phase 2: Split overview core vs pivots
-- [ ] Phase 3: Precomputed domain summary source
+- [x] Phase 3: Precomputed domain summary source
 - [ ] Phase 4: Real alert queue semantics
 - [ ] Phase 5: Trustworthy ops panel data
 - [ ] Phase 6: Section-level failure reporting and panel isolation
@@ -107,7 +107,11 @@ Completed work:
 - Updated frontend to load `core` first and lazy-load `pivots` after initial landing render.
 
 ### Phase 3
-Status: Pending
+Status: Completed
+
+Completed work:
+- Rebased overview domain summary counts onto `asset_current_state` freshness windows instead of raw `track_events` landing scans.
+- Kept the same freshness semantics while reducing cold-start query cost.
 
 ### Phase 4
 Status: Pending

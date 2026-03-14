@@ -105,25 +105,21 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
             UNION ALL SELECT 'GPS'::source_domain, NOW() - INTERVAL '20 minutes', '20m'
             UNION ALL SELECT 'Infra'::source_domain, NOW() - INTERVAL '24 hours', '24h'
         ),
-        live_counts AS (
+        state_counts AS (
             SELECT
                 dw.domain,
                 dw.window_label,
-                COUNT(DISTINCT te.track_id) AS live_count
-            FROM domain_windows dw
-            LEFT JOIN track_events te
-              ON te.source_domain = dw.domain
-             AND te.timestamp >= dw.cutoff
-            GROUP BY dw.domain, dw.window_label
-        ),
-        stale_counts AS (
-            SELECT
-                dw.domain,
-                COUNT(*) FILTER (WHERE acs.last_seen < dw.cutoff) AS stale_count
+                COUNT(*) FILTER (WHERE acs.last_seen >= dw.cutoff) AS live_count,
+                COUNT(*) FILTER (WHERE acs.last_seen < dw.cutoff) AS stale_count,
+                COUNT(*) FILTER (WHERE acs.last_seen >= NOW() - INTERVAL '15 minutes') AS count_15m,
+                COUNT(*) FILTER (
+                    WHERE acs.last_seen >= NOW() - INTERVAL '30 minutes'
+                      AND acs.last_seen < NOW() - INTERVAL '15 minutes'
+                ) AS prev_count_15m
             FROM domain_windows dw
             LEFT JOIN asset_current_state acs
               ON acs.source_domain = dw.domain
-            GROUP BY dw.domain
+            GROUP BY dw.domain, dw.window_label
         ),
         alert_counts AS (
             SELECT
@@ -151,34 +147,20 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
                 LIMIT 1
             ) sr ON TRUE
             GROUP BY s.source_domain
-        ),
-        recent_deltas AS (
-            SELECT
-                source_domain AS domain,
-                COUNT(DISTINCT track_id) FILTER (WHERE timestamp >= NOW() - INTERVAL '15 minutes') AS count_15m,
-                COUNT(DISTINCT track_id) FILTER (
-                    WHERE timestamp >= NOW() - INTERVAL '30 minutes'
-                      AND timestamp < NOW() - INTERVAL '15 minutes'
-                ) AS prev_count_15m
-            FROM track_events
-            WHERE timestamp >= NOW() - INTERVAL '30 minutes'
-            GROUP BY source_domain
         )
         SELECT
-            lc.domain,
-            lc.window_label,
-            COALESCE(lc.live_count, 0) AS live_count,
+            sc.domain,
+            sc.window_label,
+            COALESCE(sc.live_count, 0) AS live_count,
             COALESCE(sc.stale_count, 0) AS stale_count,
             COALESCE(ac.active_alerts, 0) AS active_alerts,
             COALESCE(dc.degraded_sources, 0) AS degraded_sources,
-            COALESCE(rd.count_15m, 0) AS count_15m,
-            COALESCE(rd.prev_count_15m, 0) AS prev_count_15m
-        FROM live_counts lc
-        LEFT JOIN stale_counts sc ON sc.domain = lc.domain
-        LEFT JOIN alert_counts ac ON ac.domain = lc.domain
-        LEFT JOIN degraded_counts dc ON dc.domain = lc.domain
-        LEFT JOIN recent_deltas rd ON rd.domain = lc.domain
-        ORDER BY lc.domain
+            COALESCE(sc.count_15m, 0) AS count_15m,
+            COALESCE(sc.prev_count_15m, 0) AS prev_count_15m
+        FROM state_counts sc
+        LEFT JOIN alert_counts ac ON ac.domain = sc.domain
+        LEFT JOIN degraded_counts dc ON dc.domain = sc.domain
+        ORDER BY sc.domain
     """)
     alerts_sql = text("""
         WITH source_counts AS (
