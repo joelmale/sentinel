@@ -33,6 +33,10 @@ export function OverviewPage({ dashboard, loading, error, onOpenMap, onOpenTable
   const sourceHealth = dashboard?.ops.source_health ?? []
   const watchlist = dashboard?.ops.watchlist
   const disruptions = dashboard?.ops.disruptions ?? []
+  const activity = dashboard?.activity.activity ?? []
+  const topMovers = dashboard?.activity.top_movers ?? []
+  const topAois = dashboard?.activity.top_aois ?? []
+  const resumeSession = dashboard?.activity.resume_session
 
   return (
     <div
@@ -223,6 +227,102 @@ export function OverviewPage({ dashboard, loading, error, onOpenMap, onOpenTable
             </div>
           </div>
         </section>
+
+        <section style={{ display: 'grid', gap: 12 }}>
+          <div style={sectionLabelStyle}>Fast Pivots</div>
+          <div style={pivotGridStyle}>
+            <article style={pivotCardStyle}>
+              <div style={subsectionLabelStyle}>Activity</div>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {activity.length === 0 ? (
+                  <div style={emptyPanelStyle}>No recent activity buckets available.</div>
+                ) : (
+                  activity.map((series) => (
+                    <div key={series.domain} style={{ display: 'grid', gap: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                        <span style={statusTitleStyle}>{series.domain}</span>
+                        <span style={miniMetaStyle}>
+                          {series.buckets.reduce((sum, bucket) => sum + bucket.count, 0).toLocaleString()} events
+                        </span>
+                      </div>
+                      <div style={sparklineRowStyle}>
+                        {series.buckets.map((bucket) => (
+                          <span
+                            key={`${series.domain}:${bucket.ts}`}
+                            style={sparklineBarStyle(maxBucketCount(series.buckets), bucket.count, domainColors[series.domain])}
+                            title={`${series.domain} · ${bucket.count.toLocaleString()} @ ${bucket.ts}`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </article>
+
+            <article style={pivotCardStyle}>
+              <div style={subsectionLabelStyle}>Top Movers</div>
+              {topMovers.length === 0 ? (
+                <div style={emptyPanelStyle}>No domain movers returned.</div>
+              ) : (
+                <div style={scrollListStyle}>
+                  {topMovers.slice(0, 8).map((mover) => (
+                    <div key={`${mover.domain}:${mover.label}`} style={statusRowStyle}>
+                      <div style={{ display: 'grid', gap: 2 }}>
+                        <span style={statusTitleStyle}>{mover.label}</span>
+                        <span style={miniMetaStyle}>{mover.reason}</span>
+                      </div>
+                      <span style={{ ...opsValueStyle, fontSize: 16, color: mover.delta >= 0 ? '#5eead4' : '#fca5a5' }}>
+                        {mover.delta >= 0 ? '+' : ''}{mover.delta}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article style={pivotCardStyle}>
+              <div style={subsectionLabelStyle}>Top AOIs</div>
+              {topAois.length === 0 ? (
+                <div style={emptyPanelStyle}>No active AOIs are currently persisted.</div>
+              ) : (
+                <div style={scrollListStyle}>
+                  {topAois.slice(0, 6).map((aoi) => (
+                    <div key={aoi.id} style={statusRowStyle}>
+                      <div style={{ display: 'grid', gap: 2 }}>
+                        <span style={statusTitleStyle}>{aoi.name}</span>
+                        <span style={miniMetaStyle}>{aoi.impacted_assets.toLocaleString()} impacted assets</span>
+                      </div>
+                      <span style={healthBadgeStyle(aoi.active_alerts > 0 ? 'stale' : 'healthy')}>
+                        {aoi.active_alerts} alerts
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article style={pivotCardStyle}>
+              <div style={subsectionLabelStyle}>Resume Session</div>
+              {resumeSession ? (
+                <div style={{ display: 'grid', gap: 10 }}>
+                  <div>
+                    <div style={statusTitleStyle}>{resumeSession.title}</div>
+                    <div style={miniMetaStyle}>{resumeSession.domain} · updated {formatAge(resumeSession.updated_at)} ago</div>
+                  </div>
+                  <button type="button" style={primaryActionStyle} onClick={onOpenMap}>
+                    Resume Investigation
+                  </button>
+                </div>
+              ) : (
+                <div style={emptyPanelStyle}>No resumable investigation is stored yet.</div>
+              )}
+              <button type="button" style={secondaryActionStyle} onClick={onOpenTable}>
+                Open Analyst Browser
+              </button>
+            </article>
+          </div>
+        </section>
       </div>
     </div>
   )
@@ -236,6 +336,10 @@ function formatAge(timestamp: string): string {
   const ageHours = Math.round(ageMin / 60)
   if (ageHours < 24) return `${ageHours}h`
   return `${Math.round(ageHours / 24)}d`
+}
+
+function maxBucketCount(buckets: Array<{ count: number }>): number {
+  return Math.max(1, ...buckets.map((bucket) => bucket.count))
 }
 
 const heroSectionStyle: CSSProperties = {
@@ -520,6 +624,38 @@ const opsValueStyle: CSSProperties = {
   fontWeight: 700,
   color: '#f8fafc',
 }
+
+const pivotGridStyle: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+  gap: 12,
+}
+
+const pivotCardStyle: CSSProperties = {
+  display: 'grid',
+  alignContent: 'start',
+  gap: 12,
+  padding: '14px 14px 12px',
+  borderRadius: 18,
+  border: '1px solid rgba(148,163,184,0.16)',
+  background: 'rgba(15,23,42,0.84)',
+  minHeight: 220,
+}
+
+const sparklineRowStyle: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(12, minmax(0, 1fr))',
+  alignItems: 'end',
+  gap: 3,
+  height: 46,
+}
+
+const sparklineBarStyle = (maxValue: number, value: number, color: string): CSSProperties => ({
+  height: `${Math.max(12, Math.round((value / maxValue) * 100))}%`,
+  borderRadius: 999,
+  background: `linear-gradient(180deg, ${color}, rgba(15,23,42,0.9))`,
+  boxShadow: `0 0 0 1px ${color}22 inset`,
+})
 
 const domainCardStyle: CSSProperties = {
   display: 'grid',
