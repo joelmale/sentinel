@@ -673,21 +673,98 @@ async def get_live_assets(
 
     if scope == "summary" or (scope == "detail" and domain is None and bbox is None):
         unique_sql = text("""
+            WITH canonical_counts AS (
+                SELECT
+                    COUNT(*) FILTER (WHERE source_domain = 'Air') AS air_count,
+                    COUNT(*) FILTER (WHERE source_domain = 'Maritime') AS maritime_count,
+                    COUNT(*) FILTER (WHERE source_domain = 'Space') AS space_count,
+                    COUNT(*) FILTER (WHERE source_domain = 'GPS') AS gps_count,
+                    COUNT(*) FILTER (WHERE source_domain = 'Infra') AS infra_count,
+                    COUNT(*) AS total_count
+                FROM asset_current_state
+                WHERE """ + freshness_condition + """
+            ),
+            legacy_counts AS (
+                SELECT
+                    COUNT(*) FILTER (WHERE source_domain = 'Air' AND last_seen >= :fresh_air_cutoff) AS air_count,
+                    COUNT(*) FILTER (WHERE source_domain = 'Maritime' AND last_seen >= :fresh_maritime_cutoff) AS maritime_count,
+                    COUNT(*) FILTER (WHERE source_domain = 'Space' AND last_seen >= :fresh_space_cutoff) AS space_count,
+                    COUNT(*) FILTER (WHERE source_domain = 'GPS' AND last_seen >= :fresh_gps_cutoff) AS gps_count,
+                    COUNT(*) FILTER (WHERE source_domain = 'Infra' AND last_seen >= :fresh_infra_cutoff) AS infra_count,
+                    COUNT(*) FILTER (
+                        WHERE (source_domain = 'Air' AND last_seen >= :fresh_air_cutoff)
+                           OR (source_domain = 'Maritime' AND last_seen >= :fresh_maritime_cutoff)
+                           OR (source_domain = 'Space' AND last_seen >= :fresh_space_cutoff)
+                           OR (source_domain = 'GPS' AND last_seen >= :fresh_gps_cutoff)
+                           OR (source_domain = 'Infra' AND last_seen >= :fresh_infra_cutoff)
+                    ) AS total_count
+                FROM asset_states
+            ),
+            history_counts AS (
+                SELECT
+                    COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Air' AND timestamp >= :fresh_air_cutoff) AS air_count,
+                    COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Maritime' AND timestamp >= :fresh_maritime_cutoff) AS maritime_count,
+                    COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Space' AND timestamp >= :fresh_space_cutoff) AS space_count,
+                    COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'GPS' AND timestamp >= :fresh_gps_cutoff) AS gps_count,
+                    COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Infra' AND timestamp >= :fresh_infra_cutoff) AS infra_count
+                FROM track_events
+                WHERE timestamp >= :summary_min_cutoff
+            )
             SELECT
-                COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Air' AND timestamp >= :fresh_air_cutoff) AS air_unique_tracks,
-                COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Maritime' AND timestamp >= :fresh_maritime_cutoff) AS maritime_unique_tracks,
-                COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Space' AND timestamp >= :fresh_space_cutoff) AS space_unique_tracks,
-                COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'GPS' AND timestamp >= :fresh_gps_cutoff) AS gps_unique_tracks,
-                COUNT(DISTINCT track_id) FILTER (WHERE source_domain = 'Infra' AND timestamp >= :fresh_infra_cutoff) AS infra_unique_tracks
-            FROM track_events
-            WHERE timestamp >= :summary_min_cutoff
+                CASE
+                    WHEN cc.total_count > 0 THEN cc.air_count
+                    WHEN lc.total_count > 0 THEN lc.air_count
+                    ELSE hc.air_count
+                END AS air_unique_tracks,
+                CASE
+                    WHEN cc.total_count > 0 THEN cc.maritime_count
+                    WHEN lc.total_count > 0 THEN lc.maritime_count
+                    ELSE hc.maritime_count
+                END AS maritime_unique_tracks,
+                CASE
+                    WHEN cc.total_count > 0 THEN cc.space_count
+                    WHEN lc.total_count > 0 THEN lc.space_count
+                    ELSE hc.space_count
+                END AS space_unique_tracks,
+                CASE
+                    WHEN cc.total_count > 0 THEN cc.gps_count
+                    WHEN lc.total_count > 0 THEN lc.gps_count
+                    ELSE hc.gps_count
+                END AS gps_unique_tracks,
+                CASE
+                    WHEN cc.total_count > 0 THEN cc.infra_count
+                    WHEN lc.total_count > 0 THEN lc.infra_count
+                    ELSE hc.infra_count
+                END AS infra_unique_tracks,
+                cc.total_count AS canonical_total_count,
+                lc.total_count AS legacy_total_count
+            FROM canonical_counts cc
+            CROSS JOIN legacy_counts lc
+            CROSS JOIN history_counts hc
         """)
         stale_sql = text("""
+            WITH canonical_stale AS (
+                SELECT
+                    source_domain,
+                    COUNT(*) FILTER (WHERE NOT """ + freshness_condition + """) AS stale_asset_count
+                FROM asset_current_state
+                GROUP BY source_domain
+            ),
+            legacy_stale AS (
+                SELECT
+                    source_domain,
+                    COUNT(*) FILTER (WHERE NOT """ + freshness_condition.replace("last_seen", "last_seen") + """) AS stale_asset_count
+                FROM asset_states
+                GROUP BY source_domain
+            )
             SELECT
-                source_domain,
-                COUNT(*) FILTER (WHERE NOT """ + freshness_condition + """) AS stale_asset_count
-            FROM asset_current_state
-            GROUP BY source_domain
+                COALESCE(cs.source_domain, ls.source_domain) AS source_domain,
+                CASE
+                    WHEN EXISTS (SELECT 1 FROM asset_current_state LIMIT 1) THEN COALESCE(cs.stale_asset_count, 0)
+                    ELSE COALESCE(ls.stale_asset_count, 0)
+                END AS stale_asset_count
+            FROM canonical_stale cs
+            FULL OUTER JOIN legacy_stale ls ON ls.source_domain = cs.source_domain
         """)
         min_cutoff = min(freshness_params.values())
         unique_result = await db.execute(unique_sql, {**freshness_params, "summary_min_cutoff": min_cutoff})
