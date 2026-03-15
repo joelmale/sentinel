@@ -86,6 +86,24 @@ const QUICK_SCOPE_OPTIONS: Record<SourceDomain, Array<{ id: DomainQuickScopeId; 
   ],
 }
 
+const SPACE_PRIORITY_CONSTELLATION_OPTIONS = [
+  'Spire Global',
+  'GPS (USAF)',
+  'ISS',
+  'Tiangong / CSS',
+  'Starlink',
+  'OneWeb',
+] as const
+
+const SPACE_FUNCTION_OPTIONS = [
+  'Communications',
+  'Weather',
+  'Science',
+  'Earth Observation',
+  'Navigation',
+  'ISR',
+] as const
+
 // ── Classification badge colours ──────────────────────────────────
 const CLASS_COLORS: Record<string, string> = {
   Military:   '#f87171',
@@ -283,6 +301,9 @@ function QuickScopeCards({
   selectedTrackId,
   onSelect,
   onApply,
+  onSetOperator,
+  onSetConstellation,
+  onSetPurpose,
 }: {
   domain: SourceDomain
   scope: DomainScopeState
@@ -292,6 +313,9 @@ function QuickScopeCards({
   selectedTrackId: string | null
   onSelect: (scope: DomainQuickScopeId) => void
   onApply: () => void
+  onSetOperator: (value: string) => void
+  onSetConstellation: (value: string) => void
+  onSetPurpose: (value: string) => void
 }) {
   const options = QUICK_SCOPE_OPTIONS[domain]
   const previewParams = useMemo(() => buildTrackScopeParams({
@@ -315,6 +339,12 @@ function QuickScopeCards({
   const previewCount = previewQuery.data?.count ?? null
   const selectedScope = scope.selectedQuickScope
   const appliedScope = scope.appliedQuickScope
+  const applyRequiresInput = (
+    (selectedScope === 'by_operator' && scope.customOperator.trim().length === 0) ||
+    (selectedScope === 'by_constellation' && scope.customConstellation.trim().length === 0) ||
+    (selectedScope === 'by_function' && scope.customPurpose.trim().length === 0)
+  )
+  const canApply = Boolean(selectedScope) && !applyRequiresInput
 
   return (
     <div style={{ padding: '8px 10px 10px 28px', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -332,16 +362,16 @@ function QuickScopeCards({
         <button
           type="button"
           onClick={onApply}
-          disabled={!selectedScope}
+          disabled={!canApply}
           style={{
-            border: `1px solid ${selectedScope ? 'rgba(94,234,212,0.45)' : 'rgba(100,116,139,0.28)'}`,
-            background: selectedScope ? 'rgba(20,184,166,0.16)' : 'rgba(15,23,42,0.5)',
-            color: selectedScope ? '#99f6e4' : '#64748b',
+            border: `1px solid ${canApply ? 'rgba(94,234,212,0.45)' : 'rgba(100,116,139,0.28)'}`,
+            background: canApply ? 'rgba(20,184,166,0.16)' : 'rgba(15,23,42,0.5)',
+            color: canApply ? '#99f6e4' : '#64748b',
             borderRadius: 8,
             padding: '4px 8px',
             fontSize: 10,
             fontWeight: 700,
-            cursor: selectedScope ? 'pointer' : 'not-allowed',
+            cursor: canApply ? 'pointer' : 'not-allowed',
           }}
         >
           Apply scope
@@ -387,6 +417,130 @@ function QuickScopeCards({
           )
         })}
       </div>
+      {selectedScope === 'by_operator' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 10, color: '#94a3b8' }}>Target one operator before loading the domain.</span>
+          <input
+            type="text"
+            value={scope.customOperator}
+            onChange={(event) => onSetOperator(event.target.value)}
+            placeholder={domain === 'Air' ? 'Example: USAF or Delta' : 'Example: MSC or Maersk'}
+            style={{
+              width: '100%',
+              background: 'rgba(15,23,42,0.82)',
+              color: '#e2e8f0',
+              border: '1px solid rgba(148,163,184,0.24)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 11,
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+      )}
+      {domain === 'Space' && selectedScope === 'by_constellation' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 10, color: '#94a3b8' }}>Pick one constellation or type a fleet name.</span>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {SPACE_PRIORITY_CONSTELLATION_OPTIONS.map((option) => {
+              const active = scope.customConstellation.trim().toLowerCase() === option.toLowerCase()
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => onSetConstellation(option)}
+                  style={{
+                    borderRadius: 999,
+                    border: `1px solid ${active ? 'rgba(192,132,252,0.5)' : 'rgba(100,116,139,0.24)'}`,
+                    background: active ? 'rgba(88,28,135,0.3)' : 'rgba(15,23,42,0.45)',
+                    color: active ? '#f5d0fe' : '#cbd5e1',
+                    fontSize: 10,
+                    fontWeight: 700,
+                    padding: '4px 8px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {option}
+                </button>
+              )
+            })}
+          </div>
+          <input
+            type="text"
+            value={scope.customConstellation}
+            onChange={(event) => onSetConstellation(event.target.value)}
+            placeholder="Type a constellation name"
+            style={{
+              width: '100%',
+              background: 'rgba(15,23,42,0.82)',
+              color: '#e2e8f0',
+              border: '1px solid rgba(148,163,184,0.24)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 11,
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+      )}
+      {domain === 'Space' && selectedScope === 'by_function' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 10, color: '#94a3b8' }}>Choose a mission function before rendering satellites.</span>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {SPACE_FUNCTION_OPTIONS.map((option) => {
+              const active = scope.customPurpose.trim().toLowerCase() === option.toLowerCase()
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => onSetPurpose(option)}
+                  style={{
+                    borderRadius: 999,
+                    border: `1px solid ${active ? 'rgba(96,165,250,0.45)' : 'rgba(100,116,139,0.24)'}`,
+                    background: active ? 'rgba(30,64,175,0.28)' : 'rgba(15,23,42,0.45)',
+                    color: active ? '#dbeafe' : '#cbd5e1',
+                    fontSize: 10,
+                    fontWeight: 700,
+                    padding: '4px 8px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {option}
+                </button>
+              )
+            })}
+          </div>
+          <input
+            type="text"
+            value={scope.customPurpose}
+            onChange={(event) => onSetPurpose(event.target.value)}
+            placeholder="Type a purpose label"
+            style={{
+              width: '100%',
+              background: 'rgba(15,23,42,0.82)',
+              color: '#e2e8f0',
+              border: '1px solid rgba(148,163,184,0.24)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 11,
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+      )}
+      {domain === 'Space' && (
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 6,
+          padding: '2px 0 0',
+        }}>
+          <span style={{ fontSize: 10, color: '#94a3b8' }}>Recommended starts:</span>
+          <span style={constraintChipStyle('#c084fc')}>Watchlist</span>
+          <span style={constraintChipStyle('#60a5fa')}>One constellation</span>
+          <span style={constraintChipStyle('#22d3ee')}>One function</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -703,6 +857,9 @@ export function SourcePanel() {
     domainScopes,
     setSelectedQuickScope,
     applyDomainScope,
+    setDomainScopeOperator,
+    setDomainScopeConstellation,
+    setDomainScopePurpose,
     declutterMode,
     toggleDeclutterMode,
     setGroupExcludedTracks,
@@ -1512,6 +1669,9 @@ export function SourcePanel() {
                         selectedTrackId={selectedTrackId}
                         onSelect={(scope) => setSelectedQuickScope(domain, scope)}
                         onApply={() => applyDomainScope(domain)}
+                        onSetOperator={(value) => setDomainScopeOperator(domain, value)}
+                        onSetConstellation={(value) => setDomainScopeConstellation(domain, value)}
+                        onSetPurpose={(value) => setDomainScopePurpose(domain, value)}
                       />
 
                       {!hasAppliedScope && (
