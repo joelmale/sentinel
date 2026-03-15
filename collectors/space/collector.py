@@ -799,7 +799,7 @@ class SpaceCollector(BaseCollector):
                 None,
                 sources,
                 now,
-                metadata,
+                json.dumps(metadata),
             ))
 
             epoch_dt = _parse_tle_epoch(line1)
@@ -824,7 +824,7 @@ class SpaceCollector(BaseCollector):
                     period_min, inclination_deg, apogee_km, perigee_km,
                     rcs_size, orbit_class, launch_site, operator, purpose, contractor,
                     sources, last_updated, metadata
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::text[],$19,$20::jsonb)
                 ON CONFLICT (norad_id) DO UPDATE SET
                     object_name     = EXCLUDED.object_name,
                     intl_designator = EXCLUDED.intl_designator,
