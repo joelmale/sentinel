@@ -108,6 +108,13 @@ def _sanitize_json_value(value):
     return value
 
 
+def _text_or_none(value: object) -> str | None:
+    if value in (None, "", []):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 class BaseCollector(ABC):
     DOMAIN: str = "Unknown"
     FEED_NAME: str = "Unknown"
@@ -857,22 +864,22 @@ class BaseCollector(ABC):
             rows[entity_id] = (
                 entity_id,
                 event["source_domain"],
-                metadata.get("registration"),
-                metadata.get("aircraft_type"),
-                metadata.get("ship_type"),
-                metadata.get("flag"),
-                metadata.get("destination"),
-                metadata.get("operator"),
-                metadata.get("owner"),
-                metadata.get("platform_type"),
-                metadata.get("country_code"),
-                metadata.get("object_type"),
-                metadata.get("orbit_class"),
-                metadata.get("purpose"),
-                metadata.get("contractor"),
+                _text_or_none(metadata.get("registration")),
+                _text_or_none(metadata.get("aircraft_type")),
+                _text_or_none(metadata.get("ship_type")),
+                _text_or_none(metadata.get("flag")),
+                _text_or_none(metadata.get("destination")),
+                _text_or_none(metadata.get("operator")),
+                _text_or_none(metadata.get("owner")),
+                _text_or_none(metadata.get("platform_type")),
+                _text_or_none(metadata.get("country_code")),
+                _text_or_none(metadata.get("object_type")),
+                _text_or_none(metadata.get("orbit_class")),
+                _text_or_none(metadata.get("purpose")),
+                _text_or_none(metadata.get("contractor")),
                 self._parse_date_value(metadata.get("launch_date")),
-                metadata.get("launch_site"),
-                metadata.get("intl_designator"),
+                _text_or_none(metadata.get("launch_site")),
+                _text_or_none(metadata.get("intl_designator")),
                 json.dumps({
                     key: metadata[key]
                     for key in sorted(metadata.keys())
