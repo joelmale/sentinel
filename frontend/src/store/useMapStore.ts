@@ -10,7 +10,14 @@
 import { create } from 'zustand'
 import { devtools } from 'zustand/middleware'
 import { useLiveDataStore } from '@/store/useLiveDataStore'
-import type { PlaybackMode, SourceDomain, TimeWindow, TrackEventProperties } from '@/types/track'
+import type {
+  DomainQuickScopeId,
+  DomainScopeState,
+  PlaybackMode,
+  SourceDomain,
+  TimeWindow,
+  TrackEventProperties,
+} from '@/types/track'
 
 // ── Alert model ───────────────────────────────────────────────────
 // Triage lifecycle: new → investigating | acknowledged → closed
@@ -72,6 +79,54 @@ const DEFAULT_LAYERS: LayerMap = {
   GPS:         { visibility: 'hidden', opacity: 0.7 },
   Infra:       { visibility: 'hidden', opacity: 0.6 },
   Annotations: { visibility: 'hidden', opacity: 1.0 },
+}
+
+const DEFAULT_DOMAIN_SCOPES: Record<SourceDomain, DomainScopeState> = {
+  Air: {
+    selectedQuickScope: 'military',
+    appliedQuickScope: null,
+    resultLimit: 50,
+    customOperator: '',
+    customConstellation: '',
+    customPurpose: '',
+    advancedOpen: false,
+  },
+  Maritime: {
+    selectedQuickScope: 'major_routes',
+    appliedQuickScope: null,
+    resultLimit: 50,
+    customOperator: '',
+    customConstellation: '',
+    customPurpose: '',
+    advancedOpen: false,
+  },
+  Space: {
+    selectedQuickScope: 'watchlist',
+    appliedQuickScope: null,
+    resultLimit: 50,
+    customOperator: '',
+    customConstellation: '',
+    customPurpose: '',
+    advancedOpen: false,
+  },
+  GPS: {
+    selectedQuickScope: 'active_disruptions',
+    appliedQuickScope: null,
+    resultLimit: 50,
+    customOperator: '',
+    customConstellation: '',
+    customPurpose: '',
+    advancedOpen: false,
+  },
+  Infra: {
+    selectedQuickScope: 'active_disruptions',
+    appliedQuickScope: null,
+    resultLimit: 50,
+    customOperator: '',
+    customConstellation: '',
+    customPurpose: '',
+    advancedOpen: false,
+  },
 }
 
 // ── Viewport ──────────────────────────────────────────────────────
@@ -162,6 +217,17 @@ interface MapStore {
   // Workspace-wide search — drives MapCanvas declutter + SourcePanel list
   workspaceSearch: string
   setWorkspaceSearch: (q: string) => void
+
+  // Track-panel scope-first browsing
+  domainScopes: Record<SourceDomain, DomainScopeState>
+  setSelectedQuickScope: (domain: SourceDomain, quickScope: DomainQuickScopeId | null) => void
+  applyDomainScope: (domain: SourceDomain) => void
+  clearDomainScope: (domain: SourceDomain) => void
+  setDomainScopeResultLimit: (domain: SourceDomain, resultLimit: number) => void
+  setDomainScopeAdvancedOpen: (domain: SourceDomain, open: boolean) => void
+  setDomainScopeOperator: (domain: SourceDomain, customOperator: string) => void
+  setDomainScopeConstellation: (domain: SourceDomain, customConstellation: string) => void
+  setDomainScopePurpose: (domain: SourceDomain, customPurpose: string) => void
 
   // Declutter mode: when on + search active, non-matching tracks dim to ~10% on map
   declutterMode: boolean
@@ -339,6 +405,87 @@ export const useMapStore = create<MapStore>()(
     // ── Workspace search & declutter ────────────────────────────
     workspaceSearch: '',
     setWorkspaceSearch: (q) => set({ workspaceSearch: q }),
+    domainScopes: DEFAULT_DOMAIN_SCOPES,
+    setSelectedQuickScope: (domain, selectedQuickScope) =>
+      set((state) => ({
+        domainScopes: {
+          ...state.domainScopes,
+          [domain]: {
+            ...state.domainScopes[domain],
+            selectedQuickScope,
+          },
+        },
+      })),
+    applyDomainScope: (domain) =>
+      set((state) => ({
+        domainScopes: {
+          ...state.domainScopes,
+          [domain]: {
+            ...state.domainScopes[domain],
+            appliedQuickScope: state.domainScopes[domain].selectedQuickScope,
+          },
+        },
+      })),
+    clearDomainScope: (domain) =>
+      set((state) => ({
+        domainScopes: {
+          ...state.domainScopes,
+          [domain]: {
+            ...state.domainScopes[domain],
+            appliedQuickScope: null,
+          },
+        },
+      })),
+    setDomainScopeResultLimit: (domain, resultLimit) =>
+      set((state) => ({
+        domainScopes: {
+          ...state.domainScopes,
+          [domain]: {
+            ...state.domainScopes[domain],
+            resultLimit,
+          },
+        },
+      })),
+    setDomainScopeAdvancedOpen: (domain, advancedOpen) =>
+      set((state) => ({
+        domainScopes: {
+          ...state.domainScopes,
+          [domain]: {
+            ...state.domainScopes[domain],
+            advancedOpen,
+          },
+        },
+      })),
+    setDomainScopeOperator: (domain, customOperator) =>
+      set((state) => ({
+        domainScopes: {
+          ...state.domainScopes,
+          [domain]: {
+            ...state.domainScopes[domain],
+            customOperator,
+          },
+        },
+      })),
+    setDomainScopeConstellation: (domain, customConstellation) =>
+      set((state) => ({
+        domainScopes: {
+          ...state.domainScopes,
+          [domain]: {
+            ...state.domainScopes[domain],
+            customConstellation,
+          },
+        },
+      })),
+    setDomainScopePurpose: (domain, customPurpose) =>
+      set((state) => ({
+        domainScopes: {
+          ...state.domainScopes,
+          [domain]: {
+            ...state.domainScopes[domain],
+            customPurpose,
+          },
+        },
+      })),
     declutterMode: false,
     toggleDeclutterMode: () => set((s) => ({ declutterMode: !s.declutterMode })),
 

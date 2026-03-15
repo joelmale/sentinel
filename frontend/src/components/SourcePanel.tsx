@@ -21,7 +21,7 @@ import { useMapStore } from '@/store/useMapStore'
 import type { LayerVisibility } from '@/store/useMapStore'
 import { useResizePanel } from '@/hooks/useResizePanel'
 import { useDrag } from '@/hooks/useDrag'
-import type { SourceDomain, TrackEventProperties } from '@/types/track'
+import type { DomainQuickScopeId, SourceDomain, TrackEventProperties } from '@/types/track'
 import {
   getAirlineGroup,
   getConstellationCategory,
@@ -46,6 +46,42 @@ const DOMAIN_META: Record<SourceDomain, { icon: string; colorHex: string }> = {
 }
 
 const DOMAIN_LIST_MAX_HEIGHT = 216
+
+const QUICK_SCOPE_OPTIONS: Record<SourceDomain, Array<{ id: DomainQuickScopeId; label: string; description: string }>> = {
+  Air: [
+    { id: 'military', label: 'Military', description: 'Recommended narrow starting set' },
+    { id: 'commercial_sample', label: 'Commercial sample', description: 'Small representative live slice' },
+    { id: 'recent_alerts', label: 'Recent alerts', description: 'Only aircraft tied to current alerts' },
+    { id: 'viewport', label: 'Viewport only', description: 'Constrain to current map window' },
+    { id: 'by_operator', label: 'By operator', description: 'Target a specific airline/operator' },
+  ],
+  Maritime: [
+    { id: 'government', label: 'Government', description: 'Military and state vessels first' },
+    { id: 'major_routes', label: 'Major routes', description: 'High-traffic shipping context' },
+    { id: 'recent_alerts', label: 'Recent alerts', description: 'Only vessels tied to current alerts' },
+    { id: 'viewport', label: 'Viewport only', description: 'Constrain to current map window' },
+    { id: 'by_operator', label: 'By operator', description: 'Target a carrier or flag operator' },
+  ],
+  Space: [
+    { id: 'watchlist', label: 'Watchlist', description: 'Recommended narrow starting set' },
+    { id: 'priority_constellations', label: 'Priority constellations', description: 'Common demo fleets, not the full catalog' },
+    { id: 'by_function', label: 'By function', description: 'Communications, weather, science, ISR' },
+    { id: 'by_constellation', label: 'By constellation', description: 'One fleet at a time' },
+    { id: 'recent_alerts', label: 'Recent alerts', description: 'Only satellites tied to current alerts' },
+  ],
+  GPS: [
+    { id: 'active_disruptions', label: 'Active disruptions', description: 'Operationally relevant starting set' },
+    { id: 'high_severity', label: 'High severity', description: 'Only the highest-scoring cells' },
+    { id: 'near_selected', label: 'Near selected', description: 'Context around the active investigation' },
+    { id: 'recent_alerts', label: 'Recent alerts', description: 'Only disruptions tied to current alerts' },
+  ],
+  Infra: [
+    { id: 'active_disruptions', label: 'Active disruptions', description: 'Operationally relevant starting set' },
+    { id: 'high_severity', label: 'High severity', description: 'Only the most severe outages/stress' },
+    { id: 'near_selected', label: 'Near selected', description: 'Context around the active investigation' },
+    { id: 'recent_alerts', label: 'Recent alerts', description: 'Only disruptions tied to current alerts' },
+  ],
+}
 
 // ── Classification badge colours ──────────────────────────────────
 const CLASS_COLORS: Record<string, string> = {
@@ -232,6 +268,89 @@ function PanelTab({
     >
       {label}
     </button>
+  )
+}
+
+function QuickScopeCards({
+  domain,
+  selectedScope,
+  appliedScope,
+  onSelect,
+  onApply,
+}: {
+  domain: SourceDomain
+  selectedScope: DomainQuickScopeId | null
+  appliedScope: DomainQuickScopeId | null
+  onSelect: (scope: DomainQuickScopeId) => void
+  onApply: () => void
+}) {
+  const options = QUICK_SCOPE_OPTIONS[domain]
+
+  return (
+    <div style={{ padding: '8px 10px 10px 28px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <span style={{ fontSize: 9, color: '#64748b', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+          Quick Scope
+        </span>
+        <button
+          type="button"
+          onClick={onApply}
+          disabled={!selectedScope}
+          style={{
+            border: `1px solid ${selectedScope ? 'rgba(94,234,212,0.45)' : 'rgba(100,116,139,0.28)'}`,
+            background: selectedScope ? 'rgba(20,184,166,0.16)' : 'rgba(15,23,42,0.5)',
+            color: selectedScope ? '#99f6e4' : '#64748b',
+            borderRadius: 8,
+            padding: '4px 8px',
+            fontSize: 10,
+            fontWeight: 700,
+            cursor: selectedScope ? 'pointer' : 'not-allowed',
+          }}
+        >
+          Apply scope
+        </button>
+      </div>
+      <div style={{ display: 'grid', gap: 6 }}>
+        {options.map((option) => {
+          const isSelected = selectedScope === option.id
+          const isApplied = appliedScope === option.id
+          return (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => onSelect(option.id)}
+              style={{
+                border: `1px solid ${isSelected ? 'rgba(96,165,250,0.42)' : 'rgba(100,116,139,0.24)'}`,
+                background: isSelected ? 'rgba(30,64,175,0.18)' : 'rgba(15,23,42,0.45)',
+                color: '#e2e8f0',
+                borderRadius: 10,
+                padding: '8px 10px',
+                textAlign: 'left',
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 700 }}>{option.label}</span>
+                {isApplied && (
+                  <span style={{
+                    fontSize: 9,
+                    fontWeight: 800,
+                    letterSpacing: '0.08em',
+                    color: '#5eead4',
+                    textTransform: 'uppercase',
+                  }}>
+                    Active
+                  </span>
+                )}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 10, color: '#94a3b8', lineHeight: 1.35 }}>
+                {option.description}
+              </div>
+            </button>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
@@ -514,6 +633,9 @@ export function SourcePanel() {
     setSpaceTrackDuration,
     workspaceSearch,
     setWorkspaceSearch,
+    domainScopes,
+    setSelectedQuickScope,
+    applyDomainScope,
     declutterMode,
     toggleDeclutterMode,
     setGroupExcludedTracks,
@@ -1144,6 +1266,8 @@ export function SourcePanel() {
               const isShowingAll = showAll.has(domain)
               const visibleAssetsList = isShowingAll ? domainAssets : domainAssets.slice(0, MAX_VISIBLE)
               const hiddenCount = domainAssets.length - visibleAssetsList.length
+              const domainScope = domainScopes[domain]
+              const hasAppliedScope = domainScope.appliedQuickScope !== null
               const hiddenClasses = classFilter[domain] ?? []
               const activeFilterCount = hiddenClasses.length
               const groupMode = groupModes[domain] ?? 'none'
@@ -1239,9 +1363,22 @@ export function SourcePanel() {
                   {/* Track list (expanded) */}
                   {isExpanded && (
                     <div style={{ borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
+                      <QuickScopeCards
+                        domain={domain}
+                        selectedScope={domainScope.selectedQuickScope}
+                        appliedScope={domainScope.appliedQuickScope}
+                        onSelect={(scope) => setSelectedQuickScope(domain, scope)}
+                        onApply={() => applyDomainScope(domain)}
+                      />
+
+                      {!hasAppliedScope && (
+                        <div style={{ padding: '0 10px 12px 28px', fontSize: 11, color: '#64748b', lineHeight: 1.45 }}>
+                          Choose a quick scope first. Sentinel should narrow to a useful subset before loading a dense domain into the map.
+                        </div>
+                      )}
 
                       {/* ── Classification filter chips ── */}
-                      {count > 0 && (
+                      {hasAppliedScope && count > 0 && (
                         <ClassFilterChips
                           assets={domainAssets}
                           hidden={hiddenClasses}
@@ -1250,7 +1387,7 @@ export function SourcePanel() {
                       )}
 
                       {/* ── Space orbital track duration selector ── */}
-                      {domain === 'Space' && count > 0 && (
+                      {hasAppliedScope && domain === 'Space' && count > 0 && (
                         <div
                           style={{
                             display: 'flex',
@@ -1302,7 +1439,7 @@ export function SourcePanel() {
                       )}
 
                       {/* ── Group-by mode selector ── */}
-                      {count > 0 && (domain === 'Air' || domain === 'Maritime' || domain === 'Space') && (
+                      {hasAppliedScope && count > 0 && (domain === 'Air' || domain === 'Maritime' || domain === 'Space') && (
                         <GroupByChips
                           options={
                             domain === 'Air'      ? [{ key: 'none', label: 'Flat' }, { key: 'airline', label: 'By Airline' }] :
@@ -1318,7 +1455,7 @@ export function SourcePanel() {
                         />
                       )}
 
-                      {domain === 'Space' && spaceConstellationFilters.length > 0 && (
+                      {hasAppliedScope && domain === 'Space' && spaceConstellationFilters.length > 0 && (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '4px 10px 8px 28px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <span style={{
@@ -1468,7 +1605,7 @@ export function SourcePanel() {
                       )}
 
                       {/* ── Track list ── */}
-                      {count === 0 ? (
+                      {hasAppliedScope && (count === 0 ? (
                         <div
                           style={{
                             padding: '8px 14px 8px 28px',
@@ -1753,7 +1890,7 @@ export function SourcePanel() {
                         </>
                       )}
                         </div>
-                      )}
+                      ))}
                     </div>
                   )}
                 </div>

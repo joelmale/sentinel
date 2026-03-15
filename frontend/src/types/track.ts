@@ -5,6 +5,40 @@
 
 export type SourceDomain = 'Air' | 'Maritime' | 'Space' | 'GPS' | 'Infra'
 
+export type DomainQuickScopeId =
+  | 'military'
+  | 'commercial_sample'
+  | 'recent_alerts'
+  | 'viewport'
+  | 'by_operator'
+  | 'government'
+  | 'major_routes'
+  | 'watchlist'
+  | 'priority_constellations'
+  | 'by_function'
+  | 'by_constellation'
+  | 'active_disruptions'
+  | 'high_severity'
+  | 'near_selected'
+  | 'show_all'
+
+export interface DomainScopeState {
+  selectedQuickScope: DomainQuickScopeId | null
+  appliedQuickScope: DomainQuickScopeId | null
+  resultLimit: number
+  customOperator: string
+  customConstellation: string
+  customPurpose: string
+  advancedOpen: boolean
+}
+
+export interface ScopedLivePreviewResponse {
+  generated_at: string
+  count: number
+  domain: SourceDomain
+  applied_quick_scope: DomainQuickScopeId | null
+}
+
 export interface TrackEventProperties {
   event_id: string
   source_domain: SourceDomain
