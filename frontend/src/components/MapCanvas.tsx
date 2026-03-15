@@ -257,6 +257,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     pendingAlerts,
     investigationContext,
     watchedSpaceTrackIds,
+    pinnedTrackKeys: userPinnedTrackKeys,
   } = useMapStore()
   const [hoverInfo, setHoverInfo] = useState<{ x: number; y: number; object: HoverObject } | null>(null)
   const [renderWarning, setRenderWarning] = useState<string | null>(null)
@@ -333,6 +334,9 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
 
   const pinnedTrackKeys = useMemo(() => {
     const keys = new Set<string>()
+    for (const key of userPinnedTrackKeys) {
+      keys.add(key)
+    }
     if (selectedDomain && selectedTrackId) {
       keys.add(`${selectedDomain}:${selectedTrackId}`)
     }
@@ -346,7 +350,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       keys.add(`Space:${watchedId}`)
     }
     return keys
-  }, [selectedDomain, selectedTrackId, investigationContext, pendingAlerts, watchedSpaceTrackIds])
+  }, [investigationContext, pendingAlerts, selectedDomain, selectedTrackId, userPinnedTrackKeys, watchedSpaceTrackIds])
 
   // Filter assets: hidden layers and filtered classifications are excluded entirely.
   // Muted layers pass through (rendered dimmed). Think of hidden=off, muted=context.
@@ -715,6 +719,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       const maritimeAssets = viewportAssets.filter(
         (a) => a.source_domain === 'Maritime' && typeof a.lon === 'number' && typeof a.lat === 'number',
       )
+      const focusMaritimeAssets = maritimeAssets.filter((asset) => pinnedTrackKeys.has(`Maritime:${asset.track_id}`))
+      const backgroundMaritimeAssets = maritimeAssets.filter((asset) => !pinnedTrackKeys.has(`Maritime:${asset.track_id}`))
       const maritimeTrails = Array.from(trailBuffer.entries())
         .filter(([key]) => key.startsWith('Maritime:'))
         .map(([key, positions]) => ({ key, positions, visibility: getTrailVisibilityMode(key) }))
@@ -727,8 +733,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       )
 
       ls.push(new ScatterplotLayer<TrackEventProperties>({
-        id: 'ais-live-points',
-        data: maritimeAssets,
+        id: 'ais-background-points',
+        data: backgroundMaritimeAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
         getRadius: localViewport.zoom < 3 ? 2.4 : localViewport.zoom < 5 ? 3.2 : 4,
         radiusUnits: 'pixels',
@@ -749,6 +755,28 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         onClick: ({ object }) =>
           object && selectAsset(object.track_id, object.source_domain),
       }))
+
+      if (focusMaritimeAssets.length > 0) {
+        ls.push(new ScatterplotLayer<TrackEventProperties>({
+          id: 'ais-focus-points',
+          data: focusMaritimeAssets,
+          getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
+          getRadius: localViewport.zoom < 3 ? 3.8 : localViewport.zoom < 5 ? 5.2 : 6,
+          radiusUnits: 'pixels',
+          getLineWidth: 1.4,
+          lineWidthUnits: 'pixels',
+          stroked: true,
+          filled: true,
+          getLineColor: [250, 204, 21, 220],
+          getFillColor: [34, 211, 238, 220],
+          pickable: true,
+          opacity: domainOpacity('Maritime'),
+          onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
+            setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
+          onClick: ({ object }) =>
+            object && selectAsset(object.track_id, object.source_domain),
+        }))
+      }
 
       if (selectedMaritimeAsset) {
         ls.push(new TextLayer<TrackEventProperties>({
@@ -817,6 +845,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       const airAssets = viewportAssets.filter(
         (a) => a.source_domain === 'Air' && typeof a.lon === 'number' && typeof a.lat === 'number',
       )
+      const focusAirAssets = airAssets.filter((asset) => pinnedTrackKeys.has(`Air:${asset.track_id}`))
+      const backgroundAirAssets = airAssets.filter((asset) => !pinnedTrackKeys.has(`Air:${asset.track_id}`))
       const airTrails = Array.from(trailBuffer.entries())
         .filter(([key]) => key.startsWith('Air:'))
         .map(([key, positions]) => ({ key, positions, visibility: getTrailVisibilityMode(key) }))
@@ -829,8 +859,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       )
 
       ls.push(new ScatterplotLayer<TrackEventProperties>({
-        id: 'adsb-live-points',
-        data: airAssets,
+        id: 'adsb-background-points',
+        data: backgroundAirAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
         getRadius: localViewport.zoom < 3 ? 2.8 : localViewport.zoom < 5 ? 3.6 : 4.5,
         radiusUnits: 'pixels',
@@ -854,6 +884,31 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         onClick: ({ object }) =>
           object && selectAsset(object.track_id, object.source_domain),
       }))
+
+      if (focusAirAssets.length > 0) {
+        ls.push(new ScatterplotLayer<TrackEventProperties>({
+          id: 'adsb-focus-points',
+          data: focusAirAssets,
+          getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
+          getRadius: localViewport.zoom < 3 ? 4 : localViewport.zoom < 5 ? 5.4 : 6.5,
+          radiusUnits: 'pixels',
+          stroked: true,
+          filled: true,
+          lineWidthUnits: 'pixels',
+          getLineWidth: 1.4,
+          getLineColor: [250, 204, 21, 220],
+          getFillColor: (d: TrackEventProperties) => {
+            const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
+            return [base[0], base[1], base[2], 230] as [number, number, number, number]
+          },
+          pickable: true,
+          opacity: domainOpacity('Air'),
+          onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
+            setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
+          onClick: ({ object }) =>
+            object && selectAsset(object.track_id, object.source_domain),
+        }))
+      }
 
       if (selectedAirAsset) {
         ls.push(new TextLayer<TrackEventProperties>({
@@ -937,8 +992,12 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         .map(([key, positions]) => ({ key, positions, visibility: getTrailVisibilityMode(key) }))
         .filter((d) => d.visibility !== 'hidden' && d.positions.length >= 2 && d.positions.some((p) => isPointInBounds(p.lon, p.lat, cullBounds)))
 
-      const prioritySpaceAssets = spaceAssets.filter((asset) => spacePriorityKeys.has(`Space:${asset.track_id}`))
-      const backgroundSpaceAssets = spaceAssets.filter((asset) => !spacePriorityKeys.has(`Space:${asset.track_id}`))
+      const prioritySpaceAssets = spaceAssets.filter((asset) => (
+        spacePriorityKeys.has(`Space:${asset.track_id}`) || pinnedTrackKeys.has(`Space:${asset.track_id}`)
+      ))
+      const backgroundSpaceAssets = spaceAssets.filter((asset) => (
+        !spacePriorityKeys.has(`Space:${asset.track_id}`) && !pinnedTrackKeys.has(`Space:${asset.track_id}`)
+      ))
 
       const nonPriorityVisibleIndividuals = backgroundSpaceAssets
       spaceAggregateCount = 0
@@ -1185,6 +1244,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     cocomFailed,
     globeView,
     mapMode,
+    pinnedTrackKeys,
     declutterMode,
     searchMatchSet,
     localViewport.zoom,
