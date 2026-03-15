@@ -16,7 +16,7 @@
  * Layout: stat grid with 2-column cells. Left-edge drag = resize width.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { formatDistanceToNow } from 'date-fns'
 import { trackedFetchJson } from '@/lib/perf'
@@ -132,7 +132,13 @@ function typeDescription(code: string | null | undefined): string | null {
 
 // ── Planespotters photo cache (module-level, persists across re-renders) ──
 // Keyed by registration. Stores the resolved photo URL or null (no photo found).
-const photoCache = new Map<string, string | null>()
+interface AircraftPhotoResult {
+  photoUrl: string | null
+  photographer: string | null
+  photoLink: string | null
+}
+
+const photoCache = new Map<string, AircraftPhotoResult | null>()
 
 interface PlanespottersResponse {
   photos: Array<{
@@ -306,53 +312,44 @@ function ActionBtn({
 
 // ── Aircraft hero photo ───────────────────────────────────────────
 function AircraftHero({ registration, typeCode }: { registration: string | null | undefined; typeCode: string | null | undefined }) {
-  const [photoUrl, setPhotoUrl] = useState<string | null | undefined>(undefined) // undefined = loading, null = not found
-  const [photographer, setPhotographer] = useState<string | null>(null)
-  const [photoLink, setPhotoLink] = useState<string | null>(null)
-  const mountedRef = useRef(true)
-
-  useEffect(() => {
-    mountedRef.current = true
-    return () => { mountedRef.current = false }
-  }, [])
-
-  useEffect(() => {
-    if (!registration) { setPhotoUrl(null); return }
-
-    // Check module-level cache first — avoids re-fetching for the same tail number
-    if (photoCache.has(registration)) {
-      setPhotoUrl(photoCache.get(registration) ?? null)
-      return
-    }
-
-    setPhotoUrl(undefined) // reset to loading state
-
-    // Planespotters.net is a community aircraft photo database with a public API.
-    // It returns real photos of the specific aircraft tail number — far more
-    // interesting than a generic silhouette.
-    fetch(`https://api.planespotters.net/pub/photos/reg/${encodeURIComponent(registration)}`)
-      .then(r => r.ok ? r.json() as Promise<PlanespottersResponse> : Promise.reject(r.status))
-      .then(data => {
-        if (!mountedRef.current) return
-        const photo = data.photos?.[0]
-        const url = photo?.thumbnail_large?.src || photo?.thumbnail?.src || null
-        photoCache.set(registration, url)
-        setPhotoUrl(url)
-        setPhotographer(photo?.photographer ?? null)
-        setPhotoLink(photo?.link ?? null)
-      })
-      .catch(() => {
-        if (!mountedRef.current) return
+  const photoQuery = useQuery({
+    queryKey: ['planespotters-photo', registration ?? null],
+    enabled: Boolean(registration),
+    queryFn: async (): Promise<AircraftPhotoResult | null> => {
+      if (!registration) return null
+      if (photoCache.has(registration)) {
+        return photoCache.get(registration) ?? null
+      }
+      const response = await fetch(`https://api.planespotters.net/pub/photos/reg/${encodeURIComponent(registration)}`)
+      if (!response.ok) {
         photoCache.set(registration, null)
-        setPhotoUrl(null)
-      })
-  }, [registration])
+        return null
+      }
+      const data = await response.json() as PlanespottersResponse
+      const photo = data.photos?.[0]
+      const result = {
+        photoUrl: photo?.thumbnail_large?.src || photo?.thumbnail?.src || null,
+        photographer: photo?.photographer ?? null,
+        photoLink: photo?.link ?? null,
+      }
+      photoCache.set(registration, result)
+      return result
+    },
+    staleTime: 30 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+
+  const photoUrl = registration
+    ? (photoQuery.data?.photoUrl ?? (photoCache.get(registration)?.photoUrl ?? undefined))
+    : null
+  const photographer = photoQuery.data?.photographer ?? (registration ? photoCache.get(registration)?.photographer ?? null : null)
+  const photoLink = photoQuery.data?.photoLink ?? (registration ? photoCache.get(registration)?.photoLink ?? null : null)
 
   // Nothing to render if no registration and no type code
   if (!registration && !typeCode) return null
 
   // Loading skeleton
-  if (photoUrl === undefined) {
+  if (registration && photoUrl === undefined) {
     return (
       <div style={{
         width: '100%', aspectRatio: '16 / 7',
