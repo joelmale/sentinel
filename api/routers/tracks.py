@@ -766,6 +766,15 @@ async def get_live_assets(
     domain: SourceDomain | None = Query(None),
     bbox: str | None = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
     scope: str = Query("detail", pattern="^(detail|summary|aggregate)$"),
+    quick_scope: str | None = Query(None),
+    classifications: str | None = Query(None),
+    source_feeds: str | None = Query(None),
+    track_ids: str | None = Query(None),
+    operator: str | None = Query(None),
+    purpose: str | None = Query(None),
+    constellations: str | None = Query(None),
+    min_severity: float | None = Query(None),
+    limit: int = Query(500, ge=1, le=5000),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """
@@ -898,41 +907,45 @@ async def get_live_assets(
             "stale_domains": stale_domains,
         }
 
-    conditions = ["TRUE"]
-    params: dict[str, Any] = {}
-
-    if domain:
-        conditions.append("source_domain = :domain")
-        params["domain"] = domain.value
-        conditions.append("last_seen >= :live_cutoff")
-        params["live_cutoff"] = _live_freshness_cutoff(domain, now)
-    else:
-        conditions.append(freshness_condition)
-        params.update(freshness_params)
-
-    if bbox:
-        try:
-            min_lon, min_lat, max_lon, max_lat = [float(x) for x in bbox.split(",")]
-            conditions.append(
-                "ST_Within(position, ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326))"
-            )
-            params.update(min_lon=min_lon, min_lat=min_lat, max_lon=max_lon, max_lat=max_lat)
-        except ValueError:
-            pass
-
+    use_canonical = bool((await db.execute(text("SELECT 1 FROM asset_current_state LIMIT 1"))).first())
+    table_name = "asset_current_state" if use_canonical else "asset_states"
+    source_feed_column = "winning_source_feed" if use_canonical else "source_feed"
+    conditions, params = _build_live_filter_conditions(
+        domain=domain,
+        now=now,
+        bbox=bbox,
+        classifications=_split_csv(classifications),
+        source_feeds=_split_csv(source_feeds),
+        track_ids=_split_csv(track_ids),
+        operator=operator,
+        purpose=purpose,
+        constellations=_split_csv(constellations),
+        min_severity=min_severity,
+    )
     where_clause = " AND ".join(conditions)
     sql = text(f"""
         SELECT
             entity_id::text AS entity_id,
-            source_domain, winning_source_feed AS source_feed, track_id, callsign,
-            ST_X(position) AS lon, ST_Y(position) AS lat,
-            altitude_m, heading_deg, speed_mps, last_seen,
-            first_seen, source_trust_score, identity_confidence, state_confidence,
-            winning_event_id, provenance, metadata, classification
-        FROM asset_current_state
+            acs.source_domain, acs.{source_feed_column} AS source_feed, acs.track_id, acs.callsign,
+            ST_X(acs.position) AS lon, ST_Y(acs.position) AS lat,
+            acs.altitude_m, acs.heading_deg, acs.speed_mps, acs.last_seen,
+            acs.first_seen, acs.source_trust_score, acs.identity_confidence, acs.state_confidence,
+            acs.winning_event_id, acs.provenance,
+            COALESCE(acs.metadata, '{{}}'::jsonb)
+                || jsonb_strip_nulls(jsonb_build_object(
+                    'operator', ee.operator,
+                    'purpose', ee.purpose,
+                    'object_type', ee.object_type,
+                    'orbit_class', ee.orbit_class
+                )) AS metadata,
+            acs.classification
+        FROM {table_name} acs
+        LEFT JOIN entity_enrichments ee ON ee.entity_id = acs.entity_id
         WHERE {where_clause}
-        ORDER BY last_seen DESC
+        ORDER BY acs.last_seen DESC
+        LIMIT :limit
     """)
+    params["limit"] = limit
 
     result = await db.execute(sql, params)
     rows = result.mappings().all()

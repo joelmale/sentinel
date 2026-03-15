@@ -10,7 +10,7 @@
  *   6. AlertQueuePanel      — bottom-right investigation workbench (z:25)
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { format } from 'date-fns'
 import { MapCanvas } from '@/components/MapCanvas'
@@ -28,6 +28,7 @@ import { SpaceWatchDashboard, type SpaceWatchDashboardPayload } from '@/componen
 import { DomainStatusDashboard, type DomainStatusDashboardPayload } from '@/components/DomainStatusDashboard'
 import { DisruptionDashboard, type DisruptionDashboardPayload } from '@/components/DisruptionDashboard'
 import { useLiveStream } from '@/hooks/useLiveStream'
+import { buildTrackScopeParams } from '@/lib/trackScopes'
 import { trackedFetchJson } from '@/lib/perf'
 import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
@@ -87,6 +88,8 @@ function SentinelApp() {
     clearSelectedOrbitPoints,
     layers,
     domainScopes,
+    pendingAlerts,
+    watchedSpaceTrackIds,
     setLayerEnabled,
     flyTo,
     openInvestigation,
@@ -210,9 +213,46 @@ function SentinelApp() {
   }, [liveSummaryQuery.data, setGlobalSummary])
 
   const viewportBbox = serializeBbox(viewportBounds)
+  const alertTrackIdsByDomain = useMemo(() => {
+    const grouped: Record<SourceDomain, string[]> = {
+      Air: [],
+      Maritime: [],
+      Space: [],
+      GPS: [],
+      Infra: [],
+    }
+    for (const alert of pendingAlerts) {
+      if (!grouped[alert.domain].includes(alert.trackId)) {
+        grouped[alert.domain].push(alert.trackId)
+      }
+    }
+    return grouped
+  }, [pendingAlerts])
   const airScopeApplied = domainScopes.Air.appliedQuickScope !== null
   const maritimeScopeApplied = domainScopes.Maritime.appliedQuickScope !== null
   const spaceScopeApplied = domainScopes.Space.appliedQuickScope !== null
+  const airScopeParams = useMemo(() => buildTrackScopeParams({
+    domain: 'Air',
+    scope: { ...domainScopes.Air, selectedQuickScope: domainScopes.Air.appliedQuickScope },
+    bbox: viewportBbox,
+    alertTrackIds: alertTrackIdsByDomain.Air,
+    selectedTrackId,
+  }), [alertTrackIdsByDomain.Air, domainScopes.Air, selectedTrackId, viewportBbox])
+  const maritimeScopeParams = useMemo(() => buildTrackScopeParams({
+    domain: 'Maritime',
+    scope: { ...domainScopes.Maritime, selectedQuickScope: domainScopes.Maritime.appliedQuickScope },
+    bbox: viewportBbox,
+    alertTrackIds: alertTrackIdsByDomain.Maritime,
+    selectedTrackId,
+  }), [alertTrackIdsByDomain.Maritime, domainScopes.Maritime, selectedTrackId, viewportBbox])
+  const spaceScopeParams = useMemo(() => buildTrackScopeParams({
+    domain: 'Space',
+    scope: { ...domainScopes.Space, selectedQuickScope: domainScopes.Space.appliedQuickScope },
+    bbox: viewportBbox,
+    alertTrackIds: alertTrackIdsByDomain.Space,
+    watchedSpaceTrackIds: Array.from(watchedSpaceTrackIds),
+    selectedTrackId,
+  }), [alertTrackIdsByDomain.Space, domainScopes.Space, selectedTrackId, viewportBbox, watchedSpaceTrackIds])
   const shouldLoadSpaceDetails = (
     spaceScopeApplied && (
     layers.Space.visibility === 'active' ||
@@ -235,6 +275,9 @@ function SentinelApp() {
       domainScopes.Air.resultLimit,
       domainScopes.Maritime.resultLimit,
       domainScopes.Space.resultLimit,
+      airScopeParams.toString(),
+      maritimeScopeParams.toString(),
+      spaceScopeParams.toString(),
       selectedDomain,
     ],
     enabled: workspaceView === 'map',
@@ -248,7 +291,7 @@ function SentinelApp() {
 
       if (bbox && layers.Air.visibility !== 'hidden' && airScopeApplied) {
         requests.push(
-          trackedFetchJson<TrackFeatureCollection>('live-air-viewport', `/api/tracks/live?domain=Air&bbox=${encodeURIComponent(bbox)}`)
+          trackedFetchJson<TrackFeatureCollection>('live-air-viewport', `/api/tracks/live?${airScopeParams.toString()}`)
             .then(normalizeTrackFeatures)
         )
       } else {
@@ -257,7 +300,7 @@ function SentinelApp() {
 
       if (bbox && layers.Maritime.visibility !== 'hidden' && maritimeScopeApplied) {
         requests.push(
-          trackedFetchJson<TrackFeatureCollection>('live-maritime-viewport', `/api/tracks/live?domain=Maritime&bbox=${encodeURIComponent(bbox)}`)
+          trackedFetchJson<TrackFeatureCollection>('live-maritime-viewport', `/api/tracks/live?${maritimeScopeParams.toString()}`)
             .then(normalizeTrackFeatures)
         )
       } else {
@@ -266,7 +309,7 @@ function SentinelApp() {
 
       if (bbox && shouldLoadSpaceDetails && layers.Space.visibility !== 'hidden' && spaceScopeApplied) {
         requests.push(
-          trackedFetchJson<TrackFeatureCollection>('live-space-viewport', `/api/tracks/live?domain=Space&bbox=${encodeURIComponent(bbox)}`)
+          trackedFetchJson<TrackFeatureCollection>('live-space-viewport', `/api/tracks/live?${spaceScopeParams.toString()}`)
             .then(normalizeTrackFeatures)
         )
       } else {
