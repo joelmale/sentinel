@@ -1,0 +1,25 @@
+# Compiler Readiness Tracker
+
+Goal:
+
+- make the non-map UI compiler-clean first
+- avoid `MapCanvas`, `SourcePanel`, and websocket internals for now
+- target:
+  - `OverviewPage`
+  - `AssetCard`
+  - `TrackBrowserView`
+  - smaller shared UI hooks
+
+## Phase Checklist
+
+- [x] Phase 1: add scoped compiler-readiness lint profile
+- [ ] Phase 2: clean small UI hooks
+- [ ] Phase 3: make `OverviewPage` compiler-clean
+- [ ] Phase 4: make `AssetCard` compiler-clean
+- [ ] Phase 5: make `TrackBrowserView` compiler-clean
+- [ ] Phase 6: add compiler-clean CI/local gate
+- [ ] Phase 7: document exclusions and next frontier
+
+## Commit Log
+
+- Phase 1 complete: scoped compiler-readiness lint profile added for `OverviewPage`, `AssetCard`, `TrackBrowserView`, `useDrag`, `useResize`, and `useResizePanel`
