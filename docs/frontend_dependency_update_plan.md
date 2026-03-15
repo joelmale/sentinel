@@ -135,6 +135,14 @@ This should be its own work block because Tailwind 4 is not a simple drop-in upg
 - [x] `recharts` -> `3.8.0`
 - [x] `zustand` -> `5.0.11`
 - [x] `react` / `react-dom` / typings -> React 19
+- [x] `vite` -> `8.0.0`
+- [x] `@vitejs/plugin-react` -> `6.0.1`
+- [x] `eslint` -> `10.0.3`
+- [x] `@typescript-eslint/*` -> `8.57.0`
+- [x] `eslint-plugin-react-hooks` -> `7.0.1`
+- [x] `tailwindcss` -> `4.2.1`
+- [x] `@tailwindcss/postcss` added for Tailwind 4 CSS processing
+- [x] `@types/node` -> `25.5.0`
 
 Completed commits:
 
@@ -438,11 +446,8 @@ Validation:
 
 ### Defer until you explicitly want a platform migration
 
-- React 19
-- Vite 8
-- ESLint 10 / typescript-eslint 8
-- Tailwind 4
-- Node typings 25
+- native RSC architecture
+- broader lint-rule tightening for React Compiler / purity rules
 
 ## Why not update everything immediately
 
@@ -464,11 +469,10 @@ That should be done intentionally, not as a bulk dependency sweep.
 
 ## Recommended Next Action
 
-If you want a practical starting point, the next sensible work block is:
+If you want a practical next work block now, the package migration plan is effectively complete.
 
-1. update `maplibre-gl`
-2. update `date-fns`
-3. update `recharts`
-4. update `zustand`
+The remaining frontend work is no longer package-version work. It is architectural and policy work:
 
-and stop there before deciding whether the larger React/Vite/ESLint/Tailwind migration is worth the churn.
+1. decide whether Sentinel should adopt a true RSC-capable runtime
+2. decide whether to opt into the stricter React Compiler-oriented lint rules
+3. continue performance work in data loading, map LOD, and workflow design
