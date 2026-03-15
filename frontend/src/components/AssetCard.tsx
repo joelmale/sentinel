@@ -6,7 +6,7 @@
  *   - Country flag emoji next to origin country
  *   - Registration, ICAO type code + human description, ADS-B category
  *   - Airborne / On Ground status indicator
- *   - "Search Flight" button → Google search for the callsign
+ *   - Domain-aware search button → Google search for the selected asset
  *
  * Space domain enhancements:
  *   - Orbit class badge (LEO / MEO / GEO / SSO / HEO)
@@ -279,6 +279,28 @@ function fmtVertRate(mps: number | null | undefined): string | null {
   const fpm = Math.round(mps * 196.85)
   const arrow = mps > 1 ? '↑' : mps < -1 ? '↓' : '→'
   return `${arrow} ${Math.abs(fpm).toLocaleString()} ft/min`
+}
+
+function getAssetSearchLabel(
+  domain: SourceDomain,
+  callsign: string | null | undefined,
+  trackId: string,
+): string {
+  const identifier = callsign || trackId
+  if (domain === 'Air') return `Flight "${identifier}"`
+  if (domain === 'Maritime') return `Vessel "${identifier}"`
+  if (domain === 'Space') return `Satellite "${identifier}"`
+  if (domain === 'GPS') return `GPS cell "${identifier}"`
+  return `Asset "${identifier}"`
+}
+
+function getAssetSearchQuery(domain: SourceDomain, callsign: string | null | undefined, trackId: string): string {
+  const identifier = callsign || trackId
+  if (domain === 'Air') return `${identifier} flight`
+  if (domain === 'Maritime') return `${identifier} vessel`
+  if (domain === 'Space') return `${identifier} satellite`
+  if (domain === 'GPS') return `${identifier} gps interference`
+  return identifier
 }
 
 function fieldStatusColor(status: SatelliteFieldStatus): string {
@@ -579,11 +601,10 @@ export function AssetCard() {
   }, [asset, selectedDomain, playback.timeWindow])
 
   const handleSearch = useCallback(() => {
-    if (!asset) return
-    // Prefer callsign (flight number) for Air domain; otherwise track_id
-    const query = asset.callsign || asset.track_id
-    window.open(`https://www.google.com/search?q=${encodeURIComponent(query + ' flight')}`, '_blank')
-  }, [asset])
+    if (!asset || !selectedDomain) return
+    const query = getAssetSearchQuery(selectedDomain, asset.callsign, asset.track_id)
+    window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, '_blank')
+  }, [asset, selectedDomain])
 
   if (!assetCardOpen || !asset || !selectedDomain) return null
 
@@ -1030,9 +1051,9 @@ export function AssetCard() {
             </ActionBtn>
           </div>
         )}
-        {/* Search button — Air domain shows flight search; others show generic */}
+        {/* Search button — domain-aware search query and label */}
         <ActionBtn onClick={handleSearch} variant="search">
-          🔍 Search {asset.callsign ? `"${asset.callsign}"` : 'Flight'} on Google
+          🔍 Search {getAssetSearchLabel(selectedDomain, asset.callsign, asset.track_id)} on Google
         </ActionBtn>
       </div>
     </div>
