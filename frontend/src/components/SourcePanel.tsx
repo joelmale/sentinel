@@ -304,6 +304,8 @@ function QuickScopeCards({
   onSetOperator,
   onSetConstellation,
   onSetPurpose,
+  onSetAdvancedOpen,
+  onSetResultLimit,
 }: {
   domain: SourceDomain
   scope: DomainScopeState
@@ -316,6 +318,8 @@ function QuickScopeCards({
   onSetOperator: (value: string) => void
   onSetConstellation: (value: string) => void
   onSetPurpose: (value: string) => void
+  onSetAdvancedOpen: (open: boolean) => void
+  onSetResultLimit: (limit: number) => void
 }) {
   const options = QUICK_SCOPE_OPTIONS[domain]
   const previewParams = useMemo(() => buildTrackScopeParams({
@@ -541,6 +545,87 @@ function QuickScopeCards({
           <span style={constraintChipStyle('#22d3ee')}>One function</span>
         </div>
       )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 4 }}>
+        <button
+          type="button"
+          onClick={() => onSetAdvancedOpen(!scope.advancedOpen)}
+          style={{
+            alignSelf: 'flex-start',
+            border: '1px solid rgba(148,163,184,0.24)',
+            background: 'rgba(15,23,42,0.45)',
+            color: '#94a3b8',
+            borderRadius: 999,
+            padding: '4px 8px',
+            fontSize: 10,
+            fontWeight: 700,
+            cursor: 'pointer',
+          }}
+        >
+          {scope.advancedOpen ? 'Hide advanced' : 'Advanced'}
+        </button>
+        {scope.advancedOpen && (
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            padding: '8px 10px',
+            borderRadius: 10,
+            border: '1px solid rgba(148,163,184,0.16)',
+            background: 'rgba(15,23,42,0.35)',
+          }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 10, color: '#94a3b8' }}>Result cap</span>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {[25, 50, 100, 250].map((option) => {
+                  const active = scope.resultLimit === option
+                  return (
+                    <button
+                      key={option}
+                      type="button"
+                      onClick={() => onSetResultLimit(option)}
+                      style={{
+                        borderRadius: 999,
+                        border: `1px solid ${active ? 'rgba(94,234,212,0.45)' : 'rgba(100,116,139,0.24)'}`,
+                        background: active ? 'rgba(20,184,166,0.2)' : 'rgba(15,23,42,0.45)',
+                        color: active ? '#99f6e4' : '#cbd5e1',
+                        fontSize: 10,
+                        fontWeight: 700,
+                        padding: '4px 8px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Top {option}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 10, color: '#fca5a5', fontWeight: 700 }}>Heavy action</span>
+              <button
+                type="button"
+                onClick={() => onSelect('show_all')}
+                style={{
+                  alignSelf: 'flex-start',
+                  borderRadius: 999,
+                  border: '1px solid rgba(248,113,113,0.4)',
+                  background: scope.selectedQuickScope === 'show_all' ? 'rgba(127,29,29,0.45)' : 'rgba(69,10,10,0.26)',
+                  color: '#fecaca',
+                  fontSize: 10,
+                  fontWeight: 800,
+                  padding: '4px 8px',
+                  cursor: 'pointer',
+                }}
+              >
+                Show full {domain} scope
+              </button>
+              <span style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.4 }}>
+                Use only when you explicitly want the full scoped domain. This is intentionally hidden from the default workflow.
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -857,6 +942,8 @@ export function SourcePanel() {
     domainScopes,
     setSelectedQuickScope,
     applyDomainScope,
+    setDomainScopeResultLimit,
+    setDomainScopeAdvancedOpen,
     setDomainScopeOperator,
     setDomainScopeConstellation,
     setDomainScopePurpose,
@@ -1669,6 +1756,8 @@ export function SourcePanel() {
                         selectedTrackId={selectedTrackId}
                         onSelect={(scope) => setSelectedQuickScope(domain, scope)}
                         onApply={() => applyDomainScope(domain)}
+                        onSetAdvancedOpen={(open) => setDomainScopeAdvancedOpen(domain, open)}
+                        onSetResultLimit={(limit) => setDomainScopeResultLimit(domain, limit)}
                         onSetOperator={(value) => setDomainScopeOperator(domain, value)}
                         onSetConstellation={(value) => setDomainScopeConstellation(domain, value)}
                         onSetPurpose={(value) => setDomainScopePurpose(domain, value)}
