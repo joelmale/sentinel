@@ -13,7 +13,7 @@ Goal:
 ## Phase Checklist
 
 - [x] Phase 1: add strict compiler purity/static lint profile
-- [ ] Phase 2: remove render-time impurity from the subset
+- [x] Phase 2: remove render-time impurity from the subset
 - [ ] Phase 3: eliminate effect-driven derived state patterns
 - [ ] Phase 4: hoist static component and config definitions
 - [ ] Phase 5: normalize event and callback boundaries
@@ -22,3 +22,4 @@ Goal:
 ## Commit Log
 
 - Phase 1 complete: added `lint:compiler-strict` and scoped warning-mode `recommended-latest` React Hooks compiler rules for the existing non-map subset
+- Phase 2 complete: audited the strict subset for render-time impurity and found no additional compiler-rule changes were required beyond the existing clean boundary
