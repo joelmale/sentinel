@@ -39,6 +39,8 @@ jobs:
         run: cd frontend && npm run type-check
       - name: Lint
         run: cd frontend && npm run lint
+      - name: Compiler-ready subset
+        run: cd frontend && npm run lint:compiler-ready
 
   docker-build:
     name: Docker Compose build

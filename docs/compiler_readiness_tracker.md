@@ -17,7 +17,7 @@ Goal:
 - [x] Phase 3: make `OverviewPage` compiler-clean
 - [x] Phase 4: make `AssetCard` compiler-clean
 - [x] Phase 5: make `TrackBrowserView` compiler-clean
-- [ ] Phase 6: add compiler-clean CI/local gate
+- [x] Phase 6: add compiler-clean CI/local gate
 - [ ] Phase 7: document exclusions and next frontier
 
 ## Commit Log
@@ -27,3 +27,4 @@ Goal:
 - Phase 3 complete: audited `OverviewPage`; it already passes the scoped compiler-readiness lint profile
 - Phase 4 complete: replaced `AssetCard`'s effect-driven aircraft photo state with a query-driven fetch path
 - Phase 5 complete: removed effect-driven state syncing from `TrackBrowserView` and derived active selection directly from filtered results
+- Phase 6 complete: added `lint:compiler-ready` enforcement to frontend CI
