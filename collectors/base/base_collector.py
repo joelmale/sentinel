@@ -594,6 +594,21 @@ class BaseCollector(ABC):
         if resolved_entity_id is None:
             resolved_entity_id = self._asset_entity_id(event["source_domain"], str(event["track_id"]))
 
+        await conn.execute("""
+            INSERT INTO entities (entity_id, entity_type, source_domain, display_name, status, metadata)
+            VALUES ($1, 'asset', $2::source_domain, $3, 'active', $4::jsonb)
+            ON CONFLICT (entity_id) DO UPDATE SET
+                display_name = COALESCE(EXCLUDED.display_name, entities.display_name),
+                status = EXCLUDED.status,
+                metadata = entities.metadata || EXCLUDED.metadata,
+                updated_at = NOW()
+        """,
+            resolved_entity_id,
+            event["source_domain"],
+            event.get("callsign") or str(event["track_id"]),
+            json.dumps({"source_feed": event["source_feed"]}),
+        )
+
         observed_at = event["timestamp"] if isinstance(event["timestamp"], datetime) else datetime.fromisoformat(str(event["timestamp"]).replace("Z", "+00:00"))
         await conn.execute("""
             INSERT INTO asset_identity_resolutions (
