@@ -86,6 +86,7 @@ function SentinelApp() {
     setSelectedOrbitPoints,
     clearSelectedOrbitPoints,
     layers,
+    domainScopes,
     setLayerEnabled,
     flyTo,
     openInvestigation,
@@ -209,10 +210,15 @@ function SentinelApp() {
   }, [liveSummaryQuery.data, setGlobalSummary])
 
   const viewportBbox = serializeBbox(viewportBounds)
+  const airScopeApplied = domainScopes.Air.appliedQuickScope !== null
+  const maritimeScopeApplied = domainScopes.Maritime.appliedQuickScope !== null
+  const spaceScopeApplied = domainScopes.Space.appliedQuickScope !== null
   const shouldLoadSpaceDetails = (
+    spaceScopeApplied && (
     layers.Space.visibility === 'active' ||
     viewport.zoom >= 4 ||
     selectedDomain === 'Space'
+    )
   ) && Boolean(viewportBbox)
 
   const liveViewportQuery = useQuery({
@@ -223,6 +229,12 @@ function SentinelApp() {
       layers.Air.visibility,
       layers.Maritime.visibility,
       layers.Space.visibility,
+      domainScopes.Air.appliedQuickScope,
+      domainScopes.Maritime.appliedQuickScope,
+      domainScopes.Space.appliedQuickScope,
+      domainScopes.Air.resultLimit,
+      domainScopes.Maritime.resultLimit,
+      domainScopes.Space.resultLimit,
       selectedDomain,
     ],
     enabled: workspaceView === 'map',
@@ -234,7 +246,7 @@ function SentinelApp() {
       const bbox = serializeBbox(viewportBounds)
       const requests: Array<Promise<unknown>> = []
 
-      if (bbox && layers.Air.visibility !== 'hidden') {
+      if (bbox && layers.Air.visibility !== 'hidden' && airScopeApplied) {
         requests.push(
           trackedFetchJson<TrackFeatureCollection>('live-air-viewport', `/api/tracks/live?domain=Air&bbox=${encodeURIComponent(bbox)}`)
             .then(normalizeTrackFeatures)
@@ -243,7 +255,7 @@ function SentinelApp() {
         requests.push(Promise.resolve([]))
       }
 
-      if (bbox && layers.Maritime.visibility !== 'hidden') {
+      if (bbox && layers.Maritime.visibility !== 'hidden' && maritimeScopeApplied) {
         requests.push(
           trackedFetchJson<TrackFeatureCollection>('live-maritime-viewport', `/api/tracks/live?domain=Maritime&bbox=${encodeURIComponent(bbox)}`)
             .then(normalizeTrackFeatures)
@@ -252,7 +264,7 @@ function SentinelApp() {
         requests.push(Promise.resolve([]))
       }
 
-      if (bbox && shouldLoadSpaceDetails && layers.Space.visibility !== 'hidden') {
+      if (bbox && shouldLoadSpaceDetails && layers.Space.visibility !== 'hidden' && spaceScopeApplied) {
         requests.push(
           trackedFetchJson<TrackFeatureCollection>('live-space-viewport', `/api/tracks/live?domain=Space&bbox=${encodeURIComponent(bbox)}`)
             .then(normalizeTrackFeatures)
@@ -273,6 +285,26 @@ function SentinelApp() {
     refetchInterval: playback.mode === 'live' ? 20_000 : false,
     staleTime: 5_000,
   })
+
+  useEffect(() => {
+    if (!airScopeApplied || layers.Air.visibility === 'hidden') {
+      replaceDomainViewportAssets('Air', [])
+    }
+    if (!maritimeScopeApplied || layers.Maritime.visibility === 'hidden') {
+      replaceDomainViewportAssets('Maritime', [])
+    }
+    if (!spaceScopeApplied || layers.Space.visibility === 'hidden') {
+      replaceDomainViewportAssets('Space', [])
+    }
+  }, [
+    airScopeApplied,
+    maritimeScopeApplied,
+    spaceScopeApplied,
+    layers.Air.visibility,
+    layers.Maritime.visibility,
+    layers.Space.visibility,
+    replaceDomainViewportAssets,
+  ])
 
   const overviewCoreQuery = useQuery({
     queryKey: ['overview-core'],
