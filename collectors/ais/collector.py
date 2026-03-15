@@ -17,9 +17,12 @@ import io
 import json
 import logging
 import os
+import re
 import zipfile
 from datetime import datetime, timedelta, timezone
+from html import unescape
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 import websockets
@@ -106,11 +109,64 @@ def first_present(mapping: dict, keys: tuple[str, ...]) -> object:
     return None
 
 
+def parse_cookie_header(raw: str) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    for part in raw.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            cookies[key] = value
+    return cookies
+
+
+def normalize_text(value: object) -> str | None:
+    if value in (None, "", [], {}):
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    return text or None
+
+
+def normalize_lookup_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def slug_vessel_name(value: object) -> str:
+    text = normalize_text(value)
+    if not text:
+        return "UNKNOWN"
+    return quote(text.upper())
+
+
+def deep_find_first(payload: object, aliases: tuple[str, ...]) -> object:
+    wanted = {normalize_lookup_key(alias) for alias in aliases}
+
+    def walk(node: object) -> object:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if normalize_lookup_key(str(key)) in wanted and value not in (None, "", [], {}):
+                    return value
+                nested = walk(value)
+                if nested not in (None, "", [], {}):
+                    return nested
+        elif isinstance(node, list):
+            for item in node:
+                nested = walk(item)
+                if nested not in (None, "", [], {}):
+                    return nested
+        return None
+
+    return walk(payload)
+
+
 class AISCollector(BaseCollector):
     DOMAIN = "Maritime"
     FEED_NAME = "AIS"
     AISSTREAM_URL = "wss://stream.aisstream.io/v0/stream"
     GFW_REPORT_URL = "https://gateway.api.globalfishingwatch.org/v3/4wings/report"
+    MARINETRAFFIC_BASE_URL = "https://www.marinetraffic.com"
 
     def __init__(self):
         self.mode = os.environ.get("AIS_MODE", "aisstream").strip().lower()
@@ -156,23 +212,250 @@ class AISCollector(BaseCollector):
         self.gfw_state_eligible = os.environ.get("GFW_STATE_ELIGIBLE", "false").strip().lower() in {"1", "true", "yes"}
         self.gfw_suppress_if_live_seen_hours = int(os.environ.get("GFW_SUPPRESS_IF_LIVE_SEEN_HOURS", 24))
         self.ais_merge_sources = json.loads(os.environ.get("AIS_MERGE_SOURCES", '["aisstream","gfw"]'))
+        self.marinetraffic_enabled = os.environ.get("MARINETRAFFIC_ENRICH_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+        self.marinetraffic_timeout_sec = float(os.environ.get("MARINETRAFFIC_TIMEOUT_SEC", "20"))
+        self.marinetraffic_max_lookups_per_poll = int(os.environ.get("MARINETRAFFIC_MAX_LOOKUPS_PER_POLL", "5"))
+        self.marinetraffic_refresh_hours = int(os.environ.get("MARINETRAFFIC_REFRESH_HOURS", "24"))
+        self.marinetraffic_user_agent = os.environ.get(
+            "MARINETRAFFIC_USER_AGENT",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0",
+        ).strip()
+        self.marinetraffic_accept_language = os.environ.get("MARINETRAFFIC_ACCEPT_LANGUAGE", "en-US,en;q=0.9").strip()
+        self.marinetraffic_referer = os.environ.get("MARINETRAFFIC_REFERER", "https://www.google.com/").strip()
+        self.marinetraffic_sec_ch_ua = os.environ.get(
+            "MARINETRAFFIC_SEC_CH_UA",
+            '"Not:A-Brand";v="99", "Microsoft Edge";v="145", "Chromium";v="145"',
+        ).strip()
+        self.marinetraffic_sec_ch_ua_platform = os.environ.get("MARINETRAFFIC_SEC_CH_UA_PLATFORM", "macOS").strip()
+        self.marinetraffic_cookie_header = os.environ.get("MARINETRAFFIC_COOKIE_HEADER", "").strip()
+        self.marinetraffic_cookies = parse_cookie_header(self.marinetraffic_cookie_header)
+        self._marinetraffic_cache: dict[str, tuple[datetime, dict[str, object]]] = {}
+        self._marinetraffic_blocked_until: datetime | None = None
         self._gfw_last_bucket_end: datetime | None = None
         self._recent_live_seen_at: dict[str, datetime] = {}
 
     async def fetch(self) -> list[dict]:
         if self.mode == "aisstream":
-            return await self._fetch_aisstream()
-        if self.mode == "accessais":
-            return await self._fetch_accessais()
-        if self.mode in {"gfw", "globalfishingwatch"}:
-            return await self._fetch_global_fishing_watch()
-        if self.mode in {"merge", "hybrid"}:
-            return await self._fetch_merge()
-        if self.mode == "aishub":
+            events = await self._fetch_aisstream()
+        elif self.mode == "accessais":
+            events = await self._fetch_accessais()
+        elif self.mode in {"gfw", "globalfishingwatch"}:
+            events = await self._fetch_global_fishing_watch()
+        elif self.mode in {"merge", "hybrid"}:
+            events = await self._fetch_merge()
+        elif self.mode == "aishub":
             raise NotImplementedError(
                 "AISHub mode is intentionally disabled. Configure AIS_MODE=aisstream, accessais, gfw, or merge."
             )
-        raise ValueError(f"Unsupported AIS_MODE: {self.mode}")
+        else:
+            raise ValueError(f"Unsupported AIS_MODE: {self.mode}")
+        return await self._maybe_enrich_events_with_marinetraffic(events)
+
+    def _marinetraffic_headers(self) -> dict[str, str]:
+        return {
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "accept-language": self.marinetraffic_accept_language,
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
+            "referer": self.marinetraffic_referer,
+            "sec-ch-ua": self.marinetraffic_sec_ch_ua,
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": f'"{self.marinetraffic_sec_ch_ua_platform}"',
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "cross-site",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+            "user-agent": self.marinetraffic_user_agent,
+        }
+
+    def _marinetraffic_detail_url(self, metadata: dict[str, object]) -> str:
+        mmsi = normalize_text(metadata.get("mmsi")) or "0"
+        imo = normalize_text(metadata.get("imo")) or "0"
+        vessel = slug_vessel_name(metadata.get("vessel_name") or metadata.get("ship_name") or metadata.get("name"))
+        return (
+            f"{self.MARINETRAFFIC_BASE_URL}/en/ais/details/ships/"
+            f"mmsi:{mmsi}/imo:{imo}/vessel:{vessel}"
+        )
+
+    def _marinetraffic_labels_from_html(self, html: str) -> dict[str, str]:
+        cleaned = re.sub(r"(?is)<script.*?>.*?</script>", " ", html)
+        cleaned = re.sub(r"(?is)<style.*?>.*?</style>", " ", cleaned)
+        cleaned = unescape(re.sub(r"(?is)<[^>]+>", "\n", cleaned))
+        lines = [normalize_text(line) for line in cleaned.splitlines()]
+        lines = [line for line in lines if line]
+        pairs: dict[str, str] = {}
+        for index, line in enumerate(lines[:-1]):
+            key = normalize_lookup_key(line)
+            if not key or key in pairs:
+                continue
+            next_line = lines[index + 1]
+            if next_line and normalize_lookup_key(next_line) != key:
+                pairs[key] = next_line
+        return pairs
+
+    def _marinetraffic_script_objects(self, html: str) -> list[object]:
+        payloads: list[object] = []
+        for raw in re.findall(r"(?is)<script[^>]*>(.*?)</script>", html):
+            text = raw.strip()
+            if not text:
+                continue
+            candidates = [text]
+            next_data_match = re.search(r"__NEXT_DATA__\s*=\s*({.*?})\s*;?\s*$", text, re.S)
+            if next_data_match:
+                candidates.append(next_data_match.group(1))
+            for candidate in candidates:
+                if not candidate.startswith(("{", "[")):
+                    continue
+                try:
+                    payloads.append(json.loads(candidate))
+                except Exception:
+                    continue
+        return payloads
+
+    def _extract_marinetraffic_payload(self, html: str, url: str) -> dict[str, object]:
+        labels = self._marinetraffic_labels_from_html(html)
+        scripts = self._marinetraffic_script_objects(html)
+
+        def from_sources(*aliases: str) -> str | None:
+            for alias in aliases:
+                value = labels.get(normalize_lookup_key(alias))
+                if value:
+                    return value
+            for payload in scripts:
+                value = deep_find_first(payload, aliases)
+                text = normalize_text(value)
+                if text:
+                    return text
+            return None
+
+        summary = {
+            "vessel_name": from_sources("vesselname", "name", "shipname"),
+            "mmsi": from_sources("mmsi"),
+            "imo": from_sources("imo", "imonumber"),
+            "callsign": from_sources("callsign", "call sign"),
+            "flag": from_sources("flag"),
+            "ship_type": from_sources("shiptype", "ship type", "vesseltype", "vessel type"),
+            "destination": from_sources("destination"),
+            "navigational_status": from_sources("navigationalstatus", "navigational status", "navstatus", "status"),
+        }
+        general = {
+            "owner": from_sources("registeredowner", "owner"),
+            "operator": from_sources("commercialmanager", "manager", "operator"),
+            "builder": from_sources("shipbuilder", "builder"),
+            "year_built": from_sources("yearbuilt", "year built"),
+            "length": from_sources("length"),
+            "beam": from_sources("beam", "breadth", "width"),
+            "gross_tonnage": from_sources("gross tonnage", "gross_tonnage", "gt"),
+            "deadweight": from_sources("deadweight", "dwt"),
+            "draught": from_sources("draught", "draft"),
+        }
+        latest_ais = {
+            "position_received_at": from_sources("positionreceived", "lastreport", "position report"),
+            "speed": from_sources("speed", "speed/course", "speed over ground"),
+            "course": from_sources("course", "course over ground"),
+            "heading": from_sources("heading"),
+            "latitude": from_sources("latitude", "lat"),
+            "longitude": from_sources("longitude", "lon", "lng"),
+            "ais_source": from_sources("aissource", "ais source"),
+        }
+
+        summary = {key: value for key, value in summary.items() if value}
+        general = {key: value for key, value in general.items() if value}
+        latest_ais = {key: value for key, value in latest_ais.items() if value}
+        if not summary and not general and not latest_ais:
+            return {}
+
+        return {
+            "marinetraffic_url": url,
+            "marinetraffic_fetched_at": datetime.now(timezone.utc).isoformat(),
+            "marinetraffic_summary": summary,
+            "marinetraffic_general": general,
+            "marinetraffic_latest_ais": latest_ais,
+            "flag": summary.get("flag"),
+            "ship_type": summary.get("ship_type"),
+            "destination": summary.get("destination"),
+            "owner": general.get("owner"),
+            "operator": general.get("operator"),
+            "country_code": summary.get("flag"),
+            "platform_type": summary.get("ship_type"),
+        }
+
+    async def _fetch_marinetraffic_payload(
+        self,
+        client: httpx.AsyncClient,
+        metadata: dict[str, object],
+    ) -> dict[str, object] | None:
+        url = self._marinetraffic_detail_url(metadata)
+        response = await client.get(url, follow_redirects=True)
+        if response.status_code == 403:
+            self._marinetraffic_blocked_until = datetime.now(timezone.utc) + timedelta(hours=1)
+            logger.warning("[AIS] MarineTraffic blocked collector access; seed cookies or refresh browser headers.")
+            return None
+        response.raise_for_status()
+        return self._extract_marinetraffic_payload(response.text, str(response.url))
+
+    async def _maybe_enrich_events_with_marinetraffic(self, events: list[dict]) -> list[dict]:
+        if not self.marinetraffic_enabled or not events:
+            return events
+
+        now = datetime.now(timezone.utc)
+        if self._marinetraffic_blocked_until and now < self._marinetraffic_blocked_until:
+            return events
+
+        refresh_cutoff = now - timedelta(hours=max(self.marinetraffic_refresh_hours, 1))
+        candidates: dict[str, dict[str, object]] = {}
+        for event in events:
+            metadata = dict(event.get("metadata") or {})
+            mmsi = normalize_text(metadata.get("mmsi") or event.get("track_id"))
+            if not mmsi:
+                continue
+            if mmsi in self._marinetraffic_cache and self._marinetraffic_cache[mmsi][0] >= refresh_cutoff:
+                continue
+            if metadata.get("ship_type") and metadata.get("flag") and metadata.get("destination") and metadata.get("owner"):
+                continue
+            candidates[mmsi] = metadata
+            if len(candidates) >= self.marinetraffic_max_lookups_per_poll:
+                break
+
+        if candidates:
+            async with httpx.AsyncClient(
+                headers=self._marinetraffic_headers(),
+                cookies=self.marinetraffic_cookies,
+                timeout=self.marinetraffic_timeout_sec,
+            ) as client:
+                for mmsi, metadata in candidates.items():
+                    try:
+                        payload = await self._fetch_marinetraffic_payload(client, metadata)
+                    except Exception as exc:
+                        logger.debug("[AIS] MarineTraffic enrichment failed for %s: %r", mmsi, exc)
+                        continue
+                    if payload:
+                        self._marinetraffic_cache[mmsi] = (now, payload)
+
+        enriched: list[dict] = []
+        for event in events:
+            metadata = dict(event.get("metadata") or {})
+            mmsi = normalize_text(metadata.get("mmsi") or event.get("track_id"))
+            cached = self._marinetraffic_cache.get(mmsi or "")
+            if cached:
+                mt = dict(cached[1])
+                metadata.update({
+                    key: value
+                    for key, value in mt.items()
+                    if value not in (None, "", {}, [])
+                })
+                summary = mt.get("marinetraffic_summary")
+                if isinstance(summary, dict):
+                    if not event.get("callsign") and normalize_text(summary.get("vessel_name")):
+                        event["callsign"] = normalize_text(summary.get("vessel_name"))
+                metadata.setdefault("enrichment_sources", [])
+                if isinstance(metadata["enrichment_sources"], list) and "MarineTrafficPublic" not in metadata["enrichment_sources"]:
+                    metadata["enrichment_sources"].append("MarineTrafficPublic")
+            event["metadata"] = metadata
+            enriched.append(event)
+        return enriched
 
     async def run(self):
         await self.startup()
