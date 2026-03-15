@@ -28,7 +28,7 @@ interface DragOffset {
 
 export function useDrag({ storageKey }: UseDragOptions = {}): {
   offset: DragOffset
-  dragHandleRef: React.RefObject<HTMLDivElement>
+  dragHandleRef: React.RefObject<HTMLDivElement | null>
   isDragging: boolean
 } {
   const getInitial = (): DragOffset => {

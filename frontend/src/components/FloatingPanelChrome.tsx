@@ -4,9 +4,9 @@ interface DragDotsProps {
 }
 
 interface PanelResizeHandlesProps {
-  horizontalRef: React.RefObject<HTMLDivElement>
-  verticalRef: React.RefObject<HTMLDivElement>
-  cornerRef: React.RefObject<HTMLDivElement>
+  horizontalRef: React.RefObject<HTMLDivElement | null>
+  verticalRef: React.RefObject<HTMLDivElement | null>
+  cornerRef: React.RefObject<HTMLDivElement | null>
   horizontalEdge: 'left' | 'right'
   verticalEdge: 'top' | 'bottom'
 }

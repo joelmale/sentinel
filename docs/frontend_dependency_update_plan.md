@@ -134,6 +134,7 @@ This should be its own work block because Tailwind 4 is not a simple drop-in upg
 - [x] `date-fns` -> `4.1.0`
 - [x] `recharts` -> `3.8.0`
 - [x] `zustand` -> `5.0.11`
+- [x] `react` / `react-dom` / typings -> React 19
 
 Completed commits:
 
@@ -141,6 +142,32 @@ Completed commits:
 2. `bb5f62a` `update date-fns to 4.1.0`
 3. `cd42b0b` `update recharts to 3.8.0`
 4. `a5d3a80` `update zustand to 5.0.11`
+5. `TBD` `update react to 19.2.0`
+
+## RSC Note
+
+React 19 does not, by itself, make Sentinel a native React Server Components app.
+
+Current Sentinel frontend architecture:
+
+- Vite SPA
+- client-rendered React app
+- FastAPI backend
+
+That stack can run React 19, but it does not provide the server/runtime model needed for native RSC delivery.
+
+To use true RSC in production, Sentinel would need an RSC-capable app/runtime layer, for example:
+
+- Next.js App Router
+- React Router's RSC stack
+- another RSC-capable server/build integration
+
+So the correct interpretation is:
+
+- React 19 upgrade: implemented
+- native RSC capability: not unlocked yet by this slice
+
+If you want RSC for operational performance later, that should be a separate architectural phase, not bundled into the React runtime upgrade.
 
 ### 1. update low-risk map dependency
 
@@ -283,6 +310,10 @@ Recommended commit sequence:
 1. update React runtime and typings
 2. fix compile/lint issues
 3. smoke-test render-critical screens
+
+Status:
+
+- complete
 
 ### Phase B: Vite 8
 

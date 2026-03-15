@@ -32,7 +32,7 @@ export function useResize({
   storageKey,
 }: UseResizeOptions): {
   size: number
-  handleRef: React.RefObject<HTMLDivElement>
+  handleRef: React.RefObject<HTMLDivElement | null>
   isDragging: boolean
 } {
   const getInitial = (): number => {

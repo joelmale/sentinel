@@ -46,9 +46,9 @@ export function useResizePanel({
 }: UseResizePanelOptions): {
   width: number
   height: number
-  rightHandleRef: React.RefObject<HTMLDivElement>
-  bottomHandleRef: React.RefObject<HTMLDivElement>
-  cornerHandleRef: React.RefObject<HTMLDivElement>
+  rightHandleRef: React.RefObject<HTMLDivElement | null>
+  bottomHandleRef: React.RefObject<HTMLDivElement | null>
+  cornerHandleRef: React.RefObject<HTMLDivElement | null>
   isDragging: boolean
 } {
   const getInitial = (): PanelSize => {
