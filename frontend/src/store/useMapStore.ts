@@ -253,6 +253,10 @@ interface MapStore {
   selectedDomain: SourceDomain | null
   selectAsset: (trackId: string, domain: SourceDomain) => void
   clearSelection: () => void
+  pinnedTrackKeys: Set<string>
+  pinTrack: (trackKey: string) => void
+  unpinTrack: (trackKey: string) => void
+  clearPinnedTracks: () => void
   selectedLandingPoint: UnderseaLandingPointSelection | null
   selectLandingPoint: (point: UnderseaLandingPointSelection) => void
   clearLandingPointSelection: () => void
@@ -526,6 +530,7 @@ export const useMapStore = create<MapStore>()(
     // ── Selection ────────────────────────────────────────────────
     selectedTrackId: null,
     selectedDomain: null,
+    pinnedTrackKeys: new Set<string>(),
     selectedLandingPoint: null,
     selectAsset: (trackId, domain) =>
       set({
@@ -541,6 +546,19 @@ export const useMapStore = create<MapStore>()(
         assetCardOpen: false,
         selectedTrackHistory: [],
       }),
+    pinTrack: (trackKey) =>
+      set((state) => {
+        const next = new Set(state.pinnedTrackKeys)
+        next.add(trackKey)
+        return { pinnedTrackKeys: next }
+      }),
+    unpinTrack: (trackKey) =>
+      set((state) => {
+        const next = new Set(state.pinnedTrackKeys)
+        next.delete(trackKey)
+        return { pinnedTrackKeys: next }
+      }),
+    clearPinnedTracks: () => set({ pinnedTrackKeys: new Set<string>() }),
     selectLandingPoint: (point) =>
       set({
         selectedLandingPoint: point,

@@ -574,12 +574,16 @@ function ClassFilterChips({
 function TrackRow({
   asset,
   isSelected,
+  isPinned = false,
   onSelect,
+  onTogglePin,
   indent = 0,
 }: {
   asset: TrackEventProperties
   isSelected: boolean
+  isPinned?: boolean
   onSelect: () => void
+  onTogglePin?: () => void
   indent?: number
 }) {
   const label = asset.callsign || asset.track_id
@@ -621,6 +625,27 @@ function TrackRow({
       >
         {label}
       </span>
+      {onTogglePin && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            onTogglePin()
+          }}
+          title={isPinned ? 'Remove from shortlist' : 'Add to shortlist'}
+          style={{
+            border: 'none',
+            background: 'transparent',
+            color: isPinned ? '#fbbf24' : '#64748b',
+            fontSize: 13,
+            cursor: 'pointer',
+            padding: 0,
+            lineHeight: 1,
+          }}
+        >
+          {isPinned ? '★' : '☆'}
+        </button>
+      )}
       <span
         style={{
           fontSize: 9,
@@ -649,6 +674,10 @@ export function SourcePanel() {
     selectAsset,
     selectedTrackId,
     selectedDomain,
+    pinnedTrackKeys,
+    pinTrack,
+    unpinTrack,
+    clearPinnedTracks,
     viewportBounds,
     flyTo,
     layers,
@@ -685,6 +714,7 @@ export function SourcePanel() {
     watchedSpaceTrackIds,
   } = useMapStore()
   const { uiViewportAssets } = useLiveDataStore()
+  const liveAssets = useMapStore((state) => state.liveAssets)
   const previewBbox = useMemo(() => {
     if (!viewportBounds) return null
     return [viewportBounds.west, viewportBounds.south, viewportBounds.east, viewportBounds.north].join(',')
@@ -921,6 +951,14 @@ export function SourcePanel() {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8)
   }, [assetsByDomain])
+
+  const shortlistAssets = useMemo(
+    () => Array.from(pinnedTrackKeys)
+      .map((trackKey) => liveAssets.get(trackKey))
+      .filter((asset): asset is TrackEventProperties => Boolean(asset))
+      .sort((a, b) => (a.callsign || a.track_id).localeCompare(b.callsign || b.track_id)),
+    [liveAssets, pinnedTrackKeys]
+  )
 
   const spaceConstellationFilters = useMemo(() => {
     const counts = new Map<string, number>()
@@ -1301,7 +1339,13 @@ export function SourcePanel() {
                         <TrackRow
                           asset={a}
                           isSelected={isSelected}
+                          isPinned={pinnedTrackKeys.has(`${a.source_domain}:${a.track_id}`)}
                           onSelect={() => handleSelectTrack(a)}
+                          onTogglePin={() => {
+                            const key = `${a.source_domain}:${a.track_id}`
+                            if (pinnedTrackKeys.has(key)) unpinTrack(key)
+                            else pinTrack(key)
+                          }}
                         />
                       </div>
                     )
@@ -1310,6 +1354,43 @@ export function SourcePanel() {
               </>
             ) : (
               <>
+            {shortlistAssets.length > 0 && (
+              <>
+                <SectionLabel label="Shortlist" />
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px 8px 14px' }}>
+                  <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                    {shortlistAssets.length} pinned asset{shortlistAssets.length === 1 ? '' : 's'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={clearPinnedTracks}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#5eead4',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                  >
+                    Clear shortlist
+                  </button>
+                </div>
+                <div style={{ maxHeight: 180, overflowY: 'auto', borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
+                  {shortlistAssets.map((asset) => (
+                    <TrackRow
+                      key={`shortlist:${asset.source_domain}:${asset.track_id}`}
+                      asset={asset}
+                      isSelected={asset.track_id === selectedTrackId && asset.source_domain === selectedDomain}
+                      isPinned
+                      onSelect={() => handleSelectTrack(asset)}
+                      onTogglePin={() => unpinTrack(`${asset.source_domain}:${asset.track_id}`)}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
             {/* ── DOMAIN ROWS (grouped, collapsible) ── */}
             <SectionLabel label="Track Domains" />
             {DOMAIN_ORDER.map((domain) => {
@@ -1729,7 +1810,13 @@ export function SourcePanel() {
                                         key={`${a.source_domain}:${a.track_id}`}
                                         asset={a}
                                         isSelected={a.track_id === selectedTrackId && a.source_domain === selectedDomain}
+                                        isPinned={pinnedTrackKeys.has(`${a.source_domain}:${a.track_id}`)}
                                         onSelect={() => handleSelectTrack(a)}
+                                        onTogglePin={() => {
+                                          const key = `${a.source_domain}:${a.track_id}`
+                                          if (pinnedTrackKeys.has(key)) unpinTrack(key)
+                                          else pinTrack(key)
+                                        }}
                                         indent={1}
                                       />
                                     ))}
@@ -1781,7 +1868,13 @@ export function SourcePanel() {
                                         key={`${a.source_domain}:${a.track_id}`}
                                         asset={a}
                                         isSelected={a.track_id === selectedTrackId && a.source_domain === selectedDomain}
+                                        isPinned={pinnedTrackKeys.has(`${a.source_domain}:${a.track_id}`)}
                                         onSelect={() => handleSelectTrack(a)}
+                                        onTogglePin={() => {
+                                          const key = `${a.source_domain}:${a.track_id}`
+                                          if (pinnedTrackKeys.has(key)) unpinTrack(key)
+                                          else pinTrack(key)
+                                        }}
                                         indent={1}
                                       />
                                     ))}
@@ -1903,7 +1996,13 @@ export function SourcePanel() {
                                                     key={`${a.source_domain}:${a.track_id}`}
                                                     asset={a}
                                                     isSelected={a.track_id === selectedTrackId && a.source_domain === selectedDomain}
+                                                    isPinned={pinnedTrackKeys.has(`${a.source_domain}:${a.track_id}`)}
                                                     onSelect={() => handleSelectTrack(a)}
+                                                    onTogglePin={() => {
+                                                      const key = `${a.source_domain}:${a.track_id}`
+                                                      if (pinnedTrackKeys.has(key)) unpinTrack(key)
+                                                      else pinTrack(key)
+                                                    }}
                                                     indent={3}
                                                   />
                                                 ))}
@@ -1931,7 +2030,13 @@ export function SourcePanel() {
                                 a.track_id === selectedTrackId &&
                                 a.source_domain === selectedDomain
                               }
+                              isPinned={pinnedTrackKeys.has(`${a.source_domain}:${a.track_id}`)}
                               onSelect={() => handleSelectTrack(a)}
+                              onTogglePin={() => {
+                                const key = `${a.source_domain}:${a.track_id}`
+                                if (pinnedTrackKeys.has(key)) unpinTrack(key)
+                                else pinTrack(key)
+                              }}
                             />
                           ))}
                           {hiddenCount > 0 && (
