@@ -125,6 +125,30 @@ export interface LiveSummaryResponse {
   stale_domains: Record<SourceDomain, number>
 }
 
+export interface MaritimeEnrichmentFields {
+  ship_type: string | null
+  flag: string | null
+  destination: string | null
+  operator: string | null
+  owner: string | null
+  platform_type: string | null
+  country_code: string | null
+}
+
+export interface MaritimeEnrichmentResponse {
+  entity_id: string
+  track_id: string
+  source_domain: Extract<SourceDomain, 'Maritime'>
+  status: 'fresh' | 'cached' | 'unavailable' | 'disabled' | 'blocked'
+  url: string | null
+  fetched_at: string | null
+  image_url: string | null
+  summary: Record<string, string>
+  general: Record<string, string>
+  latest_ais: Record<string, string>
+  enrichment: MaritimeEnrichmentFields
+}
+
 export type OverviewHealth = 'healthy' | 'stale' | 'degraded' | 'down'
 
 export interface OverviewHeaderResponse {

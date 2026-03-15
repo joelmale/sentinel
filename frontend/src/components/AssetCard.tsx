@@ -24,7 +24,13 @@ import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import { useResize } from '@/hooks/useResize'
 import { useDrag } from '@/hooks/useDrag'
-import type { SatelliteCatalogEntry, SatelliteFieldStatus, SatelliteTleResponse, SourceDomain } from '@/types/track'
+import type {
+  MaritimeEnrichmentResponse,
+  SatelliteCatalogEntry,
+  SatelliteFieldStatus,
+  SatelliteTleResponse,
+  SourceDomain,
+} from '@/types/track'
 
 // ── Domain colour/icon config ─────────────────────────────────────
 const DOMAIN_META: Record<SourceDomain, { icon: string; color: string; border: string; accent: string }> = {
@@ -427,6 +433,55 @@ function AircraftHero({ registration, typeCode }: { registration: string | null 
   )
 }
 
+function MaritimeHero({
+  imageUrl,
+  vesselName,
+  status,
+}: {
+  imageUrl: string | null
+  vesselName: string | null
+  status: MaritimeEnrichmentResponse['status'] | null
+}) {
+  if (!imageUrl) return null
+  return (
+    <div style={{ position: 'relative', borderBottom: '1px solid rgba(148,163,184,0.10)' }}>
+      <img
+        src={imageUrl}
+        alt={vesselName ? `${vesselName} photo` : 'Vessel photo'}
+        style={{ width: '100%', aspectRatio: '16 / 7', objectFit: 'cover', display: 'block' }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          left: 12,
+          right: 12,
+          bottom: 10,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 8,
+        }}
+      >
+        <div
+          style={{
+            maxWidth: '75%',
+            fontSize: 13,
+            fontWeight: 800,
+            color: '#f8fafc',
+            textShadow: '0 1px 10px rgba(2,6,23,0.9)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {vesselName || 'MarineTraffic'}
+        </div>
+        {status && <Pill color={status === 'fresh' ? 'cyan' : status === 'cached' ? 'blue' : status === 'blocked' ? 'amber' : 'slate'}>{status.toUpperCase()}</Pill>}
+      </div>
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────
 export function AssetCard() {
   const {
@@ -481,6 +536,22 @@ export function AssetCard() {
       `/api/satellites/${spaceNoradId}/tles?limit=5`,
     ),
     staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+
+  const maritimeEnrichmentQuery = useQuery({
+    queryKey: ['maritime-enrichment', asset?.entity_id ?? null, asset?.track_id ?? null],
+    enabled: selectedDomain === 'Maritime' && Boolean(asset?.track_id) && (Boolean(asset?.entity_id) || Boolean(asset?.track_id)),
+    queryFn: async (): Promise<MaritimeEnrichmentResponse> => {
+      const params = new URLSearchParams()
+      if (asset?.entity_id) params.set('entity_id', String(asset.entity_id))
+      if (!asset?.entity_id && selectedDomain === 'Maritime' && asset?.track_id) {
+        params.set('domain', 'Maritime')
+        params.set('track_id', asset.track_id)
+      }
+      return trackedFetchJson('maritime-enrichment', `/api/tracks/maritime-enrichment?${params.toString()}`)
+    },
+    staleTime: 15 * 60_000,
     refetchOnWindowFocus: false,
   })
 
@@ -600,25 +671,78 @@ export function AssetCard() {
 
     // ── MARITIME ─────────────────────────────────────────────────
     if (selectedDomain === 'Maritime') {
-      const flag = asset.flag as string | undefined
+      const maritime = maritimeEnrichmentQuery.data
+      const summary = maritime?.summary ?? {}
+      const general = maritime?.general ?? {}
+      const latestAis = maritime?.latest_ais ?? {}
+      const vesselName = (summary.vessel_name || asset.callsign || asset.track_id) as string
+      const flag = (maritime?.enrichment.flag || summary.flag || (asset.flag as string | undefined)) ?? undefined
       const countryFlag = countryToFlag(flag)
+      const shipType = maritime?.enrichment.ship_type || summary.ship_type || (asset.ship_type as string | undefined)
+      const destination = maritime?.enrichment.destination || summary.destination || (asset.destination as string | undefined)
+      const owner = maritime?.enrichment.owner || general.owner || (asset.owner as string | undefined)
+      const operator = maritime?.enrichment.operator || general.operator || (asset.operator as string | undefined)
+      const status = summary.navigational_status || (asset.navigational_status as string | undefined)
+      const imageUrl = maritime?.image_url ?? null
+      const latestPosition = [latestAis.latitude, latestAis.longitude].filter(Boolean).join(', ')
       return (
-        <StatSection title="Vessel Data">
-          <StatCell label="Ship Type"   value={asset.ship_type as string} />
-          <div>
-            <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.13em', color: '#64748b', textTransform: 'uppercase', marginBottom: '4px' }}>
-              Flag
+        <>
+          <MaritimeHero imageUrl={imageUrl} vesselName={summary.vessel_name ?? null} status={maritime?.status ?? null} />
+
+          <StatSection title="Vessel Identity">
+            <StatCell label="Vessel" value={vesselName} fullWidth accent />
+            <StatCell label="MMSI" value={summary.mmsi || asset.track_id} mono />
+            <StatCell label="IMO" value={summary.imo || (asset.imo as string | undefined)} mono />
+            <StatCell label="Call Sign" value={summary.callsign || asset.callsign} mono />
+            <StatCell label="Ship Type" value={shipType} />
+            <div>
+              <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.13em', color: '#64748b', textTransform: 'uppercase', marginBottom: '4px' }}>
+                Flag
+              </div>
+              <div style={{ fontSize: '12px', fontWeight: 600, color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: 6 }}>
+                {countryFlag && <span style={{ fontSize: 16, lineHeight: 1 }}>{countryFlag}</span>}
+                {flag || '—'}
+              </div>
             </div>
-            <div style={{ fontSize: '12px', fontWeight: 600, color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: 6 }}>
-              {countryFlag && <span style={{ fontSize: 16, lineHeight: 1 }}>{countryFlag}</span>}
-              {flag || '—'}
-            </div>
-          </div>
-          <StatCell label="Destination" value={asset.destination as string} fullWidth />
-          <StatCell label="ETA"         value={asset.eta as string} fullWidth />
-          <StatCell label="Draught"     value={asset.draught != null ? `${asset.draught} m` : null} />
-          <StatCell label="Length"      value={asset.length  != null ? `${asset.length} m`  : null} />
-        </StatSection>
+            <StatCell label="Nav Status" value={status} fullWidth />
+          </StatSection>
+
+          <StatSection title="Voyage">
+            <StatCell label="Destination" value={destination} fullWidth />
+            <StatCell label="ETA" value={asset.eta as string} />
+            <StatCell label="AIS Source" value={latestAis.ais_source} />
+          </StatSection>
+
+          <StatSection title="General">
+            <StatCell label="Owner" value={owner} fullWidth />
+            <StatCell label="Operator" value={operator} fullWidth />
+            <StatCell label="Builder" value={general.builder} fullWidth />
+            <StatCell label="Year Built" value={general.year_built} />
+            <StatCell label="Length" value={general.length || (asset.length != null ? `${asset.length} m` : null)} />
+            <StatCell label="Beam" value={general.beam} />
+            <StatCell label="Draught" value={general.draught || (asset.draught != null ? `${asset.draught} m` : null)} />
+            <StatCell label="Gross Tonnage" value={general.gross_tonnage} />
+            <StatCell label="Deadweight" value={general.deadweight} />
+          </StatSection>
+
+          <StatSection title="Latest AIS">
+            <StatCell label="Reported" value={latestAis.position_received_at} fullWidth />
+            <StatCell label="Speed" value={latestAis.speed} />
+            <StatCell label="Course" value={latestAis.course} />
+            <StatCell label="Heading" value={latestAis.heading} />
+            <StatCell label="Reported Pos" value={latestPosition || null} mono fullWidth />
+          </StatSection>
+
+          <StatSection title="Enrichment Source">
+            <StatCell
+              label="Status"
+              value={maritimeEnrichmentQuery.isLoading ? 'Loading…' : maritime?.status?.toUpperCase() ?? 'Unavailable'}
+            />
+            <StatCell label="Fetched" value={fmtTime(maritime?.fetched_at ?? undefined)} />
+            <StatCell label="Source" value="MarineTraffic public page" fullWidth />
+            <StatCell label="Detail URL" value={maritime?.url} mono fullWidth />
+          </StatSection>
+        </>
       )
     }
 
@@ -902,6 +1026,13 @@ export function AssetCard() {
           <ActionBtn onClick={() => handleExport('csv')}>⬇ CSV</ActionBtn>
           <ActionBtn onClick={() => handleExport('geojson')}>⬇ GeoJSON</ActionBtn>
         </div>
+        {selectedDomain === 'Maritime' && maritimeEnrichmentQuery.data?.url && (
+          <div className="flex gap-2">
+            <ActionBtn onClick={() => window.open(maritimeEnrichmentQuery.data?.url ?? '', '_blank')} variant="search">
+              🌐 Open MarineTraffic
+            </ActionBtn>
+          </div>
+        )}
         {/* Search button — Air domain shows flight search; others show generic */}
         <ActionBtn onClick={handleSearch} variant="search">
           🔍 Search {asset.callsign ? `"${asset.callsign}"` : 'Flight'} on Google

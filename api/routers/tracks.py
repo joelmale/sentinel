@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.connection import get_db
 from models.track_event import SourceDomain
+from services.marinetraffic import MarineTrafficConfig, fetch_marinetraffic_payload, normalize_text
 
 router = APIRouter(tags=["Tracks"])
 logger = logging.getLogger(__name__)
@@ -1069,22 +1070,43 @@ async def get_asset_detail(
 
     sql = text("""
         SELECT
-            entity_id::text AS entity_id,
-            source_domain, winning_source_feed AS source_feed, track_id, callsign,
-            ST_X(position) AS lon, ST_Y(position) AS lat,
-            altitude_m, heading_deg, speed_mps, last_seen,
-            first_seen, source_trust_score, identity_confidence, state_confidence,
-            winning_event_id, provenance, metadata, classification
-        FROM asset_current_state
+            acs.entity_id::text AS entity_id,
+            acs.source_domain, acs.winning_source_feed AS source_feed, acs.track_id, acs.callsign,
+            ST_X(acs.position) AS lon, ST_Y(acs.position) AS lat,
+            acs.altitude_m, acs.heading_deg, acs.speed_mps, acs.last_seen,
+            acs.first_seen, acs.source_trust_score, acs.identity_confidence, acs.state_confidence,
+            acs.winning_event_id, acs.provenance,
+            COALESCE(acs.metadata, '{}'::jsonb)
+                || COALESCE(ee.metadata, '{}'::jsonb)
+                || jsonb_strip_nulls(jsonb_build_object(
+                    'registration', ee.registration,
+                    'aircraft_type', ee.aircraft_type,
+                    'ship_type', ee.ship_type,
+                    'flag', ee.flag,
+                    'destination', ee.destination,
+                    'operator', ee.operator,
+                    'owner', ee.owner,
+                    'platform_type', ee.platform_type,
+                    'country_code', ee.country_code,
+                    'object_type', ee.object_type,
+                    'orbit_class', ee.orbit_class,
+                    'purpose', ee.purpose,
+                    'contractor', ee.contractor,
+                    'launch_site', ee.launch_site,
+                    'intl_designator', ee.intl_designator
+                )) AS metadata,
+            acs.classification
+        FROM asset_current_state acs
+        LEFT JOIN entity_enrichments ee ON ee.entity_id = acs.entity_id
         WHERE (
             :entity_id::uuid IS NOT NULL
-            AND entity_id = :entity_id::uuid
+            AND acs.entity_id = :entity_id::uuid
         ) OR (
             :entity_id::uuid IS NULL
-            AND source_domain = :domain
-            AND track_id = :track_id
+            AND acs.source_domain = :domain
+            AND acs.track_id = :track_id
         )
-        ORDER BY last_seen DESC
+        ORDER BY acs.last_seen DESC
         LIMIT 1
     """)
     result = await db.execute(sql, {
@@ -1176,6 +1198,166 @@ async def get_asset_detail(
             "provenance": _sanitize_json_value(row.get("provenance") or {}),
             "source_states": source_states,
             **_sanitize_json_value(row["metadata"] or {}),
+        },
+    }
+
+
+@router.get("/tracks/maritime-enrichment", summary="MarineTraffic enrichment for a maritime asset")
+async def get_maritime_enrichment(
+    domain: SourceDomain | None = Query(None, description="Asset domain"),
+    track_id: str | None = Query(None, max_length=128, description="Track identifier"),
+    entity_id: str | None = Query(None, description="Canonical internal entity identifier"),
+    refresh: bool = Query(False, description="Force a fresh MarineTraffic fetch"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    if not entity_id and (domain is None or track_id is None):
+        raise HTTPException(status_code=400, detail="Provide entity_id or both domain and track_id.")
+    if domain not in (None, SourceDomain.MARITIME):
+        raise HTTPException(status_code=400, detail="MarineTraffic enrichment only supports Maritime assets.")
+
+    sql = text("""
+        SELECT
+            acs.entity_id::text AS entity_id,
+            acs.source_domain,
+            acs.track_id,
+            acs.callsign,
+            COALESCE(acs.metadata, '{}'::jsonb) AS asset_metadata,
+            ee.ship_type,
+            ee.flag,
+            ee.destination,
+            ee.operator,
+            ee.owner,
+            ee.platform_type,
+            ee.country_code,
+            COALESCE(ee.metadata, '{}'::jsonb) AS enrichment_metadata,
+            ee.updated_at
+        FROM asset_current_state acs
+        LEFT JOIN entity_enrichments ee ON ee.entity_id = acs.entity_id
+        WHERE (
+            :entity_id::uuid IS NOT NULL
+            AND acs.entity_id = :entity_id::uuid
+        ) OR (
+            :entity_id::uuid IS NULL
+            AND acs.source_domain = :domain
+            AND acs.track_id = :track_id
+        )
+        ORDER BY acs.last_seen DESC
+        LIMIT 1
+    """)
+    result = await db.execute(sql, {
+        "domain": SourceDomain.MARITIME.value,
+        "track_id": track_id,
+        "entity_id": entity_id,
+    })
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Maritime asset not found")
+
+    asset_metadata = _sanitize_json_value(row["asset_metadata"] or {})
+    enrichment_metadata = _sanitize_json_value(row["enrichment_metadata"] or {})
+    merged_metadata = {}
+    if isinstance(asset_metadata, dict):
+        merged_metadata.update(asset_metadata)
+    if isinstance(enrichment_metadata, dict):
+        merged_metadata.update(enrichment_metadata)
+
+    config = MarineTrafficConfig.from_env()
+    existing_fetched_at_raw = merged_metadata.get("marinetraffic_fetched_at")
+    existing_fetched_at: datetime | None = None
+    if isinstance(existing_fetched_at_raw, str):
+        try:
+            existing_fetched_at = _ensure_tz(datetime.fromisoformat(existing_fetched_at_raw.replace("Z", "+00:00")))
+        except ValueError:
+            existing_fetched_at = None
+    has_cached_payload = any(
+        isinstance(merged_metadata.get(key), dict) and bool(merged_metadata.get(key))
+        for key in ("marinetraffic_summary", "marinetraffic_general", "marinetraffic_latest_ais")
+    ) or bool(merged_metadata.get("marinetraffic_image_url"))
+    needs_refresh = refresh or not has_cached_payload
+    if existing_fetched_at is not None and datetime.now(timezone.utc) - existing_fetched_at < config.refresh_delta:
+        needs_refresh = refresh
+
+    status = "cached" if has_cached_payload else "unavailable"
+    if not config.enabled:
+        status = "disabled" if not has_cached_payload else "cached"
+
+    if config.enabled and needs_refresh:
+        fetch_metadata: dict[str, object] = {
+            "mmsi": normalize_text(merged_metadata.get("mmsi")) or row["track_id"],
+            "imo": normalize_text(merged_metadata.get("imo")) or "0",
+            "vessel_name": normalize_text(
+                merged_metadata.get("vessel_name")
+                or merged_metadata.get("ship_name")
+                or merged_metadata.get("name")
+                or row["callsign"]
+            ),
+            "shipid": normalize_text(merged_metadata.get("shipid") or merged_metadata.get("ship_id")),
+        }
+        payload = await fetch_marinetraffic_payload(fetch_metadata, config=config)
+        if payload:
+            status = str(payload.get("marinetraffic_status") or "fresh")
+            if status == "fresh":
+                merged_metadata.update({
+                    key: value
+                    for key, value in payload.items()
+                    if value not in (None, "", {}, [])
+                })
+                await db.execute(text("""
+                    INSERT INTO entity_enrichments (
+                        entity_id, source_domain, ship_type, flag, destination, operator, owner,
+                        platform_type, country_code, metadata
+                    )
+                    VALUES (
+                        :entity_id::uuid, 'Maritime'::source_domain, :ship_type, :flag, :destination,
+                        :operator, :owner, :platform_type, :country_code, CAST(:metadata AS jsonb)
+                    )
+                    ON CONFLICT (entity_id) DO UPDATE SET
+                        source_domain = EXCLUDED.source_domain,
+                        ship_type = COALESCE(EXCLUDED.ship_type, entity_enrichments.ship_type),
+                        flag = COALESCE(EXCLUDED.flag, entity_enrichments.flag),
+                        destination = COALESCE(EXCLUDED.destination, entity_enrichments.destination),
+                        operator = COALESCE(EXCLUDED.operator, entity_enrichments.operator),
+                        owner = COALESCE(EXCLUDED.owner, entity_enrichments.owner),
+                        platform_type = COALESCE(EXCLUDED.platform_type, entity_enrichments.platform_type),
+                        country_code = COALESCE(EXCLUDED.country_code, entity_enrichments.country_code),
+                        metadata = COALESCE(entity_enrichments.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+                        updated_at = NOW()
+                """), {
+                    "entity_id": row["entity_id"],
+                    "ship_type": payload.get("ship_type"),
+                    "flag": payload.get("flag"),
+                    "destination": payload.get("destination"),
+                    "operator": payload.get("operator"),
+                    "owner": payload.get("owner"),
+                    "platform_type": payload.get("platform_type"),
+                    "country_code": payload.get("country_code"),
+                    "metadata": orjson.dumps(merged_metadata).decode(),
+                })
+                await db.commit()
+
+    summary = merged_metadata.get("marinetraffic_summary")
+    general = merged_metadata.get("marinetraffic_general")
+    latest_ais = merged_metadata.get("marinetraffic_latest_ais")
+    image_url = normalize_text(merged_metadata.get("marinetraffic_image_url"))
+    return {
+        "entity_id": row["entity_id"],
+        "track_id": row["track_id"],
+        "source_domain": row["source_domain"],
+        "status": status,
+        "url": normalize_text(merged_metadata.get("marinetraffic_url")),
+        "fetched_at": normalize_text(merged_metadata.get("marinetraffic_fetched_at")),
+        "image_url": image_url,
+        "summary": summary if isinstance(summary, dict) else {},
+        "general": general if isinstance(general, dict) else {},
+        "latest_ais": latest_ais if isinstance(latest_ais, dict) else {},
+        "enrichment": {
+            "ship_type": normalize_text(merged_metadata.get("ship_type") or row["ship_type"]),
+            "flag": normalize_text(merged_metadata.get("flag") or row["flag"]),
+            "destination": normalize_text(merged_metadata.get("destination") or row["destination"]),
+            "operator": normalize_text(merged_metadata.get("operator") or row["operator"]),
+            "owner": normalize_text(merged_metadata.get("owner") or row["owner"]),
+            "platform_type": normalize_text(merged_metadata.get("platform_type") or row["platform_type"]),
+            "country_code": normalize_text(merged_metadata.get("country_code") or row["country_code"]),
         },
     }
 
