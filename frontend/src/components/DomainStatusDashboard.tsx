@@ -246,7 +246,7 @@ export function DomainStatusDashboard({ open, loading, error, domain, data, onCl
                     {feed.bincraft && (
                       <div style={bincraftStripStyle}>
                         <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#38bdf8', marginBottom: 8 }}>
-                          ◈ binCraft signal quality (1h)
+                          ◈ ADSBx signal quality (1h)
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
                           <div>
