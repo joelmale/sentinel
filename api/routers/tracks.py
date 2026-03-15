@@ -67,6 +67,110 @@ def _sanitize_json_value(value: Any) -> Any:
     return value
 
 
+def _split_csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _space_constellation_sql(
+    callsign_column: str,
+    object_type_column: str,
+) -> str:
+    upper_callsign = f"UPPER(COALESCE({callsign_column}, ''))"
+    upper_object_type = f"UPPER(COALESCE({object_type_column}, ''))"
+    return f"""
+        CASE
+            WHEN {upper_callsign} LIKE 'STARLINK%%' THEN 'Starlink'
+            WHEN {upper_callsign} LIKE 'KUIPER%%' THEN 'LEO (Kuiper)'
+            WHEN {upper_callsign} LIKE 'ONEWEB%%' OR {upper_callsign} LIKE 'ONE WEB%%' THEN 'OneWeb'
+            WHEN {upper_callsign} LIKE 'QIANFAN%%' OR {upper_callsign} LIKE 'G60%%' THEN 'Qianfan'
+            WHEN {upper_callsign} LIKE 'GUOWANG%%' OR {upper_callsign} LIKE 'GW %%' THEN 'Guowang'
+            WHEN {upper_callsign} LIKE 'GALAXYSPACE%%' THEN 'GalaxySpace'
+            WHEN {upper_callsign} LIKE 'E-SPACE%%' OR {upper_callsign} LIKE 'ESPACE%%' THEN 'E-space'
+            WHEN {upper_callsign} LIKE 'SPIRE%%' OR {upper_callsign} LIKE 'LEMUR%%' THEN 'Spire Global'
+            WHEN {upper_callsign} LIKE 'GPS %%' OR {upper_callsign} LIKE 'NAVSTAR%%' THEN 'GPS (USAF)'
+            WHEN {upper_callsign} = 'ISS (ZARYA)' OR {upper_callsign} = 'ISS' OR {upper_callsign} LIKE 'ISS %%' THEN 'ISS'
+            WHEN {upper_callsign} LIKE 'TIANGONG%%' OR {upper_callsign} LIKE 'CSS %%' THEN 'Tiangong / CSS'
+            WHEN {upper_object_type} = 'PAYLOAD' THEN 'Unmapped Payload'
+            WHEN {upper_object_type} IN ('ROCKET BODY', 'R/B') THEN 'Rocket Bodies'
+            WHEN {upper_object_type} LIKE '%%DEBRIS%%' OR {upper_object_type} = 'DEB' THEN 'Debris'
+            ELSE 'Other'
+        END
+    """
+
+
+def _build_live_filter_conditions(
+    *,
+    domain: SourceDomain | None,
+    now: datetime,
+    bbox: str | None,
+    classifications: list[str],
+    source_feeds: list[str],
+    track_ids: list[str],
+    operator: str | None,
+    purpose: str | None,
+    constellations: list[str],
+    min_severity: float | None,
+) -> tuple[list[str], dict[str, Any]]:
+    conditions = ["TRUE"]
+    params: dict[str, Any] = {}
+
+    if domain:
+      conditions.append("acs.source_domain = :domain")
+      params["domain"] = domain.value
+      conditions.append("acs.last_seen >= :live_cutoff")
+      params["live_cutoff"] = _live_freshness_cutoff(domain, now)
+    else:
+      freshness_condition, freshness_params = _live_freshness_condition("acs.source_domain", "acs.last_seen", now)
+      conditions.append(freshness_condition)
+      params.update(freshness_params)
+
+    if bbox:
+        try:
+            min_lon, min_lat, max_lon, max_lat = [float(x) for x in bbox.split(",")]
+            conditions.append(
+                "ST_Within(acs.position, ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326))"
+            )
+            params.update(min_lon=min_lon, min_lat=min_lat, max_lon=max_lon, max_lat=max_lat)
+        except ValueError:
+            pass
+
+    if classifications:
+        conditions.append("COALESCE(acs.classification, '') = ANY(:classifications)")
+        params["classifications"] = classifications
+
+    if source_feeds:
+        conditions.append("COALESCE(acs.winning_source_feed, '') = ANY(:source_feeds)")
+        params["source_feeds"] = source_feeds
+
+    if track_ids:
+        conditions.append("COALESCE(acs.track_id, '') = ANY(:track_ids)")
+        params["track_ids"] = track_ids
+
+    if operator:
+        conditions.append("LOWER(COALESCE(ee.operator, acs.metadata->>'operator', '')) = :operator")
+        params["operator"] = operator.strip().lower()
+
+    if purpose:
+        conditions.append("LOWER(COALESCE(ee.purpose, acs.metadata->>'purpose', '')) = :purpose")
+        params["purpose"] = purpose.strip().lower()
+
+    if constellations:
+        constellation_sql = _space_constellation_sql(
+            "acs.callsign",
+            "COALESCE(ee.object_type, acs.metadata->>'object_type')",
+        )
+        conditions.append(f"({constellation_sql}) = ANY(:constellations)")
+        params["constellations"] = constellations
+
+    if min_severity is not None:
+        conditions.append("COALESCE((acs.metadata->>'severity')::double precision, 0) >= :min_severity")
+        params["min_severity"] = min_severity
+
+    return conditions, params
+
+
 def _live_freshness_cutoff(domain: SourceDomain, now: datetime | None = None) -> datetime:
     reference = now or datetime.now(timezone.utc)
     return reference - LIVE_FRESHNESS_WINDOWS[domain]
@@ -879,6 +983,65 @@ async def get_live_assets(
         features.append(_serialize_live_row(row))
 
     return {"type": "FeatureCollection", "features": features}
+
+
+@router.get("/tracks/live/preview", summary="Preview how many live assets a scoped query would load")
+async def preview_live_assets(
+    domain: SourceDomain = Query(...),
+    bbox: str | None = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
+    quick_scope: str | None = Query(None),
+    classifications: str | None = Query(None),
+    source_feeds: str | None = Query(None),
+    track_ids: str | None = Query(None),
+    operator: str | None = Query(None),
+    purpose: str | None = Query(None),
+    constellations: str | None = Query(None),
+    min_severity: float | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    conditions, params = _build_live_filter_conditions(
+        domain=domain,
+        now=now,
+        bbox=bbox,
+        classifications=_split_csv(classifications),
+        source_feeds=_split_csv(source_feeds),
+        track_ids=_split_csv(track_ids),
+        operator=operator,
+        purpose=purpose,
+        constellations=_split_csv(constellations),
+        min_severity=min_severity,
+    )
+    where_clause = " AND ".join(conditions)
+
+    sql = text(f"""
+        WITH canonical_count AS (
+            SELECT COUNT(*) AS count
+            FROM asset_current_state acs
+            LEFT JOIN entity_enrichments ee ON ee.entity_id = acs.entity_id
+            WHERE {where_clause}
+        ),
+        legacy_count AS (
+            SELECT COUNT(*) AS count
+            FROM asset_states acs
+            LEFT JOIN entity_enrichments ee ON ee.entity_id = acs.entity_id
+            WHERE {where_clause}
+        )
+        SELECT
+            CASE
+                WHEN EXISTS (SELECT 1 FROM asset_current_state LIMIT 1) THEN canonical_count.count
+                ELSE legacy_count.count
+            END AS count
+        FROM canonical_count, legacy_count
+    """)
+    result = await db.execute(sql, params)
+    row = result.mappings().first()
+    return {
+        "generated_at": now.isoformat(),
+        "count": int((row or {}).get("count") or 0),
+        "domain": domain.value,
+        "applied_quick_scope": quick_scope,
+    }
 
 
 @router.get("/tracks/detail", summary="Full current-state detail for a single asset")

@@ -16,12 +16,15 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import type { LayerVisibility } from '@/store/useMapStore'
 import { useResizePanel } from '@/hooks/useResizePanel'
 import { useDrag } from '@/hooks/useDrag'
-import type { DomainQuickScopeId, SourceDomain, TrackEventProperties } from '@/types/track'
+import { trackedFetchJson } from '@/lib/perf'
+import { buildTrackScopeParams } from '@/lib/trackScopes'
+import type { DomainQuickScopeId, DomainScopeState, ScopedLivePreviewResponse, SourceDomain, TrackEventProperties } from '@/types/track'
 import {
   getAirlineGroup,
   getConstellationCategory,
@@ -273,24 +276,58 @@ function PanelTab({
 
 function QuickScopeCards({
   domain,
-  selectedScope,
-  appliedScope,
+  scope,
+  previewBbox,
+  alertTrackIds,
+  watchedSpaceTrackIds,
+  selectedTrackId,
   onSelect,
   onApply,
 }: {
   domain: SourceDomain
-  selectedScope: DomainQuickScopeId | null
-  appliedScope: DomainQuickScopeId | null
+  scope: DomainScopeState
+  previewBbox: string | null
+  alertTrackIds: string[]
+  watchedSpaceTrackIds: string[]
+  selectedTrackId: string | null
   onSelect: (scope: DomainQuickScopeId) => void
   onApply: () => void
 }) {
   const options = QUICK_SCOPE_OPTIONS[domain]
+  const previewParams = useMemo(() => buildTrackScopeParams({
+    domain,
+    scope,
+    bbox: previewBbox,
+    alertTrackIds,
+    watchedSpaceTrackIds,
+    selectedTrackId,
+  }), [alertTrackIds, domain, previewBbox, scope, selectedTrackId, watchedSpaceTrackIds])
+  const previewQuery = useQuery({
+    queryKey: ['track-scope-preview', domain, previewParams.toString()],
+    enabled: scope.selectedQuickScope !== null,
+    queryFn: async (): Promise<ScopedLivePreviewResponse> => (
+      trackedFetchJson<ScopedLivePreviewResponse>('track-scope-preview', `/api/tracks/live/preview?${previewParams.toString()}`)
+    ),
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+  const previewCount = previewQuery.data?.count ?? null
+  const selectedScope = scope.selectedQuickScope
+  const appliedScope = scope.appliedQuickScope
 
   return (
     <div style={{ padding: '8px 10px 10px 28px', display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <span style={{ fontSize: 9, color: '#64748b', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
           Quick Scope
+        </span>
+        <span style={{ fontSize: 10, color: previewQuery.isError ? '#fca5a5' : '#94a3b8' }}>
+          {previewQuery.isError
+            ? 'Preview unavailable'
+            : previewCount === null
+              ? 'Preview pending'
+              : `${previewCount.toLocaleString()} projected`}
         </span>
         <button
           type="button"
@@ -612,6 +649,7 @@ export function SourcePanel() {
     selectAsset,
     selectedTrackId,
     selectedDomain,
+    viewportBounds,
     flyTo,
     layers,
     cycleLayerVisibility,
@@ -643,8 +681,29 @@ export function SourcePanel() {
     toggleSpacePriorityOnly,
     expandedSpaceConstellations,
     toggleExpandedSpaceConstellation,
+    pendingAlerts,
+    watchedSpaceTrackIds,
   } = useMapStore()
   const { uiViewportAssets } = useLiveDataStore()
+  const previewBbox = useMemo(() => {
+    if (!viewportBounds) return null
+    return [viewportBounds.west, viewportBounds.south, viewportBounds.east, viewportBounds.north].join(',')
+  }, [viewportBounds])
+  const alertTrackIdsByDomain = useMemo(() => {
+    const grouped: Record<SourceDomain, string[]> = {
+      Air: [],
+      Maritime: [],
+      Space: [],
+      GPS: [],
+      Infra: [],
+    }
+    for (const alert of pendingAlerts) {
+      if (!grouped[alert.domain].includes(alert.trackId)) {
+        grouped[alert.domain].push(alert.trackId)
+      }
+    }
+    return grouped
+  }, [pendingAlerts])
 
   // Which domains have their track list expanded
   const [expanded, setExpanded] = useState<Set<SourceDomain>>(
@@ -1365,8 +1424,11 @@ export function SourcePanel() {
                     <div style={{ borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
                       <QuickScopeCards
                         domain={domain}
-                        selectedScope={domainScope.selectedQuickScope}
-                        appliedScope={domainScope.appliedQuickScope}
+                        scope={domainScope}
+                        previewBbox={previewBbox}
+                        alertTrackIds={alertTrackIdsByDomain[domain]}
+                        watchedSpaceTrackIds={Array.from(watchedSpaceTrackIds)}
+                        selectedTrackId={selectedTrackId}
                         onSelect={(scope) => setSelectedQuickScope(domain, scope)}
                         onApply={() => applyDomainScope(domain)}
                       />
