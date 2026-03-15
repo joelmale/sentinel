@@ -16,7 +16,7 @@ Goal:
 - [x] Phase 2: clean small UI hooks
 - [x] Phase 3: make `OverviewPage` compiler-clean
 - [x] Phase 4: make `AssetCard` compiler-clean
-- [ ] Phase 5: make `TrackBrowserView` compiler-clean
+- [x] Phase 5: make `TrackBrowserView` compiler-clean
 - [ ] Phase 6: add compiler-clean CI/local gate
 - [ ] Phase 7: document exclusions and next frontier
 
@@ -26,3 +26,4 @@ Goal:
 - Phase 2 complete: audited `useDrag`, `useResize`, and `useResizePanel`; no compiler-readiness changes were required
 - Phase 3 complete: audited `OverviewPage`; it already passes the scoped compiler-readiness lint profile
 - Phase 4 complete: replaced `AssetCard`'s effect-driven aircraft photo state with a query-driven fetch path
+- Phase 5 complete: removed effect-driven state syncing from `TrackBrowserView` and derived active selection directly from filtered results

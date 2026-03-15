@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { formatDistanceToNowStrict } from 'date-fns'
 import { getAirlineGroup, getConstellation, getConstellationCategory, getMmsiCountry } from '@/data/grouping'
@@ -55,12 +55,7 @@ export function TrackBrowserView({
   const [selectedSpaceCategory, setSelectedSpaceCategory] = useState<string>('All')
   const [sortKey, setSortKey] = useState<SortKey>('timestamp')
   const [page, setPage] = useState(0)
-  const [selectedAssetKey, setSelectedAssetKey] = useState<string | null>(null)
-
-  useEffect(() => {
-    setSelectedDomain(initialDomain)
-    setPage(0)
-  }, [initialDomain])
+  const [selectedAssetKeyOverride, setSelectedAssetKeyOverride] = useState<string | null>(null)
 
   const classifications = useMemo(() => (
     Array.from(new Set(assets.map((asset) => asset.classification ?? 'Unknown'))).sort()
@@ -112,26 +107,13 @@ export function TrackBrowserView({
   const safePage = Math.min(page, pageCount - 1)
   const paged = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE)
   const selectedAsset = useMemo(() => {
-    if (selectedAssetKey) {
-      const explicit = filtered.find((asset) => assetKey(asset) === selectedAssetKey)
+    if (selectedAssetKeyOverride) {
+      const explicit = filtered.find((asset) => assetKey(asset) === selectedAssetKeyOverride)
       if (explicit) return explicit
     }
     return paged[0] ?? filtered[0] ?? null
-  }, [filtered, paged, selectedAssetKey])
-
-  useEffect(() => {
-    if (!selectedAsset) {
-      setSelectedAssetKey(null)
-      return
-    }
-    if (!selectedAssetKey) {
-      setSelectedAssetKey(assetKey(selectedAsset))
-      return
-    }
-    if (!filtered.some((asset) => assetKey(asset) === selectedAssetKey)) {
-      setSelectedAssetKey(assetKey(selectedAsset))
-    }
-  }, [filtered, selectedAsset, selectedAssetKey])
+  }, [filtered, paged, selectedAssetKeyOverride])
+  const activeSelectedAssetKey = selectedAsset ? assetKey(selectedAsset) : null
 
   const selectedSpaceNoradId = useMemo(() => {
     if (!selectedAsset || selectedAsset.source_domain !== 'Space') return null
@@ -287,7 +269,7 @@ export function TrackBrowserView({
                 <tr
                   key={assetKey(asset)}
                   onClick={() => {
-                    setSelectedAssetKey(assetKey(asset))
+                    setSelectedAssetKeyOverride(assetKey(asset))
                     selectAsset(asset.track_id, asset.source_domain)
                     if (typeof asset.lon === 'number' && typeof asset.lat === 'number') {
                       flyTo(asset.lon, asset.lat, 6)
@@ -296,7 +278,7 @@ export function TrackBrowserView({
                   style={{
                     cursor: 'pointer',
                     borderBottom: '1px solid rgba(148,163,184,0.08)',
-                    background: selectedAsset && assetKey(asset) === assetKey(selectedAsset) ? 'rgba(30,41,59,0.85)' : 'transparent',
+                    background: activeSelectedAssetKey && assetKey(asset) === activeSelectedAssetKey ? 'rgba(30,41,59,0.85)' : 'transparent',
                   }}
                 >
                   <td style={tdStyle}>
