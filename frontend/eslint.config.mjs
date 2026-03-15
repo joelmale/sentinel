@@ -14,8 +14,20 @@ const compilerReadyFiles = [
 ]
 
 const compilerRecommendedRules = reactHooks.configs.flat.recommended.rules
+const compilerStrictRules = reactHooks.configs.flat['recommended-latest'].rules
 const compilerWarningRules = Object.fromEntries(
   Object.entries(compilerRecommendedRules).map(([ruleName, ruleConfig]) => {
+    if (ruleName === 'react-hooks/rules-of-hooks' || ruleName === 'react-hooks/exhaustive-deps') {
+      return [ruleName, ruleConfig]
+    }
+    if (Array.isArray(ruleConfig)) {
+      return [ruleName, ['warn', ...ruleConfig.slice(1)]]
+    }
+    return [ruleName, 'warn']
+  }),
+)
+const compilerStrictWarningRules = Object.fromEntries(
+  Object.entries(compilerStrictRules).map(([ruleName, ruleConfig]) => {
     if (ruleName === 'react-hooks/rules-of-hooks' || ruleName === 'react-hooks/exhaustive-deps') {
       return [ruleName, ruleConfig]
     }
@@ -65,5 +77,12 @@ export default [
       'react-hooks': reactHooks,
     },
     rules: compilerWarningRules,
+  },
+  {
+    files: compilerReadyFiles,
+    plugins: {
+      'react-hooks': reactHooks,
+    },
+    rules: compilerStrictWarningRules,
   },
 ]

@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint . --report-unused-disable-directives --max-warnings 0",
     "lint:compiler-ready": "eslint src/components/OverviewPage.tsx src/components/AssetCard.tsx src/components/TrackBrowserView.tsx src/hooks/useDrag.ts src/hooks/useResize.ts src/hooks/useResizePanel.ts",
+    "lint:compiler-strict": "eslint src/components/OverviewPage.tsx src/components/AssetCard.tsx src/components/TrackBrowserView.tsx src/hooks/useDrag.ts src/hooks/useResize.ts src/hooks/useResizePanel.ts",
     "type-check": "tsc --noEmit",
     "preview": "vite preview"
   },
