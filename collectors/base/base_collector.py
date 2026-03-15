@@ -1214,8 +1214,8 @@ class BaseCollector(ABC):
                               THEN ST_SetSRID(ST_MakePoint($6::double precision, $7::double precision), 4326)
                               ELSE NULL::geometry(Point, 4326)
                          END,
-                         $8, $9, $10, $11, $12, $13,
-                         $14::uuid, $15::jsonb, $16::jsonb, $17)
+                         $8, $9, $10, $11, $12, $13, $14,
+                         $15::uuid, $16::jsonb, $17::jsonb, $18)
                     ON CONFLICT (source_domain, source_feed, track_id) DO UPDATE SET
                         entity_id = EXCLUDED.entity_id,
                         callsign = EXCLUDED.callsign,
@@ -1266,8 +1266,8 @@ class BaseCollector(ABC):
                               THEN ST_SetSRID(ST_MakePoint($6::double precision, $7::double precision), 4326)
                               ELSE NULL::geometry(Point, 4326)
                          END,
-                         $8, $9, $10, $11, $12, $13,
-                         $14::uuid, $15::jsonb, $16::jsonb, $17)
+                         $8, $9, $10, $11, $12, $13, $14,
+                         $15::uuid, $16::jsonb, $17::jsonb, $18)
                     ON CONFLICT (source_domain, track_id) DO UPDATE SET
                         entity_id       = EXCLUDED.entity_id,
                         callsign       = EXCLUDED.callsign,
