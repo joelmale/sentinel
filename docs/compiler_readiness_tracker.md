@@ -13,7 +13,7 @@ Goal:
 ## Phase Checklist
 
 - [x] Phase 1: add scoped compiler-readiness lint profile
-- [ ] Phase 2: clean small UI hooks
+- [x] Phase 2: clean small UI hooks
 - [ ] Phase 3: make `OverviewPage` compiler-clean
 - [ ] Phase 4: make `AssetCard` compiler-clean
 - [ ] Phase 5: make `TrackBrowserView` compiler-clean
@@ -23,3 +23,4 @@ Goal:
 ## Commit Log
 
 - Phase 1 complete: scoped compiler-readiness lint profile added for `OverviewPage`, `AssetCard`, `TrackBrowserView`, `useDrag`, `useResize`, and `useResizePanel`
+- Phase 2 complete: audited `useDrag`, `useResize`, and `useResizePanel`; no compiler-readiness changes were required
