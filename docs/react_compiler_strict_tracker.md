@@ -17,7 +17,7 @@ Goal:
 - [x] Phase 3: eliminate effect-driven derived state patterns
 - [x] Phase 4: hoist static component and config definitions
 - [x] Phase 5: normalize event and callback boundaries
-- [ ] Phase 6: enforce strict compiler-ready lint in CI/local checks
+- [x] Phase 6: enforce strict compiler-ready lint in CI/local checks
 
 ## Commit Log
 
@@ -26,3 +26,4 @@ Goal:
 - Phase 3 complete: audited the strict subset for effect-driven derived state and confirmed the earlier `AssetCard` and `TrackBrowserView` cleanup already satisfies the stricter rule set
 - Phase 4 complete: audited the strict subset for static component/config hoisting and confirmed the current files already keep those definitions outside render-sensitive paths
 - Phase 5 complete: audited event and callback boundaries across the strict subset and found no additional compiler-rule violations requiring code changes in this work block
+- Phase 6 complete: promoted `lint:compiler-strict` to a zero-warning gate and added it to frontend CI

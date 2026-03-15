@@ -41,6 +41,8 @@ jobs:
         run: cd frontend && npm run lint
       - name: Compiler-ready subset
         run: cd frontend && npm run lint:compiler-ready
+      - name: Compiler-strict subset
+        run: cd frontend && npm run lint:compiler-strict
 
   docker-build:
     name: Docker Compose build
