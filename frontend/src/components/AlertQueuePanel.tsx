@@ -27,6 +27,7 @@ import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import type { AlertItem, AlertTriage } from '@/store/useMapStore'
 import type { SourceDomain } from '@/types/track'
+import { useShallow } from 'zustand/react/shallow'
 
 // ── Visual config ─────────────────────────────────────────────────
 
@@ -214,8 +215,21 @@ export function AlertQueuePanel() {
     selectedTrackId,
     selectedDomain,
     setLayerEnabled,
-  } = useMapStore()
-  const { uiViewportAssets, selectedAssetDetail } = useLiveDataStore()
+  } = useMapStore(useShallow((state) => ({
+    pendingAlerts: state.pendingAlerts,
+    addAlert: state.addAlert,
+    triageAlert: state.triageAlert,
+    investigationContext: state.investigationContext,
+    openInvestigation: state.openInvestigation,
+    layers: state.layers,
+    selectedTrackId: state.selectedTrackId,
+    selectedDomain: state.selectedDomain,
+    setLayerEnabled: state.setLayerEnabled,
+  })))
+  const { uiViewportAssets, selectedAssetDetail } = useLiveDataStore(useShallow((state) => ({
+    uiViewportAssets: state.uiViewportAssets,
+    selectedAssetDetail: state.selectedAssetDetail,
+  })))
   const { offset, dragHandleRef, isDragging } = useDrag({
     storageKey: 'sentinel.alertQueuePosition',
   })

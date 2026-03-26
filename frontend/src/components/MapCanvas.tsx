@@ -45,6 +45,7 @@ import { COCOM_GEOJSON_URL, COCOM_LABELS, getCocomColors } from '@/data/cocom'
 import { UNDERSEA_CABLES_GEOJSON_URL, UNDERSEA_CABLE_LANDING_POINTS_GEOJSON_URL } from '@/data/underseaCables'
 import type { DisruptionEvent, TrackEventProperties } from '@/types/track'
 import { getAirlineGroup, getConstellation, getMmsiCountry, normalizeObjectType, normalizeOrbitClass } from '@/data/grouping'
+import { useShallow } from 'zustand/react/shallow'
 
 const CLASSIFICATION_COLORS: Record<string, [number, number, number]> = {
   Commercial: [100, 181, 246],
@@ -125,6 +126,7 @@ interface MapCanvasProps {
   liveAssets: TrackEventProperties[]
   disruptions: DisruptionEvent[]
   onMapClick?: (lon: number, lat: number) => void
+  active?: boolean
 }
 
 type HoverObject =
@@ -139,6 +141,19 @@ type ViewBounds = {
   south: number
   east: number
   north: number
+}
+
+type TrailPoint = {
+  lon: number
+  lat: number
+  altitude_m?: number
+  timestamp: number
+}
+
+type VisibleTrail = {
+  key: string
+  positions: TrailPoint[]
+  visibility: 'visible' | 'ghost' | 'hidden'
 }
 
 function clampZoom(nextZoom: number): number {
@@ -228,7 +243,23 @@ function getRenderPosition(
   return [x, y, z]
 }
 
-export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProps) {
+function deriveVisibleTrails(
+  trailBuffer: Map<string, TrailPoint[]>,
+  prefix: string,
+  cullBounds: ViewBounds | null,
+  getTrailVisibilityMode: (trackKey: string) => 'visible' | 'ghost' | 'hidden',
+): VisibleTrail[] {
+  return Array.from(trailBuffer.entries())
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([key, positions]) => ({ key, positions, visibility: getTrailVisibilityMode(key) }))
+    .filter((trail) => (
+      trail.visibility !== 'hidden' &&
+      trail.positions.length >= 2 &&
+      trail.positions.some((point) => isPointInBounds(point.lon, point.lat, cullBounds))
+    ))
+}
+
+export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }: MapCanvasProps) {
   const {
     viewport,
     setViewport,
@@ -254,11 +285,42 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     selectedLandingPoint,
     selectedTrackHistory,
     selectedOrbitPoints,
+    spaceTrackDuration,
     pendingAlerts,
     investigationContext,
     watchedSpaceTrackIds,
     pinnedTrackKeys: userPinnedTrackKeys,
-  } = useMapStore()
+  } = useMapStore(useShallow((state) => ({
+    viewport: state.viewport,
+    setViewport: state.setViewport,
+    setViewportBounds: state.setViewportBounds,
+    layers: state.layers,
+    mapMode: state.mapMode,
+    showTrails: state.showTrails,
+    showFilteredTrackGhosts: state.showFilteredTrackGhosts,
+    showCocom: state.showCocom,
+    showUnderseaCables: state.showUnderseaCables,
+    globeView: state.globeView,
+    classFilter: state.classFilter,
+    hiddenGroupFilters: state.hiddenGroupFilters,
+    hiddenSpaceConstellations: state.hiddenSpaceConstellations,
+    workspaceSearch: state.workspaceSearch,
+    declutterMode: state.declutterMode,
+    selectAsset: state.selectAsset,
+    selectLandingPoint: state.selectLandingPoint,
+    clearLandingPointSelection: state.clearLandingPointSelection,
+    trailBuffer: state.trailBuffer,
+    selectedTrackId: state.selectedTrackId,
+    selectedDomain: state.selectedDomain,
+    selectedLandingPoint: state.selectedLandingPoint,
+    selectedTrackHistory: state.selectedTrackHistory,
+    selectedOrbitPoints: state.selectedOrbitPoints,
+    spaceTrackDuration: state.spaceTrackDuration,
+    pendingAlerts: state.pendingAlerts,
+    investigationContext: state.investigationContext,
+    watchedSpaceTrackIds: state.watchedSpaceTrackIds,
+    pinnedTrackKeys: state.pinnedTrackKeys,
+  })))
   const [hoverInfo, setHoverInfo] = useState<{ x: number; y: number; object: HoverObject } | null>(null)
   const [renderWarning, setRenderWarning] = useState<string | null>(null)
   const [rendererDisabled, setRendererDisabled] = useState(false)
@@ -269,6 +331,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
   const faultHandledRef = useRef(false)
   const resizeFaultSeenRef = useRef(false)
   const interactionActiveRef = useRef(false)
+  const shuttingDownRef = useRef(false)
 
   useEffect(() => {
     if (interactionActiveRef.current) return
@@ -280,6 +343,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     if (!node) return
 
     const updateSize = () => {
+      if (shuttingDownRef.current) return
       const rect = node.getBoundingClientRect()
       setContainerSize({
         width: Math.max(1, Math.round(rect.width)),
@@ -293,13 +357,26 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
     return () => observer.disconnect()
   }, [])
 
-  const viewState: MapViewState = {
+  useEffect(() => {
+    if (active) {
+      shuttingDownRef.current = false
+      return
+    }
+
+    shuttingDownRef.current = true
+    interactionActiveRef.current = false
+    setHoverInfo(null)
+    setRenderWarning(null)
+    setContainerSize({ width: 1, height: 1 })
+  }, [active])
+
+  const viewState = useMemo<MapViewState>(() => ({
     longitude: localViewport.longitude,
-    latitude:  localViewport.latitude,
-    zoom:      localViewport.zoom,
-    bearing:   localViewport.bearing,
-    pitch:     localViewport.pitch,
-  }
+    latitude: localViewport.latitude,
+    zoom: localViewport.zoom,
+    bearing: localViewport.bearing,
+    pitch: localViewport.pitch,
+  }), [localViewport.bearing, localViewport.latitude, localViewport.longitude, localViewport.pitch, localViewport.zoom])
 
   const effectiveContainerSize = useMemo(() => {
     if (containerSize.width >= 240 && containerSize.height >= 180) return containerSize
@@ -309,6 +386,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       height: Math.max(containerSize.height, window.innerHeight),
     }
   }, [containerSize])
+  const deckRendererReady = effectiveContainerSize.width >= 32 && effectiveContainerSize.height >= 32
 
   const cullBounds = useMemo(() => {
     try {
@@ -489,19 +567,94 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
   }, [layers])
 
   const useSpaceAltitude = globeView
+  const hoveredLandingPoint = useMemo(() => (
+    hoverInfo?.object.kind === 'landingPoint' ? hoverInfo.object.item : null
+  ), [hoverInfo])
 
-  const deckLayerBuild = useMemo(() => {
+  const maritimeViewportAssets = useMemo(() => (
+    viewportAssets.filter((asset) => asset.source_domain === 'Maritime' && typeof asset.lon === 'number' && typeof asset.lat === 'number')
+  ), [viewportAssets])
+  const airViewportAssets = useMemo(() => (
+    viewportAssets.filter((asset) => asset.source_domain === 'Air' && typeof asset.lon === 'number' && typeof asset.lat === 'number')
+  ), [viewportAssets])
+  const spaceViewportAssets = useMemo(() => (
+    viewportAssets.filter((asset) => asset.source_domain === 'Space' && typeof asset.lon === 'number' && typeof asset.lat === 'number')
+  ), [viewportAssets])
+
+  const focusMaritimeAssets = useMemo(() => (
+    maritimeViewportAssets.filter((asset) => pinnedTrackKeys.has(`Maritime:${asset.track_id}`))
+  ), [maritimeViewportAssets, pinnedTrackKeys])
+  const backgroundMaritimeAssets = useMemo(() => (
+    maritimeViewportAssets.filter((asset) => !pinnedTrackKeys.has(`Maritime:${asset.track_id}`))
+  ), [maritimeViewportAssets, pinnedTrackKeys])
+  const focusAirAssets = useMemo(() => (
+    airViewportAssets.filter((asset) => pinnedTrackKeys.has(`Air:${asset.track_id}`))
+  ), [airViewportAssets, pinnedTrackKeys])
+  const backgroundAirAssets = useMemo(() => (
+    airViewportAssets.filter((asset) => !pinnedTrackKeys.has(`Air:${asset.track_id}`))
+  ), [airViewportAssets, pinnedTrackKeys])
+  const prioritySpaceAssets = useMemo(() => (
+    spaceViewportAssets.filter((asset) => (
+      spacePriorityKeys.has(`Space:${asset.track_id}`) || pinnedTrackKeys.has(`Space:${asset.track_id}`)
+    ))
+  ), [spaceViewportAssets, spacePriorityKeys, pinnedTrackKeys])
+  const backgroundSpaceAssets = useMemo(() => (
+    spaceViewportAssets.filter((asset) => (
+      !spacePriorityKeys.has(`Space:${asset.track_id}`) && !pinnedTrackKeys.has(`Space:${asset.track_id}`)
+    ))
+  ), [spaceViewportAssets, spacePriorityKeys, pinnedTrackKeys])
+
+  const selectedMaritimeAsset = useMemo(() => (
+    selectedDomain === 'Maritime'
+      ? maritimeViewportAssets.find((asset) => asset.track_id === selectedTrackId)
+      : undefined
+  ), [maritimeViewportAssets, selectedDomain, selectedTrackId])
+  const selectedAirAsset = useMemo(() => (
+    selectedDomain === 'Air'
+      ? airViewportAssets.find((asset) => asset.track_id === selectedTrackId)
+      : undefined
+  ), [airViewportAssets, selectedDomain, selectedTrackId])
+  const selectedSpaceAsset = useMemo(() => (
+    selectedDomain === 'Space'
+      ? spaceViewportAssets.find((asset) => asset.track_id === selectedTrackId)
+      : undefined
+  ), [spaceViewportAssets, selectedDomain, selectedTrackId])
+
+  const maritimeTrails = useMemo(() => (
+    deriveVisibleTrails(trailBuffer, 'Maritime:', cullBounds, getTrailVisibilityMode)
+  ), [trailBuffer, cullBounds, getTrailVisibilityMode])
+  const airTrails = useMemo(() => (
+    deriveVisibleTrails(trailBuffer, 'Air:', cullBounds, getTrailVisibilityMode)
+  ), [trailBuffer, cullBounds, getTrailVisibilityMode])
+  const spaceTrails = useMemo(() => (
+    deriveVisibleTrails(trailBuffer, 'Space:', cullBounds, getTrailVisibilityMode)
+  ), [trailBuffer, cullBounds, getTrailVisibilityMode])
+
+  const disruptionFeatures = useMemo(() => (
+    visibleDisruptions
+      .filter((event) => event.geometry)
+      .map((event) => ({
+        type: 'Feature' as const,
+        geometry: event.geometry!,
+        properties: event,
+      }))
+  ), [visibleDisruptions])
+  const disruptionCentroids = useMemo(() => (
+    visibleDisruptions
+      .filter((event) => event.centroid?.coordinates)
+      .map((event) => ({
+        ...event,
+        lon: event.centroid!.coordinates[0],
+        lat: event.centroid!.coordinates[1],
+      }))
+  ), [visibleDisruptions])
+
+  const staticLayerBuild = useMemo(() => {
     const buildStarted = performance.now()
-    const ls: Layer<object>[] = []
-    let spaceAggregateCount = 0
-    let spaceBackgroundCount = 0
+    const nextLayers: Layer<object>[] = []
 
-    // ── Globe / flat basemap selection ───────────────────────────────────────
-    // GlobeView should honor the selected map mode instead of always forcing
-    // raster tiles. Outline mode becomes a 3D outline globe; none keeps the
-    // globe empty; full/simple keep the raster globe base.
     if (globeView && (mapMode === 'full' || mapMode === 'simple')) {
-      ls.push(new TileLayer({
+      nextLayers.push(new TileLayer({
         id: 'globe-base-tiles',
         data: GLOBE_TILE_URL,
         minZoom: 0,
@@ -522,7 +675,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
 
     if (mapMode === 'outline') {
       const outlineFillColor: [number, number, number, number] = globeView ? [15, 23, 42, 235] : [15, 23, 42, 45]
-      ls.push(new GeoJsonLayer({
+      nextLayers.push(new GeoJsonLayer({
         id: 'outline-land',
         data: WORLD_BOUNDARIES_URL,
         stroked: true,
@@ -534,7 +687,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         getFillColor: outlineFillColor,
         opacity: 0.95,
       }))
-      ls.push(new GeoJsonLayer({
+      nextLayers.push(new GeoJsonLayer({
         id: 'outline-graticule',
         data: OUTLINE_GRATICULE,
         stroked: true,
@@ -549,7 +702,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         opacity: 0.95,
       }))
     } else if (mapMode === 'simple') {
-      ls.push(new GeoJsonLayer({
+      nextLayers.push(new GeoJsonLayer({
         id: 'simple-land-outline',
         data: WORLD_BOUNDARIES_URL,
         stroked: true,
@@ -562,25 +715,21 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }))
     }
 
-    // ── COCOM boundaries ────────────────────────────────────────
     if (showCocom && !cocomFailed) {
-      // Local generalized-theater polygons. These are intentionally approximate
-      // ocean-spanning AOR shapes, not official legal boundary GIS.
-      ls.push(new GeoJsonLayer({
+      nextLayers.push(new GeoJsonLayer({
         id: 'cocom-fills',
         data: COCOM_GEOJSON_URL,
         stroked: true,
         filled: true,
         pickable: false,
-        getFillColor: (f: any) => getCocomColors(f.properties).fill,
-        getLineColor: (f: any) => getCocomColors(f.properties).line,
+        getFillColor: (feature: any) => getCocomColors(feature.properties).fill,
+        getLineColor: (feature: any) => getCocomColors(feature.properties).line,
         lineWidthMinPixels: 1.5,
         lineWidthMaxPixels: 3,
         opacity: 1,
       }))
 
-      // Command labels centred inside each AOR
-      ls.push(new TextLayer({
+      nextLayers.push(new TextLayer({
         id: 'cocom-labels',
         data: COCOM_LABELS,
         getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
@@ -598,13 +747,12 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }))
     }
 
-    // ── Undersea cables ─────────────────────────────────────────
     if (showUnderseaCables) {
       const landingPointRadius = Math.min(10, Math.max(3, localViewport.zoom * 0.9))
       const landingPointPickRadius = Math.min(22, Math.max(10, landingPointRadius + 8))
       const landingPointsInteractive = localViewport.zoom >= LANDING_POINT_INTERACTIVE_ZOOM
 
-      ls.push(new GeoJsonLayer({
+      nextLayers.push(new GeoJsonLayer({
         id: 'undersea-cables',
         data: UNDERSEA_CABLES_GEOJSON_URL,
         stroked: true,
@@ -620,7 +768,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         },
       }))
 
-      ls.push(new GeoJsonLayer({
+      nextLayers.push(new GeoJsonLayer({
         id: 'undersea-cable-landing-point-hitareas',
         data: UNDERSEA_CABLE_LANDING_POINTS_GEOJSON_URL,
         stroked: false,
@@ -664,7 +812,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         },
       }))
 
-      ls.push(new GeoJsonLayer({
+      nextLayers.push(new GeoJsonLayer({
         id: 'undersea-cable-landing-points',
         data: UNDERSEA_CABLE_LANDING_POINTS_GEOJSON_URL,
         stroked: true,
@@ -682,7 +830,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }))
 
       if (selectedLandingPoint) {
-        ls.push(new ScatterplotLayer({
+        nextLayers.push(new ScatterplotLayer({
           id: 'undersea-cable-landing-point-selection',
           data: [selectedLandingPoint],
           getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
@@ -697,10 +845,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         }))
       }
 
-      if (hoverInfo?.object.kind === 'landingPoint' && typeof hoverInfo.object.item.lon === 'number' && typeof hoverInfo.object.item.lat === 'number') {
-        ls.push(new ScatterplotLayer({
+      if (hoveredLandingPoint && typeof hoveredLandingPoint.lon === 'number' && typeof hoveredLandingPoint.lat === 'number') {
+        nextLayers.push(new ScatterplotLayer({
           id: 'undersea-cable-landing-point-hover',
-          data: [hoverInfo.object.item],
+          data: [hoveredLandingPoint],
           getPosition: (d: { lon?: number; lat?: number }) => [d.lon ?? 0, d.lat ?? 0],
           getRadius: landingPointRadius + 4,
           radiusUnits: 'pixels',
@@ -714,25 +862,25 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }
     }
 
-    // ── Maritime: live positions ─────────────────────────────────
+    return { layers: nextLayers, buildMs: performance.now() - buildStarted }
+  }, [
+    globeView,
+    mapMode,
+    showCocom,
+    cocomFailed,
+    showUnderseaCables,
+    localViewport.zoom,
+    selectLandingPoint,
+    selectedLandingPoint,
+    hoveredLandingPoint,
+  ])
+
+  const maritimeLayerBuild = useMemo(() => {
+    const buildStarted = performance.now()
+    const nextLayers: Layer<object>[] = []
+
     if (layers.Maritime.visibility !== 'hidden') {
-      const maritimeAssets = viewportAssets.filter(
-        (a) => a.source_domain === 'Maritime' && typeof a.lon === 'number' && typeof a.lat === 'number',
-      )
-      const focusMaritimeAssets = maritimeAssets.filter((asset) => pinnedTrackKeys.has(`Maritime:${asset.track_id}`))
-      const backgroundMaritimeAssets = maritimeAssets.filter((asset) => !pinnedTrackKeys.has(`Maritime:${asset.track_id}`))
-      const maritimeTrails = Array.from(trailBuffer.entries())
-        .filter(([key]) => key.startsWith('Maritime:'))
-        .map(([key, positions]) => ({ key, positions, visibility: getTrailVisibilityMode(key) }))
-        .filter((d) => d.visibility !== 'hidden' && d.positions.length >= 2 && d.positions.some((p) => isPointInBounds(p.lon, p.lat, cullBounds)))
-
-      const selectedMaritimeAsset = maritimeAssets.find(
-        (a) =>
-          a.track_id === selectedTrackId &&
-          selectedDomain === 'Maritime',
-      )
-
-      ls.push(new ScatterplotLayer<TrackEventProperties>({
+      nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
         id: 'ais-background-points',
         data: backgroundMaritimeAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
@@ -743,21 +891,21 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         stroked: true,
         filled: true,
         getLineColor: [226, 232, 240, 70],
-        getFillColor: (d: TrackEventProperties) => [34, 211, 238, Math.max(30, Math.round(getAlpha(d) * 0.42))],
+        getFillColor: (d) => [34, 211, 238, Math.max(30, Math.round(getAlpha(d) * 0.42))],
         updateTriggers: {
           getFillColor: [declutterMode, searchMatchSet],
           getRadius: [localViewport.zoom],
         },
         pickable: true,
         opacity: domainOpacity('Maritime') * 0.9,
-        onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
+        onHover: ({ x, y, object }) =>
           setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
         onClick: ({ object }) =>
           object && selectAsset(object.track_id, object.source_domain),
       }))
 
       if (focusMaritimeAssets.length > 0) {
-        ls.push(new ScatterplotLayer<TrackEventProperties>({
+        nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'ais-focus-points',
           data: focusMaritimeAssets,
           getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
@@ -771,7 +919,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           getFillColor: [34, 211, 238, 220],
           pickable: true,
           opacity: domainOpacity('Maritime'),
-          onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
+          onHover: ({ x, y, object }) =>
             setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
           onClick: ({ object }) =>
             object && selectAsset(object.track_id, object.source_domain),
@@ -779,7 +927,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }
 
       if (selectedMaritimeAsset) {
-        ls.push(new TextLayer<TrackEventProperties>({
+        nextLayers.push(new TextLayer<TrackEventProperties>({
           id: 'ais-selected-icon',
           data: [selectedMaritimeAsset],
           getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
@@ -794,7 +942,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           fontFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", "DejaVu Sans", Arial, sans-serif',
           fontSettings: { sdf: true, fontSize: 64 },
         }))
-        ls.push(new ScatterplotLayer<TrackEventProperties>({
+        nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'ais-selected-ring',
           data: [selectedMaritimeAsset],
           getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
@@ -810,11 +958,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }
 
       if (selectedDomain === 'Maritime' && selectedTrackHistory.length >= 2) {
-        ls.push(new PathLayer({
+        nextLayers.push(new PathLayer({
           id: 'maritime-selected-history',
           data: [{ positions: selectedTrackHistory }],
-          getPath: (d: { positions: Array<{ lon: number; lat: number; timestamp: number }> }) =>
-            d.positions.map(p => [p.lon, p.lat] as [number, number]),
+          getPath: (d: { positions: TrailPoint[] }) => d.positions.map((point) => [point.lon, point.lat] as [number, number]),
           getColor: [34, 211, 238, 220],
           getWidth: 3,
           widthUnits: 'pixels',
@@ -823,14 +970,12 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         }))
       }
 
-      // ── Maritime trails ────────────────────────────────────────
       if (showTrails) {
-        ls.push(new PathLayer({
+        nextLayers.push(new PathLayer({
           id: 'maritime-trails',
           data: maritimeTrails,
-          getPath: (d: { positions: Array<{ lon: number; lat: number; timestamp: number }> }) =>
-            d.positions.map(p => [p.lon, p.lat] as [number, number]),
-          getColor: (d: { visibility: 'visible' | 'ghost' | 'hidden' }) =>
+          getPath: (d: VisibleTrail) => d.positions.map((point) => [point.lon, point.lat] as [number, number]),
+          getColor: (d: VisibleTrail) =>
             d.visibility === 'ghost' ? [100, 116, 139, 45] : [80, 80, 80, 100],
           getWidth: 1.5,
           widthUnits: 'pixels',
@@ -840,25 +985,30 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }
     }
 
-    // ── Air: live positions ──────────────────────────────────────
+    return { layers: nextLayers, buildMs: performance.now() - buildStarted }
+  }, [
+    layers.Maritime.visibility,
+    backgroundMaritimeAssets,
+    focusMaritimeAssets,
+    selectedMaritimeAsset,
+    selectedDomain,
+    selectedTrackHistory,
+    showTrails,
+    maritimeTrails,
+    localViewport.zoom,
+    domainOpacity,
+    getAlpha,
+    selectAsset,
+    declutterMode,
+    searchMatchSet,
+  ])
+
+  const airLayerBuild = useMemo(() => {
+    const buildStarted = performance.now()
+    const nextLayers: Layer<object>[] = []
+
     if (layers.Air.visibility !== 'hidden') {
-      const airAssets = viewportAssets.filter(
-        (a) => a.source_domain === 'Air' && typeof a.lon === 'number' && typeof a.lat === 'number',
-      )
-      const focusAirAssets = airAssets.filter((asset) => pinnedTrackKeys.has(`Air:${asset.track_id}`))
-      const backgroundAirAssets = airAssets.filter((asset) => !pinnedTrackKeys.has(`Air:${asset.track_id}`))
-      const airTrails = Array.from(trailBuffer.entries())
-        .filter(([key]) => key.startsWith('Air:'))
-        .map(([key, positions]) => ({ key, positions, visibility: getTrailVisibilityMode(key) }))
-        .filter((d) => d.visibility !== 'hidden' && d.positions.length >= 2 && d.positions.some((p) => isPointInBounds(p.lon, p.lat, cullBounds)))
-
-      const selectedAirAsset = airAssets.find(
-        (a) =>
-          a.track_id === selectedTrackId &&
-          selectedDomain === 'Air',
-      )
-
-      ls.push(new ScatterplotLayer<TrackEventProperties>({
+      nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
         id: 'adsb-background-points',
         data: backgroundAirAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
@@ -869,7 +1019,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         lineWidthUnits: 'pixels',
         getLineWidth: 0.75,
         getLineColor: [226, 232, 240, 80],
-        getFillColor: (d: TrackEventProperties) => {
+        getFillColor: (d) => {
           const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
           return [base[0], base[1], base[2], Math.max(36, Math.round(getAlpha(d) * 0.55))] as [number, number, number, number]
         },
@@ -879,14 +1029,14 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         },
         pickable: true,
         opacity: domainOpacity('Air') * 0.9,
-        onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
+        onHover: ({ x, y, object }) =>
           setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
         onClick: ({ object }) =>
           object && selectAsset(object.track_id, object.source_domain),
       }))
 
       if (focusAirAssets.length > 0) {
-        ls.push(new ScatterplotLayer<TrackEventProperties>({
+        nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'adsb-focus-points',
           data: focusAirAssets,
           getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
@@ -897,13 +1047,13 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           lineWidthUnits: 'pixels',
           getLineWidth: 1.4,
           getLineColor: [250, 204, 21, 220],
-          getFillColor: (d: TrackEventProperties) => {
+          getFillColor: (d) => {
             const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
             return [base[0], base[1], base[2], 230] as [number, number, number, number]
           },
           pickable: true,
           opacity: domainOpacity('Air'),
-          onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
+          onHover: ({ x, y, object }) =>
             setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
           onClick: ({ object }) =>
             object && selectAsset(object.track_id, object.source_domain),
@@ -911,12 +1061,12 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }
 
       if (selectedAirAsset) {
-        ls.push(new TextLayer<TrackEventProperties>({
+        nextLayers.push(new TextLayer<TrackEventProperties>({
           id: 'adsb-selected-icon',
           data: [selectedAirAsset],
           getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
           getText: () => '✈',
-          getColor: (d: TrackEventProperties) => {
+          getColor: (d) => {
             const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
             return [base[0], base[1], base[2], 255] as [number, number, number, number]
           },
@@ -930,7 +1080,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           fontFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", "DejaVu Sans", Arial, sans-serif',
           fontSettings: { sdf: true, fontSize: 64 },
         }))
-        ls.push(new ScatterplotLayer<TrackEventProperties>({
+        nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'adsb-selected-ring',
           data: [selectedAirAsset],
           getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
@@ -946,11 +1096,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }
 
       if (selectedDomain === 'Air' && selectedTrackHistory.length >= 2) {
-        ls.push(new PathLayer({
+        nextLayers.push(new PathLayer({
           id: 'air-selected-history',
           data: [{ positions: selectedTrackHistory }],
-          getPath: (d: { positions: Array<{ lon: number; lat: number; timestamp: number }> }) =>
-            d.positions.map(p => [p.lon, p.lat] as [number, number]),
+          getPath: (d: { positions: TrailPoint[] }) => d.positions.map((point) => [point.lon, point.lat] as [number, number]),
           getColor: [56, 189, 248, 220],
           getWidth: 3,
           widthUnits: 'pixels',
@@ -959,14 +1108,12 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         }))
       }
 
-      // ── Air trails ──────────────────────────────────────────
       if (showTrails) {
-        ls.push(new PathLayer({
+        nextLayers.push(new PathLayer({
           id: 'air-trails',
           data: airTrails,
-          getPath: (d: { positions: Array<{ lon: number; lat: number; timestamp: number }> }) =>
-            d.positions.map(p => [p.lon, p.lat] as [number, number]),
-          getColor: (d: { visibility: 'visible' | 'ghost' | 'hidden' }) =>
+          getPath: (d: VisibleTrail) => d.positions.map((point) => [point.lon, point.lat] as [number, number]),
+          getColor: (d: VisibleTrail) =>
             d.visibility === 'ghost' ? [148, 163, 184, 40] : [100, 181, 246, 120],
           getWidth: 1.5,
           widthUnits: 'pixels',
@@ -976,36 +1123,33 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }
     }
 
-    // ── Space / Satellites: live positions ───────────────────────
+    return { layers: nextLayers, buildMs: performance.now() - buildStarted }
+  }, [
+    layers.Air.visibility,
+    backgroundAirAssets,
+    focusAirAssets,
+    selectedAirAsset,
+    selectedDomain,
+    selectedTrackHistory,
+    showTrails,
+    airTrails,
+    localViewport.zoom,
+    domainOpacity,
+    getAlpha,
+    selectAsset,
+    declutterMode,
+    searchMatchSet,
+  ])
+
+  const spaceLayerBuild = useMemo(() => {
+    const buildStarted = performance.now()
+    const nextLayers: Layer<object>[] = []
+
     if (layers.Space.visibility !== 'hidden') {
-      const spaceAssets = viewportAssets.filter(
-        (a) => a.source_domain === 'Space' && typeof a.lon === 'number' && typeof a.lat === 'number',
-      )
-
-      const selectedSpaceAsset = spaceAssets.find(
-        (a) =>
-          a.track_id === selectedTrackId &&
-          selectedDomain === 'Space',
-      )
-      const spaceTrails = Array.from(trailBuffer.entries())
-        .filter(([key]) => key.startsWith('Space:'))
-        .map(([key, positions]) => ({ key, positions, visibility: getTrailVisibilityMode(key) }))
-        .filter((d) => d.visibility !== 'hidden' && d.positions.length >= 2 && d.positions.some((p) => isPointInBounds(p.lon, p.lat, cullBounds)))
-
-      const prioritySpaceAssets = spaceAssets.filter((asset) => (
-        spacePriorityKeys.has(`Space:${asset.track_id}`) || pinnedTrackKeys.has(`Space:${asset.track_id}`)
-      ))
-      const backgroundSpaceAssets = spaceAssets.filter((asset) => (
-        !spacePriorityKeys.has(`Space:${asset.track_id}`) && !pinnedTrackKeys.has(`Space:${asset.track_id}`)
-      ))
-
-      const nonPriorityVisibleIndividuals = backgroundSpaceAssets
-      spaceAggregateCount = 0
-      spaceBackgroundCount = nonPriorityVisibleIndividuals.length
-      if (nonPriorityVisibleIndividuals.length > 0) {
-        ls.push(new ScatterplotLayer<TrackEventProperties>({
+      if (backgroundSpaceAssets.length > 0) {
+        nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'space-background-points',
-          data: nonPriorityVisibleIndividuals,
+          data: backgroundSpaceAssets,
           getPosition: (d) => getRenderPosition(d.lon, d.lat, d.altitude_m, useSpaceAltitude),
           getRadius: 2.5,
           radiusUnits: 'pixels',
@@ -1014,19 +1158,19 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           getFillColor: [148, 163, 184, 95],
           pickable: true,
           opacity: domainOpacity('Space') * 0.5,
-          onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
+          onHover: ({ x, y, object }) =>
             setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
           onClick: ({ object }) =>
             object && selectAsset(object.track_id, object.source_domain),
         }))
       }
 
-      ls.push(new TextLayer<TrackEventProperties>({
+      nextLayers.push(new TextLayer<TrackEventProperties>({
         id: 'space-priority-icons',
         data: prioritySpaceAssets,
         getPosition: (d) => getRenderPosition(d.lon, d.lat, d.altitude_m, useSpaceAltitude),
         getText: () => '🛰',
-        getColor: (d: TrackEventProperties) => {
+        getColor: (d) => {
           const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
           return [base[0], base[1], base[2], getAlpha(d)] as [number, number, number, number]
         },
@@ -1040,14 +1184,14 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         characterSet: 'auto',
         fontFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", "DejaVu Sans", Arial, sans-serif',
         fontSettings: { sdf: true, fontSize: 64 },
-        onHover: ({ x, y, object }: { x: number; y: number; object?: TrackEventProperties }) =>
+        onHover: ({ x, y, object }) =>
           setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
         onClick: ({ object }) =>
           object && selectAsset(object.track_id, object.source_domain),
       }))
 
       if (selectedSpaceAsset) {
-        ls.push(new ScatterplotLayer<TrackEventProperties>({
+        nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'space-selected-ring',
           data: [selectedSpaceAsset],
           getPosition: (d) => getRenderPosition(d.lon, d.lat, d.altitude_m, useSpaceAltitude),
@@ -1063,12 +1207,11 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }
 
       if (showTrails) {
-        ls.push(new PathLayer({
+        nextLayers.push(new PathLayer({
           id: 'space-trails',
           data: spaceTrails,
-          getPath: (d: { positions: Array<{ lon: number; lat: number; timestamp: number }> }) =>
-            d.positions.map((p) => [p.lon, p.lat, 0] as [number, number, number]),
-          getColor: (d: { visibility: 'visible' | 'ghost' | 'hidden' }) =>
+          getPath: (d: VisibleTrail) => d.positions.map((point) => getRenderPosition(point.lon, point.lat, point.altitude_m, useSpaceAltitude)),
+          getColor: (d: VisibleTrail) =>
             d.visibility === 'ghost' ? [100, 116, 139, 35] : [148, 163, 184, 90],
           getWidth: 1.2,
           widthUnits: 'pixels',
@@ -1077,16 +1220,26 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         }))
       }
 
-      // Orbital track — predicted path for the selected satellite.
-      // In globe mode paths curve correctly along Earth's surface;
-      // in flat mode they may appear broken near the antimeridian.
+      if (selectedDomain === 'Space' && selectedTrackHistory.length >= 2) {
+        nextLayers.push(new PathLayer({
+          id: 'space-selected-history',
+          data: [{ positions: selectedTrackHistory }],
+          getPath: (d: { positions: TrailPoint[] }) => d.positions.map((point) => getRenderPosition(point.lon, point.lat, point.altitude_m, useSpaceAltitude)),
+          getColor: [250, 204, 21, 180],
+          getWidth: 1.8,
+          widthUnits: 'pixels',
+          pickable: false,
+          opacity: 0.95,
+        }))
+      }
+
       if (selectedDomain === 'Space' && selectedOrbitPoints.length >= 2) {
-        ls.push(new PathLayer({
-          id: 'space-orbital-track',
+        nextLayers.push(new PathLayer({
+          id: `space-orbital-track-${spaceTrackDuration}`,
           data: [{ positions: selectedOrbitPoints }],
           getPath: (d: { positions: typeof selectedOrbitPoints }) =>
-            d.positions.map(p => [p.lon, p.lat, Math.max(0, (p.alt_km ?? 0) * 1000)] as [number, number, number]),
-          getColor: [192, 132, 252, 200], // purple-400
+            d.positions.map((point) => [point.lon, point.lat, Math.max(0, (point.alt_km ?? 0) * 1000)] as [number, number, number]),
+          getColor: [192, 132, 252, 200],
           getWidth: 2,
           widthUnits: 'pixels',
           pickable: false,
@@ -1095,25 +1248,32 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }
     }
 
-    // ── Disruption overlays (GPS/Infra normalized events) ─────────────────
-    const disruptionFeatures = visibleDisruptions
-      .filter((event) => event.geometry)
-      .map((event) => ({
-        type: 'Feature' as const,
-        geometry: event.geometry!,
-        properties: event,
-      }))
+    return { layers: nextLayers, buildMs: performance.now() - buildStarted }
+  }, [
+    layers.Space.visibility,
+    backgroundSpaceAssets,
+    prioritySpaceAssets,
+    selectedSpaceAsset,
+    selectedDomain,
+    selectedTrackHistory,
+    selectedOrbitPoints,
+    showTrails,
+    spaceTrails,
+    spaceTrackDuration,
+    useSpaceAltitude,
+    domainOpacity,
+    getAlpha,
+    selectAsset,
+    declutterMode,
+    searchMatchSet,
+  ])
 
-    const disruptionCentroids = visibleDisruptions
-      .filter((event) => event.centroid?.coordinates)
-      .map((event) => ({
-        ...event,
-        lon: event.centroid!.coordinates[0],
-        lat: event.centroid!.coordinates[1],
-      }))
+  const disruptionLayerBuild = useMemo(() => {
+    const buildStarted = performance.now()
+    const nextLayers: Layer<object>[] = []
 
     if (disruptionFeatures.length > 0) {
-      ls.push(new GeoJsonLayer({
+      nextLayers.push(new GeoJsonLayer({
         id: 'disruption-footprints',
         data: disruptionFeatures,
         pickable: true,
@@ -1140,15 +1300,13 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         },
         onClick: ({ object }) => {
           const event = object?.properties as DisruptionEvent | undefined
-          if (event?.track_id) {
-            selectAsset(event.track_id, event.source_domain)
-          }
+          if (event?.track_id) selectAsset(event.track_id, event.source_domain)
         },
       }))
     }
 
     if (disruptionCentroids.length > 0) {
-      ls.push(new ScatterplotLayer({
+      nextLayers.push(new ScatterplotLayer({
         id: 'disruption-centroids',
         data: disruptionCentroids,
         getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
@@ -1175,13 +1333,11 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
         },
         onClick: ({ object }) => {
           const event = object as DisruptionEvent | undefined
-          if (event?.track_id) {
-            selectAsset(event.track_id, event.source_domain)
-          }
+          if (event?.track_id) selectAsset(event.track_id, event.source_domain)
         },
       }))
 
-      ls.push(new TextLayer({
+      nextLayers.push(new TextLayer({
         id: 'disruption-labels',
         data: disruptionCentroids.filter((event) => (event.severity ?? 0) >= 10),
         getPosition: (d: { lon: number; lat: number }) => [d.lon, d.lat],
@@ -1204,57 +1360,47 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       }))
     }
 
-    const airCount = viewportAssets.filter((asset) => asset.source_domain === 'Air').length
-    const maritimeCount = viewportAssets.filter((asset) => asset.source_domain === 'Maritime').length
-    const deckBuildMs = performance.now() - buildStarted
-    return {
-      layers: ls,
-      stats: {
-        visibleAssets: viewportAssets.length,
-        visibleDisruptions: visibleDisruptions.length,
-        layerCount: ls.length,
-        deckBuildMs,
-        airCount,
-        maritimeCount,
-        spacePriorityCount: spacePriorityKeys.size,
-        spaceAggregateCount,
-        spaceBackgroundCount,
-      },
-    }
-  }, [
-    viewportAssets,
-    visibleDisruptions,
-    layers,
-    domainOpacity,
-    getAlpha,
-    getTrailVisibilityMode,
-    selectAsset,
-    selectLandingPoint,
-    trailBuffer,
-    selectedTrackId,
-    selectedDomain,
-    selectedLandingPoint,
-    selectedTrackHistory,
-    selectedOrbitPoints,
-    spacePriorityKeys,
-    hoverInfo,
-    showTrails,
-    showCocom,
-    showUnderseaCables,
-    cocomFailed,
-    globeView,
-    mapMode,
-    pinnedTrackKeys,
-    declutterMode,
-    searchMatchSet,
-    localViewport.zoom,
-    cullBounds,
-    useSpaceAltitude,
+    return { layers: nextLayers, buildMs: performance.now() - buildStarted }
+  }, [disruptionFeatures, disruptionCentroids, selectAsset])
+
+  const deckLayers = useMemo(() => (
+    [
+      ...staticLayerBuild.layers,
+      ...maritimeLayerBuild.layers,
+      ...airLayerBuild.layers,
+      ...spaceLayerBuild.layers,
+      ...disruptionLayerBuild.layers,
+    ]
+  ), [staticLayerBuild.layers, maritimeLayerBuild.layers, airLayerBuild.layers, spaceLayerBuild.layers, disruptionLayerBuild.layers])
+
+  const deckStats = useMemo(() => ({
+    visibleAssets: viewportAssets.length,
+    visibleDisruptions: visibleDisruptions.length,
+    layerCount: deckLayers.length,
+    deckBuildMs: staticLayerBuild.buildMs + maritimeLayerBuild.buildMs + airLayerBuild.buildMs + spaceLayerBuild.buildMs + disruptionLayerBuild.buildMs,
+    airCount: airViewportAssets.length,
+    maritimeCount: maritimeViewportAssets.length,
+    spacePriorityCount: spacePriorityKeys.size,
+    spaceAggregateCount: 0,
+    spaceBackgroundCount: backgroundSpaceAssets.length,
+  }), [
+    viewportAssets.length,
+    visibleDisruptions.length,
+    deckLayers.length,
+    staticLayerBuild.buildMs,
+    maritimeLayerBuild.buildMs,
+    airLayerBuild.buildMs,
+    spaceLayerBuild.buildMs,
+    disruptionLayerBuild.buildMs,
+    airViewportAssets.length,
+    maritimeViewportAssets.length,
+    spacePriorityKeys.size,
+    backgroundSpaceAssets.length,
   ])
 
   useEffect(() => {
-    usePerfStore.getState().recordMap(deckLayerBuild.stats)
-  }, [deckLayerBuild])
+    usePerfStore.getState().recordMap(deckStats)
+  }, [deckStats])
 
   useEffect(() => {
     function handleWindowError(event: ErrorEvent) {
@@ -1264,7 +1410,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
       if (resizeFaultSeenRef.current) return
       resizeFaultSeenRef.current = true
       console.warn('[SENTINEL] DeckGL WebGL resize fault detected')
-      setRenderWarning('Map renderer hit a WebGL resize fault. Overlay recovery is limited until reload.')
+      setHoverInfo(null)
+      setRenderWarning('Map renderer hit a WebGL resize fault. Recovering overlays.')
     }
 
     window.addEventListener('error', handleWindowError)
@@ -1316,8 +1463,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           : undefined,
       }}
     >
-      {!rendererDisabled ? (
+      {active && !rendererDisabled && deckRendererReady ? (
         <DeckGL
+          width={effectiveContainerSize.width}
+          height={effectiveContainerSize.height}
           views={globeView ? new GlobeView({ id: 'globe' }) : undefined}
           viewState={viewState}
           useDevicePixels={1}
@@ -1338,7 +1487,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick }: MapCanvasProp
           }}
           getCursor={({ isDragging }) => (isDragging ? 'grabbing' : deckCursor)}
           controller={true}
-          layers={deckLayerBuild.layers}
+          layers={deckLayers}
           onError={(error) => {
             const message = String(error?.message ?? error ?? '')
             if (message.includes('cocom-fills') || message.includes(COCOM_GEOJSON_URL)) {

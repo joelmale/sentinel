@@ -25,6 +25,7 @@ import { useDrag } from '@/hooks/useDrag'
 import { trackedFetchJson } from '@/lib/perf'
 import { buildTrackScopeParams } from '@/lib/trackScopes'
 import type { DomainQuickScopeId, DomainScopeState, ScopedLivePreviewResponse, SourceDomain, TrackEventProperties } from '@/types/track'
+import { useShallow } from 'zustand/react/shallow'
 import {
   getAirlineGroup,
   getConstellationCategory,
@@ -956,9 +957,61 @@ export function SourcePanel() {
     toggleExpandedSpaceConstellation,
     pendingAlerts,
     watchedSpaceTrackIds,
-  } = useMapStore()
-  const { uiViewportAssets } = useLiveDataStore()
-  const liveAssets = useMapStore((state) => state.liveAssets)
+    liveAssets,
+  } = useMapStore(useShallow((state) => ({
+    sourcePanelOpen: state.sourcePanelOpen,
+    toggleSourcePanel: state.toggleSourcePanel,
+    selectAsset: state.selectAsset,
+    selectedTrackId: state.selectedTrackId,
+    selectedDomain: state.selectedDomain,
+    pinnedTrackKeys: state.pinnedTrackKeys,
+    pinTrack: state.pinTrack,
+    unpinTrack: state.unpinTrack,
+    clearPinnedTracks: state.clearPinnedTracks,
+    viewportBounds: state.viewportBounds,
+    flyTo: state.flyTo,
+    layers: state.layers,
+    cycleLayerVisibility: state.cycleLayerVisibility,
+    showCocom: state.showCocom,
+    showUnderseaCables: state.showUnderseaCables,
+    toggleCocom: state.toggleCocom,
+    toggleUnderseaCables: state.toggleUnderseaCables,
+    globeView: state.globeView,
+    toggleGlobeView: state.toggleGlobeView,
+    classFilter: state.classFilter,
+    setClassFilter: state.setClassFilter,
+    hiddenGroupFilters: state.hiddenGroupFilters,
+    toggleHiddenGroupFilter: state.toggleHiddenGroupFilter,
+    clearHiddenGroupFilters: state.clearHiddenGroupFilters,
+    hiddenSpaceConstellations: state.hiddenSpaceConstellations,
+    toggleHiddenSpaceConstellation: state.toggleHiddenSpaceConstellation,
+    clearHiddenSpaceConstellations: state.clearHiddenSpaceConstellations,
+    spaceTrackDuration: state.spaceTrackDuration,
+    setSpaceTrackDuration: state.setSpaceTrackDuration,
+    workspaceSearch: state.workspaceSearch,
+    setWorkspaceSearch: state.setWorkspaceSearch,
+    domainScopes: state.domainScopes,
+    setSelectedQuickScope: state.setSelectedQuickScope,
+    applyDomainScope: state.applyDomainScope,
+    setDomainScopeResultLimit: state.setDomainScopeResultLimit,
+    setDomainScopeAdvancedOpen: state.setDomainScopeAdvancedOpen,
+    setDomainScopeOperator: state.setDomainScopeOperator,
+    setDomainScopeConstellation: state.setDomainScopeConstellation,
+    setDomainScopePurpose: state.setDomainScopePurpose,
+    declutterMode: state.declutterMode,
+    toggleDeclutterMode: state.toggleDeclutterMode,
+    setGroupExcludedTracks: state.setGroupExcludedTracks,
+    spacePriorityOnly: state.spacePriorityOnly,
+    toggleSpacePriorityOnly: state.toggleSpacePriorityOnly,
+    expandedSpaceConstellations: state.expandedSpaceConstellations,
+    toggleExpandedSpaceConstellation: state.toggleExpandedSpaceConstellation,
+    pendingAlerts: state.pendingAlerts,
+    watchedSpaceTrackIds: state.watchedSpaceTrackIds,
+    liveAssets: state.liveAssets,
+  })))
+  const { uiViewportAssets } = useLiveDataStore(useShallow((state) => ({
+    uiViewportAssets: state.uiViewportAssets,
+  })))
   const previewBbox = useMemo(() => {
     if (!viewportBounds) return null
     return [viewportBounds.west, viewportBounds.south, viewportBounds.east, viewportBounds.north].join(',')

@@ -6,6 +6,7 @@ import { useResizePanel } from '@/hooks/useResizePanel'
 import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import type { DisruptionEvent, SourceDomain, TrackEventProperties } from '@/types/track'
+import { useShallow } from 'zustand/react/shallow'
 
 type AnnotationFeature = {
   type: 'Feature'
@@ -84,8 +85,22 @@ export function InvestigationPanel() {
     closeInvestigation,
     selectAsset,
     flyTo,
-  } = useMapStore()
-  const { uiViewportAssets, selectedAssetDetail } = useLiveDataStore()
+  } = useMapStore(useShallow((state) => ({
+    investigationContext: state.investigationContext,
+    investigationWindowPreset: state.investigationWindowPreset,
+    pendingAlerts: state.pendingAlerts,
+    playback: state.playback,
+    assetCardOpen: state.assetCardOpen,
+    applyInvestigationWindowPreset: state.applyInvestigationWindowPreset,
+    openInvestigation: state.openInvestigation,
+    closeInvestigation: state.closeInvestigation,
+    selectAsset: state.selectAsset,
+    flyTo: state.flyTo,
+  })))
+  const { uiViewportAssets, selectedAssetDetail } = useLiveDataStore(useShallow((state) => ({
+    uiViewportAssets: state.uiViewportAssets,
+    selectedAssetDetail: state.selectedAssetDetail,
+  })))
   const { offset, dragHandleRef, isDragging } = useDrag({
     storageKey: 'sentinel.investigationPanelPosition',
   })
