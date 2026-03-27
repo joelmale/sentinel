@@ -35,6 +35,8 @@ WS_BROADCAST_CHANNEL = "sentinel:ws:broadcast"
 WS_LEADER_KEY = "sentinel:ws:broadcast:leader"
 WS_LEADER_TTL_SECONDS = 15
 WS_PENDING_IDLE_MS = 30_000
+WS_FAILOVER_PENDING_IDLE_MS = 5_000
+WS_FAILOVER_RECLAIM_ROUNDS = 5
 INSTANCE_ID = f"{socket.gethostname()}:{uuid.uuid4().hex[:8]}"
 
 # Track active connections in-process
@@ -52,6 +54,8 @@ ws_runtime_metrics: dict[str, Any] = {
     "last_pubsub_received_at": None,
     "last_pubsub_lag_ms": None,
     "last_leader_renewed_at": None,
+    "last_failover_reclaim_at": None,
+    "last_failover_reclaim_count": 0,
 }
 
 
@@ -199,23 +203,34 @@ async def _maintain_leader(redis) -> bool:
     return bool(acquired)
 
 
-async def _claim_pending_entries(redis) -> None:
+async def _claim_pending_entries(
+    redis,
+    *,
+    min_idle_ms: int = WS_PENDING_IDLE_MS,
+    max_rounds: int | None = None,
+) -> int:
     next_start = "0-0"
+    claimed_total = 0
+    rounds = 0
     while True:
+        if max_rounds is not None and rounds >= max_rounds:
+            return claimed_total
+        rounds += 1
         entries = await redis.xautoclaim(
             STREAM_KEY,
             CONSUMER_GROUP,
             INSTANCE_ID,
-            min_idle_time=WS_PENDING_IDLE_MS,
+            min_idle_time=min_idle_ms,
             start_id=next_start,
             count=WS_BATCH_SIZE,
         )
         if not entries:
-            return
+            return claimed_total
         next_start = entries[0] if isinstance(entries[0], str) else "0-0"
         claimed = entries[1] if len(entries) > 1 else []
         if not claimed:
-            return
+            return claimed_total
+        claimed_total += len(claimed)
         await _publish_stream_entries(redis, claimed)
 
 
@@ -284,13 +299,25 @@ async def _publish_stream_entries(redis, entries) -> None:
 
 async def _stream_fanout_loop() -> None:
     redis = await get_redis()
+    was_leader = False
     try:
         while True:
             if not await _maintain_leader(redis):
+                was_leader = False
                 await asyncio.sleep(1)
                 continue
 
+            if not was_leader:
+                reclaimed = await _claim_pending_entries(
+                    redis,
+                    min_idle_ms=WS_FAILOVER_PENDING_IDLE_MS,
+                    max_rounds=WS_FAILOVER_RECLAIM_ROUNDS,
+                )
+                ws_runtime_metrics["last_failover_reclaim_at"] = _utc_now_iso()
+                ws_runtime_metrics["last_failover_reclaim_count"] = reclaimed
+
             await _claim_pending_entries(redis)
+            was_leader = True
             messages = await redis.xreadgroup(
                 groupname=CONSUMER_GROUP,
                 consumername=INSTANCE_ID,

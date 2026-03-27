@@ -1,7 +1,7 @@
 # Sentinel Performance Scaling Plan
 
 **Goal**: Scale Sentinel to 10,000+ live assets while keeping the map responsive and interaction latency predictable.
-**Status**: Phase 1 complete; Phase 2 complete in code; Phase 3 in progress; Phase 4 browser-path work partially complete; websocket delta and replica-safe fan-out are in progress
+**Status**: Phase 1 complete; Phase 2 complete in code; Phase 3 in progress; Phase 4 browser-path work materially complete; websocket delta, replica-safe fan-out, failover reclaim, and telemetry are implemented
 **Last validated against code**: 2026-03-27
 
 This plan is based on the current frontend implementation, not on a hypothetical full-global render model. The map path is already partially bounded by viewport-scoped API queries, so the highest-value work is reducing unnecessary React/Zustand invalidation, cutting layer rebuild scope, and simplifying duplicate store update paths.
@@ -456,10 +456,7 @@ Implemented so far:
 - the elected leader consumes the Redis stream once and republishes normalized websocket payloads onto a shared pub/sub channel
 - every API replica subscribes to that pub/sub channel and forwards those messages to its local websocket clients
 - `GET /api/telemetry/ws` now exposes leader identity, local connection counts, task health, stream backlog, pending group work, and recent pub/sub lag metrics
-
-Remaining:
-
-- decide whether old pending stream entries should be reclaimed more aggressively during leader failover
+- leader acquisition now performs bounded aggressive pending-entry reclaim with a lower idle threshold so failover recovers backlog faster without unbounded catch-up work
 
 ### Phase 4 commits
 
@@ -470,6 +467,8 @@ perf(api): add full-result browser summaries for sidebar correlation
 perf(api): emit websocket delta payloads for incremental updates
 feat(api): add multi-replica websocket broadcast path
 test(api): add browser query and websocket delta coverage
+perf(api): reclaim pending websocket stream work faster on leader failover
+bench(api): add websocket payload savings benchmark
 ```
 
 ---

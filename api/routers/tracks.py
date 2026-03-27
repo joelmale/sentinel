@@ -620,6 +620,53 @@ def _top_summary_items(counts: dict[str, int], limit: int = 8) -> list[dict[str,
     ]
 
 
+def _summarize_browser_rows(summary_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    domain_counts: dict[str, int] = {}
+    feed_counts: dict[str, int] = {}
+    classification_counts: dict[str, int] = {}
+    group_counts: dict[str, int] = {}
+    classification_values: set[str] = set()
+    feed_values: set[str] = set()
+    space_category_values: set[str] = set()
+
+    for row in summary_rows:
+        source_domain = str(row["source_domain"])
+        source_feed = str(row["source_feed"] or "")
+        classification_value = str(row["classification"] or "Unknown")
+        track_id = str(row["track_id"] or "")
+        callsign = row["callsign"] if isinstance(row["callsign"], str) else None
+        object_type = row["object_type"] if isinstance(row["object_type"], str) else None
+
+        domain_counts[source_domain] = domain_counts.get(source_domain, 0) + 1
+        if source_feed:
+            feed_counts[source_feed] = feed_counts.get(source_feed, 0) + 1
+            feed_values.add(source_feed)
+        classification_counts[classification_value] = classification_counts.get(classification_value, 0) + 1
+        classification_values.add(classification_value)
+
+        group_label = _browser_group_label(source_domain, track_id, callsign, classification_value, object_type)
+        group_counts[group_label] = group_counts.get(group_label, 0) + 1
+
+        if source_domain == SourceDomain.SPACE.value:
+            space_category = _space_constellation_category(_space_constellation(callsign, object_type))
+            space_category_values.add(space_category)
+
+    return {
+        "total": len(summary_rows),
+        "facets": {
+            "classifications": sorted(classification_values),
+            "source_feeds": sorted(feed_values),
+            "space_categories": sorted(space_category_values),
+        },
+        "summaries": {
+            "domains": _top_summary_items(domain_counts, limit=5),
+            "source_feeds": _top_summary_items(feed_counts),
+            "classifications": _top_summary_items(classification_counts),
+            "groups": _top_summary_items(group_counts),
+        },
+    }
+
+
 def _serialize_live_row(row: Any) -> dict[str, Any]:
     lon = row["lon"]
     lat = row["lat"]
@@ -1311,53 +1358,16 @@ async def get_track_browser(
     item_rows = results[0].mappings().all()
     summary_rows = results[1].mappings().all()
 
-    domain_counts: dict[str, int] = {}
-    feed_counts: dict[str, int] = {}
-    classification_counts: dict[str, int] = {}
-    group_counts: dict[str, int] = {}
-    classification_values: set[str] = set()
-    feed_values: set[str] = set()
-    space_category_values: set[str] = set()
-
-    for row in summary_rows:
-        source_domain = str(row["source_domain"])
-        source_feed = str(row["source_feed"] or "")
-        classification_value = str(row["classification"] or "Unknown")
-        track_id = str(row["track_id"] or "")
-        callsign = row["callsign"] if isinstance(row["callsign"], str) else None
-        object_type = row["object_type"] if isinstance(row["object_type"], str) else None
-
-        domain_counts[source_domain] = domain_counts.get(source_domain, 0) + 1
-        if source_feed:
-            feed_counts[source_feed] = feed_counts.get(source_feed, 0) + 1
-            feed_values.add(source_feed)
-        classification_counts[classification_value] = classification_counts.get(classification_value, 0) + 1
-        classification_values.add(classification_value)
-
-        group_label = _browser_group_label(source_domain, track_id, callsign, classification_value, object_type)
-        group_counts[group_label] = group_counts.get(group_label, 0) + 1
-
-        if source_domain == SourceDomain.SPACE.value:
-            space_category = _space_constellation_category(_space_constellation(callsign, object_type))
-            space_category_values.add(space_category)
+    summary_payload = _summarize_browser_rows([dict(row) for row in summary_rows])
 
     return {
         "generated_at": now.isoformat(),
         "items": [_serialize_live_properties(row) for row in item_rows],
-        "total": len(summary_rows),
+        "total": summary_payload["total"],
         "limit": limit,
         "offset": offset,
-        "facets": {
-            "classifications": sorted(classification_values),
-            "source_feeds": sorted(feed_values),
-            "space_categories": sorted(space_category_values),
-        },
-        "summaries": {
-            "domains": _top_summary_items(domain_counts, limit=5),
-            "source_feeds": _top_summary_items(feed_counts),
-            "classifications": _top_summary_items(classification_counts),
-            "groups": _top_summary_items(group_counts),
-        },
+        "facets": summary_payload["facets"],
+        "summaries": summary_payload["summaries"],
     }
 
 
