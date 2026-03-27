@@ -32,6 +32,10 @@ Architecture set:
 - [Configuration And Integrations](/Users/JoelN/Coding/sentinel/docs/architecture/10_configuration_and_integrations.md)
 - [Known Gaps And Transitional Compromises](/Users/JoelN/Coding/sentinel/docs/architecture/11_known_gaps_and_transitional_compromises.md)
 
+Performance:
+
+- [Performance Scaling Plan](/Users/JoelN/Coding/sentinel/docs/performance_scaling_plan.md) — 4-phase plan to scale to 10k+ assets with test strategy
+
 Appendices:
 
 - [Table Catalog](/Users/JoelN/Coding/sentinel/docs/architecture/appendix_table_catalog.md)

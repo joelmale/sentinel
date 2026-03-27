@@ -98,6 +98,9 @@ async def websocket_live(websocket: WebSocket):
                             last_id = entry_id
                             try:
                                 event_data = json.loads(fields.get("payload", "{}"))
+                                if isinstance(event_data, dict) and event_data.get("type") in {"alert", "anomaly", "incident"}:
+                                    await websocket.send_json(_sanitize_json_value(event_data))
+                                    continue
                                 events.append(_sanitize_json_value(event_data))
                             except json.JSONDecodeError:
                                 pass
