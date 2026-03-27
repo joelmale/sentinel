@@ -47,6 +47,7 @@ import type {
   OverviewDashboardResponse,
   OverviewPivotsResponse,
   SourceDomain,
+  TrackEventDelta,
   TrackEventProperties,
   TrackFeatureCollection,
   WsMessage,
@@ -95,6 +96,22 @@ function buildTrailHeadSnapshot(events: TrackEventProperties[]): Partial<Record<
   }
 
   return snapshot
+}
+
+function rehydrateTrackDelta(delta: TrackEventDelta): TrackEventProperties | null {
+  const key = `${delta.source_domain}:${delta.track_id}`
+  const mapState = useMapStore.getState()
+  const liveDataState = useLiveDataStore.getState()
+  const selectedAsset = liveDataState.selectedAssetDetail
+  const selectedMatch = selectedAsset?.track_id === delta.track_id && selectedAsset.source_domain === delta.source_domain
+    ? selectedAsset
+    : null
+  const base = mapState.liveAssets.get(key) ?? liveDataState.viewportAssets.get(key) ?? selectedMatch
+  if (!base) return null
+  return {
+    ...base,
+    ...delta,
+  }
 }
 
 const queryClient = new QueryClient({
@@ -824,6 +841,13 @@ function SentinelApp() {
   const handleWsMessage = useCallback((msg: WsMessage) => {
     if (msg.type === 'track_events') {
       wsBatchRef.current.push(...msg.events)
+      scheduleWsFlush()
+    } else if (msg.type === 'track_deltas') {
+      const hydratedEvents = msg.deltas
+        .map(rehydrateTrackDelta)
+        .filter((event): event is TrackEventProperties => event !== null)
+      if (hydratedEvents.length === 0) return
+      wsBatchRef.current.push(...hydratedEvents)
       scheduleWsFlush()
     } else if (msg.type === 'alert') {
       if (!msg.track_id) return

@@ -394,7 +394,7 @@ test(frontend): add LOD and worker processing coverage
 
 **Goal**: Fix the non-map path and reduce network overhead once render invalidation is under control.
 **Effort**: 4–6 days.
-**Status**: Browser query work is partially complete. Backend websocket/network scale work is still pending.
+**Status**: Browser query work is partially complete. Backend websocket delta work is in progress; broader network-scale work is still pending.
 
 ### 4.1 Fix table-view scaling at the data source
 
@@ -440,6 +440,11 @@ Remaining:
 - client WS handling path
 
 This is worthwhile once the frontend is ready to merge deltas efficiently. It reduces bandwidth and object churn but should follow the store/data-path cleanup.
+
+Implemented so far:
+
+- `api/routers/ws.py` now emits `track_deltas` for tracks already seen on a connection, while still sending full `track_events` for first-seen tracks
+- the frontend websocket path now rehydrates those deltas back into full track objects before they enter the existing live-processing pipeline
 
 ### 4.4 Add multi-replica-safe broadcast if horizontal scale is required
 

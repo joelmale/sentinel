@@ -74,7 +74,11 @@ export function useLiveStream({
 
       usePerfStore.getState().recordWsMessage(
         typeof event.data === 'string' ? event.data.length : 0,
-        msg.type === 'track_events' ? msg.events.length : 0,
+        msg.type === 'track_events'
+          ? msg.events.length
+          : msg.type === 'track_deltas'
+            ? msg.deltas.length
+            : 0,
       )
 
       try {
@@ -82,7 +86,11 @@ export function useLiveStream({
       } catch (error) {
         console.error('[SENTINEL] WS handler failed', error, {
           type: msg.type,
-          count: msg.type === 'track_events' ? msg.events.length : undefined,
+          count: msg.type === 'track_events'
+            ? msg.events.length
+            : msg.type === 'track_deltas'
+              ? msg.deltas.length
+              : undefined,
         })
       }
     }

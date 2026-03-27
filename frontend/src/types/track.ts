@@ -440,10 +440,17 @@ export interface TripPath {
   timestamps: number[]                       // Unix ms for each waypoint
 }
 
+export type TrackEventDelta = Partial<TrackEventProperties> & {
+  source_domain: SourceDomain
+  track_id: string
+  timestamp: string
+}
+
 // WebSocket message types
 export type WsMessage =
   | { type: 'connected'; message: string }
   | { type: 'track_events'; events: TrackEventProperties[]; count: number }
+  | { type: 'track_deltas'; deltas: TrackEventDelta[]; count: number }
   | { type: 'alert'; alert_id?: string; rule_id: string; rule_name?: string; track_id?: string | null; domain: SourceDomain; triggered_at?: string; severity?: string; title?: string; anomaly_id?: string }
   | { type: 'anomaly'; id: string; detector_key: string; source_domain: SourceDomain; title: string; severity: string; confidence?: number }
   | { type: 'incident'; id: string; case_key: string; title: string; severity: string; confidence?: number }

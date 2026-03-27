@@ -70,6 +70,32 @@ def _sanitize_json_value(value):
     return value
 
 
+def _track_stream_key(event: dict[str, Any]) -> str | None:
+    source_domain = event.get("source_domain")
+    track_id = event.get("track_id")
+    if not source_domain or not track_id:
+        return None
+    return f"{source_domain}:{track_id}"
+
+
+def _build_track_delta(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any] | None:
+    delta: dict[str, Any] = {
+        "source_domain": current["source_domain"],
+        "track_id": current["track_id"],
+        "timestamp": current.get("timestamp"),
+    }
+
+    changed = False
+    for key, value in current.items():
+        if key in {"source_domain", "track_id", "timestamp"}:
+            continue
+        if previous.get(key) != value:
+            delta[key] = value
+            changed = True
+
+    return delta if changed else None
+
+
 @router.websocket("/ws/live")
 async def websocket_live(websocket: WebSocket):
     """
@@ -85,6 +111,7 @@ async def websocket_live(websocket: WebSocket):
 
         # Poll Redis Stream for new events
         last_id = "$"  # only new messages from this point
+        last_sent_tracks: dict[str, dict[str, Any]] = {}
         while True:
             try:
                 # Block up to 1 second for new messages
@@ -93,6 +120,7 @@ async def websocket_live(websocket: WebSocket):
                 )
                 if messages:
                     events = []
+                    deltas = []
                     for _, entries in messages:
                         for entry_id, fields in entries:
                             last_id = entry_id
@@ -101,7 +129,28 @@ async def websocket_live(websocket: WebSocket):
                                 if isinstance(event_data, dict) and event_data.get("type") in {"alert", "anomaly", "incident"}:
                                     await websocket.send_json(_sanitize_json_value(event_data))
                                     continue
-                                events.append(_sanitize_json_value(event_data))
+                                if not isinstance(event_data, dict):
+                                    events.append(_sanitize_json_value(event_data))
+                                    continue
+
+                                sanitized_event = _sanitize_json_value(event_data)
+                                if not isinstance(sanitized_event, dict):
+                                    events.append(sanitized_event)
+                                    continue
+
+                                track_key = _track_stream_key(sanitized_event)
+                                if not track_key:
+                                    events.append(sanitized_event)
+                                    continue
+
+                                previous_event = last_sent_tracks.get(track_key)
+                                if previous_event is None:
+                                    events.append(sanitized_event)
+                                else:
+                                    delta = _build_track_delta(previous_event, sanitized_event)
+                                    if delta is not None:
+                                        deltas.append(delta)
+                                last_sent_tracks[track_key] = sanitized_event
                             except json.JSONDecodeError:
                                 pass
 
@@ -111,6 +160,14 @@ async def websocket_live(websocket: WebSocket):
                             await websocket.send_json({
                                 "type": "track_events",
                                 "events": chunk,
+                                "count": len(chunk),
+                            })
+                    if deltas:
+                        for i in range(0, len(deltas), WS_BATCH_SIZE):
+                            chunk = deltas[i:i + WS_BATCH_SIZE]
+                            await websocket.send_json({
+                                "type": "track_deltas",
+                                "deltas": chunk,
                                 "count": len(chunk),
                             })
             except asyncio.CancelledError:
