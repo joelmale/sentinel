@@ -101,7 +101,7 @@ Notes:
 
 - do not put backticks or shell quotes around values
 - if a collector source is not ready yet, leave the credential blank
-- set `SENTINEL_IMAGE_TAG` to a short commit hash if you want Dockhand to pull the exact GHCR images built for that commit; leave it as `main` to follow the moving branch tag
+- set `SENTINEL_IMAGE_TAG` to either the bare short commit hash (for example `a868b24`) or the `sha-`-prefixed form (for example `sha-a868b24`) if you want Dockhand to pull the exact GHCR images built for that commit; leave it as `main` to follow the moving branch tag
 - optional disruption collectors are behind the `disruptions` compose profile in the Dockhand stack
 - set `COMPOSE_PROFILES=disruptions` only if you want `collector-gpsjam`, `collector-infra`, and `collector-acled`
 - Redis and Timescale data persist in Docker volumes
