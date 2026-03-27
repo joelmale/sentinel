@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react'
 import type { OverviewAlertItem, OverviewDashboardResponse, OverviewDomainSummary, SourceDomain } from '@/types/track'
+import overviewBackdrop from '@/images/Gemini_SentinalVisual.png'
 
 const domainColors: Record<OverviewDomainSummary['domain'], string> = {
   Air: '#60a5fa',
@@ -71,11 +72,15 @@ export function OverviewPage({
         paddingRight: 24,
         paddingBottom: 24,
         overflow: 'auto',
-        background: 'radial-gradient(circle at top, rgba(30,41,59,0.42), rgba(2,6,23,0.98) 58%)',
+        background: 'radial-gradient(circle at top, rgba(30,41,59,0.28), rgba(2,6,23,0.98) 58%)',
         zIndex: 2,
       }}
     >
-      <div style={{ maxWidth: 1520, margin: '0 auto', display: 'grid', gap: 18 }}>
+      <div style={overviewBackdropFrameStyle}>
+        <div style={overviewBackdropImageStyle(overviewBackdrop)} />
+        <div style={overviewBackdropWashStyle} />
+      </div>
+      <div style={{ position: 'relative', zIndex: 1, maxWidth: 1520, margin: '0 auto', display: 'grid', gap: 18 }}>
         <section style={heroSectionStyle}>
           <div style={{ display: 'grid', gap: 10 }}>
             <div style={heroEyebrowStyle}>Operations Overview</div>
@@ -411,6 +416,36 @@ function formatAge(timestamp: string): string {
 
 function maxBucketCount(buckets: Array<{ count: number }>): number {
   return Math.max(1, ...buckets.map((bucket) => bucket.count))
+}
+
+const overviewBackdropFrameStyle: CSSProperties = {
+  position: 'fixed',
+  top: 88,
+  right: 'max(24px, 10vw)',
+  bottom: 24,
+  left: 'max(24px, 10vw)',
+  borderRadius: 32,
+  overflow: 'hidden',
+  pointerEvents: 'none',
+  boxShadow: '0 30px 120px rgba(0,0,0,0.45)',
+}
+
+const overviewBackdropImageStyle = (src: string): CSSProperties => ({
+  position: 'absolute',
+  inset: 0,
+  backgroundImage: `url(${src})`,
+  backgroundPosition: 'center center',
+  backgroundRepeat: 'no-repeat',
+  backgroundSize: 'cover',
+  filter: 'saturate(0.95) brightness(0.58)',
+  transform: 'scale(1.02)',
+})
+
+const overviewBackdropWashStyle: CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  background: 'linear-gradient(180deg, rgba(2,6,23,0.38), rgba(2,6,23,0.7) 40%, rgba(2,6,23,0.86))',
+  border: '1px solid rgba(148,163,184,0.14)',
 }
 
 const heroSectionStyle: CSSProperties = {

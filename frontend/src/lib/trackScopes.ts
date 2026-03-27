@@ -3,6 +3,8 @@ import type {
   SourceDomain,
 } from '@/types/track'
 
+const LIVE_MAP_MAX_AGE_MINUTES = 6 * 60
+
 interface TrackScopeContext {
   domain: SourceDomain
   scope: DomainScopeState
@@ -23,7 +25,7 @@ export function buildTrackScopeParams(context: TrackScopeContext): URLSearchPara
   params.set('domain', domain)
   if (bbox) params.set('bbox', bbox)
   params.set('limit', String(scope.resultLimit))
-  params.set('max_age_minutes', '60')
+  params.set('max_age_minutes', String(LIVE_MAP_MAX_AGE_MINUTES))
   if (scope.selectedQuickScope) params.set('quick_scope', scope.selectedQuickScope)
 
   switch (scope.selectedQuickScope) {
