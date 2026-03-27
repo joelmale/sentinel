@@ -142,6 +142,7 @@ def _build_live_filter_conditions(
     *,
     domain: SourceDomain | None,
     now: datetime,
+    max_age_minutes: int | None,
     bbox: str | None,
     classifications: list[str],
     source_feeds: list[str],
@@ -155,7 +156,13 @@ def _build_live_filter_conditions(
     conditions = ["TRUE"]
     params: dict[str, Any] = {}
 
-    if domain:
+    if max_age_minutes is not None:
+      conditions.append("acs.last_seen >= :live_cutoff")
+      params["live_cutoff"] = now - timedelta(minutes=max_age_minutes)
+      if domain:
+          conditions.append("acs.source_domain = :domain")
+          params["domain"] = domain.value
+    elif domain:
       conditions.append("acs.source_domain = :domain")
       params["domain"] = domain.value
       conditions.append("acs.last_seen >= :live_cutoff")
@@ -223,6 +230,7 @@ def _build_browser_filter_conditions(
     conditions, params = _build_live_filter_conditions(
         domain=domain,
         now=now,
+        max_age_minutes=None,
         bbox=None,
         classifications=[classification] if classification and classification != "All" else [],
         source_feeds=[source_feed] if source_feed and source_feed != "All" else [],
@@ -997,6 +1005,7 @@ async def get_live_assets(
     purpose: str | None = Query(None),
     constellations: str | None = Query(None),
     min_severity: float | None = Query(None),
+    max_age_minutes: int | None = Query(None, ge=1, le=10_080),
     limit: int = Query(500, ge=1, le=5000),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -1136,6 +1145,7 @@ async def get_live_assets(
     conditions, params = _build_live_filter_conditions(
         domain=domain,
         now=now,
+        max_age_minutes=max_age_minutes,
         bbox=bbox,
         classifications=_split_csv(classifications),
         source_feeds=_split_csv(source_feeds),
@@ -1363,12 +1373,14 @@ async def preview_live_assets(
     purpose: str | None = Query(None),
     constellations: str | None = Query(None),
     min_severity: float | None = Query(None),
+    max_age_minutes: int | None = Query(None, ge=1, le=10_080),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     canonical_conditions, canonical_params = _build_live_filter_conditions(
         domain=domain,
         now=now,
+        max_age_minutes=max_age_minutes,
         bbox=bbox,
         classifications=_split_csv(classifications),
         source_feeds=_split_csv(source_feeds),
@@ -1382,6 +1394,7 @@ async def preview_live_assets(
     legacy_conditions, legacy_params = _build_live_filter_conditions(
         domain=domain,
         now=now,
+        max_age_minutes=max_age_minutes,
         bbox=bbox,
         classifications=_split_csv(classifications),
         source_feeds=_split_csv(source_feeds),

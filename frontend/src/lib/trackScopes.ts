@@ -23,6 +23,7 @@ export function buildTrackScopeParams(context: TrackScopeContext): URLSearchPara
   params.set('domain', domain)
   if (bbox) params.set('bbox', bbox)
   params.set('limit', String(scope.resultLimit))
+  params.set('max_age_minutes', '60')
   if (scope.selectedQuickScope) params.set('quick_scope', scope.selectedQuickScope)
 
   switch (scope.selectedQuickScope) {
