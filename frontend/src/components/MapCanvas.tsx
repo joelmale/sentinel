@@ -190,6 +190,13 @@ type VisibleTrail = {
   visibility: 'visible' | 'ghost' | 'hidden'
 }
 
+type AggregateCell = {
+  key: string
+  lon: number
+  lat: number
+  count: number
+}
+
 function clampZoom(nextZoom: number): number {
   return Math.max(1.5, Math.min(18, nextZoom))
 }
@@ -291,52 +298,73 @@ function deriveVisibleTrails(
     ))
 }
 
-function trackFreshnessMs(asset: TrackEventProperties): number {
-  const raw = asset.last_seen ?? asset.timestamp
-  const parsed = raw ? Date.parse(raw) : Number.NaN
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function collapseBackgroundAssetsForLod(
+function buildAggregateCellsForLod(
   assets: TrackEventProperties[],
   domain: keyof typeof BACKGROUND_POINT_LOD,
   zoom: number,
-): TrackEventProperties[] {
+): AggregateCell[] {
   const config = BACKGROUND_POINT_LOD[domain]
   if (zoom >= config.fullDetailZoom || assets.length <= config.softLimit) {
-    return assets
+    return []
   }
 
   const cellDegrees = zoom < config.wideZoomCutoff ? config.wideCellDegrees : config.midCellDegrees
-  const maxPerCell = zoom < config.wideZoomCutoff ? config.widePerCell : config.midPerCell
-  const buckets = new Map<string, TrackEventProperties[]>()
+  const buckets = new Map<string, AggregateCell>()
 
   for (const asset of assets) {
     if (typeof asset.lon !== 'number' || typeof asset.lat !== 'number') continue
     const cellLon = Math.floor((normalizeLongitude(asset.lon) + 180) / cellDegrees)
     const cellLat = Math.floor((asset.lat + 90) / cellDegrees)
     const bucketKey = `${cellLon}:${cellLat}`
-    const bucket = buckets.get(bucketKey) ?? []
-    const freshness = trackFreshnessMs(asset)
-
-    let inserted = false
-    for (let index = 0; index < bucket.length; index += 1) {
-      if (freshness > trackFreshnessMs(bucket[index])) {
-        bucket.splice(index, 0, asset)
-        inserted = true
-        break
-      }
+    const bucket = buckets.get(bucketKey)
+    if (bucket) {
+      bucket.count += 1
+    } else {
+      buckets.set(bucketKey, {
+        key: bucketKey,
+        lon: normalizeLongitude(((cellLon + 0.5) * cellDegrees) - 180),
+        lat: Math.max(-89.5, Math.min(89.5, ((cellLat + 0.5) * cellDegrees) - 90)),
+        count: 1,
+      })
     }
-    if (!inserted) {
-      bucket.push(asset)
-    }
-    if (bucket.length > maxPerCell) {
-      bucket.length = maxPerCell
-    }
-    buckets.set(bucketKey, bucket)
   }
 
-  return Array.from(buckets.values()).flat()
+  return Array.from(buckets.values()).sort((left, right) => right.count - left.count)
+}
+
+function formatAggregateCount(count: number): string {
+  if (count >= 1000) {
+    return `${Math.round(count / 100) / 10}k`
+  }
+  return String(count)
+}
+
+function getAggregateRadius(count: number, zoom: number): number {
+  const base = zoom < 2.5 ? 10 : zoom < 3.5 ? 8 : 6
+  const scale = zoom < 2.5 ? 2.8 : zoom < 3.5 ? 2.2 : 1.8
+  return Math.min(28, base + (Math.sqrt(count) * scale))
+}
+
+function getAggregateFillColor(
+  domain: keyof typeof BACKGROUND_POINT_LOD,
+  count: number,
+): [number, number, number, number] {
+  if (domain === 'Air') return [96, 165, 250, Math.min(220, 90 + (count * 12))]
+  if (domain === 'Maritime') return [34, 211, 238, Math.min(220, 90 + (count * 12))]
+  return [168, 85, 247, Math.min(215, 85 + (count * 10))]
+}
+
+function getAggregateLineColor(
+  domain: keyof typeof BACKGROUND_POINT_LOD,
+): [number, number, number, number] {
+  if (domain === 'Air') return [191, 219, 254, 160]
+  if (domain === 'Maritime') return [165, 243, 252, 160]
+  return [233, 213, 255, 150]
+}
+
+function chooseAggregateLabelCells(cells: AggregateCell[], maxLabels: number): AggregateCell[] {
+  if (cells.length <= maxLabels) return cells
+  return cells.slice(0, maxLabels)
 }
 
 function trimBackgroundTrailsForLod(
@@ -693,15 +721,27 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
       !spacePriorityKeys.has(`Space:${asset.track_id}`) && !pinnedTrackKeys.has(`Space:${asset.track_id}`)
     ))
   ), [spaceViewportAssets, spacePriorityKeys, pinnedTrackKeys])
-  const renderBackgroundMaritimeAssets = useMemo(() => (
-    collapseBackgroundAssetsForLod(backgroundMaritimeAssets, 'Maritime', localViewport.zoom)
+  const maritimeAggregateCells = useMemo(() => (
+    buildAggregateCellsForLod(backgroundMaritimeAssets, 'Maritime', localViewport.zoom)
   ), [backgroundMaritimeAssets, localViewport.zoom])
-  const renderBackgroundAirAssets = useMemo(() => (
-    collapseBackgroundAssetsForLod(backgroundAirAssets, 'Air', localViewport.zoom)
+  const airAggregateCells = useMemo(() => (
+    buildAggregateCellsForLod(backgroundAirAssets, 'Air', localViewport.zoom)
   ), [backgroundAirAssets, localViewport.zoom])
-  const renderBackgroundSpaceAssets = useMemo(() => (
-    collapseBackgroundAssetsForLod(backgroundSpaceAssets, 'Space', localViewport.zoom)
+  const spaceAggregateCells = useMemo(() => (
+    buildAggregateCellsForLod(backgroundSpaceAssets, 'Space', localViewport.zoom)
   ), [backgroundSpaceAssets, localViewport.zoom])
+  const useMaritimeAggregation = maritimeAggregateCells.length > 0
+  const useAirAggregation = airAggregateCells.length > 0
+  const useSpaceAggregation = spaceAggregateCells.length > 0
+  const renderBackgroundMaritimeAssets = useMemo(() => (
+    useMaritimeAggregation ? [] : backgroundMaritimeAssets
+  ), [backgroundMaritimeAssets, useMaritimeAggregation])
+  const renderBackgroundAirAssets = useMemo(() => (
+    useAirAggregation ? [] : backgroundAirAssets
+  ), [backgroundAirAssets, useAirAggregation])
+  const renderBackgroundSpaceAssets = useMemo(() => (
+    useSpaceAggregation ? [] : backgroundSpaceAssets
+  ), [backgroundSpaceAssets, useSpaceAggregation])
 
   const selectedMaritimeAsset = useMemo(() => (
     selectedDomain === 'Maritime'
@@ -759,9 +799,9 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     trimBackgroundTrailsForLod(spaceTrails, localViewport.zoom, BACKGROUND_TRAIL_MIN_ZOOM.Space, pinnedTrackKeys)
   ), [spaceTrails, localViewport.zoom, pinnedTrackKeys])
   const lodActive = (
-    renderBackgroundMaritimeAssets.length < backgroundMaritimeAssets.length ||
-    renderBackgroundAirAssets.length < backgroundAirAssets.length ||
-    renderBackgroundSpaceAssets.length < backgroundSpaceAssets.length ||
+    useMaritimeAggregation ||
+    useAirAggregation ||
+    useSpaceAggregation ||
     renderMaritimeTrails.length < maritimeTrails.length ||
     renderAirTrails.length < airTrails.length ||
     renderSpaceTrails.length < spaceTrails.length
@@ -1017,29 +1057,60 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     const nextLayers: Layer<object>[] = []
 
     if (layers.Maritime.visibility !== 'hidden') {
-      nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
-        id: 'ais-background-points',
-        data: renderBackgroundMaritimeAssets,
-        getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
-        getRadius: localViewport.zoom < 3 ? 2.4 : localViewport.zoom < 5 ? 3.2 : 4,
-        radiusUnits: 'pixels',
-        getLineWidth: 0.5,
-        lineWidthUnits: 'pixels',
-        stroked: true,
-        filled: true,
-        getLineColor: [226, 232, 240, 70],
-        getFillColor: (d) => [34, 211, 238, Math.max(30, Math.round(getAlpha(d) * 0.42))],
-        updateTriggers: {
-          getFillColor: [declutterMode, searchMatchSet],
-          getRadius: [localViewport.zoom],
-        },
-        pickable: true,
-        opacity: domainOpacity('Maritime') * 0.9,
-        onHover: ({ x, y, object }) =>
-          setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
-        onClick: ({ object }) =>
-          object && selectAsset(object.track_id, object.source_domain),
-      }))
+      if (useMaritimeAggregation) {
+        const labelCells = chooseAggregateLabelCells(maritimeAggregateCells, 18)
+        nextLayers.push(new ScatterplotLayer<AggregateCell>({
+          id: 'ais-background-aggregate-cells',
+          data: maritimeAggregateCells,
+          getPosition: (d) => [d.lon, d.lat],
+          getRadius: (d) => getAggregateRadius(d.count, localViewport.zoom),
+          radiusUnits: 'pixels',
+          stroked: true,
+          filled: true,
+          getLineWidth: 0.8,
+          lineWidthUnits: 'pixels',
+          getLineColor: getAggregateLineColor('Maritime'),
+          getFillColor: (d) => getAggregateFillColor('Maritime', d.count),
+          pickable: false,
+          opacity: domainOpacity('Maritime'),
+        }))
+        nextLayers.push(new TextLayer<AggregateCell>({
+          id: 'ais-background-aggregate-labels',
+          data: labelCells.filter((cell) => cell.count > 1),
+          getPosition: (d) => [d.lon, d.lat],
+          getText: (d) => formatAggregateCount(d.count),
+          getColor: [224, 242, 254, 220],
+          getSize: localViewport.zoom < 2.5 ? 11 : 10,
+          sizeUnits: 'pixels',
+          getTextAnchor: 'middle',
+          getAlignmentBaseline: 'center',
+          pickable: false,
+        }))
+      } else {
+        nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
+          id: 'ais-background-points',
+          data: renderBackgroundMaritimeAssets,
+          getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
+          getRadius: localViewport.zoom < 3 ? 2.4 : localViewport.zoom < 5 ? 3.2 : 4,
+          radiusUnits: 'pixels',
+          getLineWidth: 0.5,
+          lineWidthUnits: 'pixels',
+          stroked: true,
+          filled: true,
+          getLineColor: [226, 232, 240, 70],
+          getFillColor: (d) => [34, 211, 238, Math.max(30, Math.round(getAlpha(d) * 0.42))],
+          updateTriggers: {
+            getFillColor: [declutterMode, searchMatchSet],
+            getRadius: [localViewport.zoom],
+          },
+          pickable: true,
+          opacity: domainOpacity('Maritime') * 0.9,
+          onHover: ({ x, y, object }) =>
+            setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
+          onClick: ({ object }) =>
+            object && selectAsset(object.track_id, object.source_domain),
+        }))
+      }
 
       if (focusMaritimeAssets.length > 0) {
         nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
@@ -1125,6 +1196,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     return { layers: nextLayers, buildMs: performance.now() - buildStarted }
   }, [
     layers.Maritime.visibility,
+    useMaritimeAggregation,
+    maritimeAggregateCells,
     renderBackgroundMaritimeAssets,
     focusMaritimeAssets,
     selectedMaritimeAsset,
@@ -1145,32 +1218,63 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     const nextLayers: Layer<object>[] = []
 
     if (layers.Air.visibility !== 'hidden') {
-      nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
-        id: 'adsb-background-points',
-        data: renderBackgroundAirAssets,
-        getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
-        getRadius: localViewport.zoom < 3 ? 2.8 : localViewport.zoom < 5 ? 3.6 : 4.5,
-        radiusUnits: 'pixels',
-        stroked: true,
-        filled: true,
-        lineWidthUnits: 'pixels',
-        getLineWidth: 0.75,
-        getLineColor: [226, 232, 240, 80],
-        getFillColor: (d) => {
-          const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
-          return [base[0], base[1], base[2], Math.max(36, Math.round(getAlpha(d) * 0.55))] as [number, number, number, number]
-        },
-        updateTriggers: {
-          getFillColor: [declutterMode, searchMatchSet],
-          getRadius: [localViewport.zoom],
-        },
-        pickable: true,
-        opacity: domainOpacity('Air') * 0.9,
-        onHover: ({ x, y, object }) =>
-          setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
-        onClick: ({ object }) =>
-          object && selectAsset(object.track_id, object.source_domain),
-      }))
+      if (useAirAggregation) {
+        const labelCells = chooseAggregateLabelCells(airAggregateCells, 18)
+        nextLayers.push(new ScatterplotLayer<AggregateCell>({
+          id: 'adsb-background-aggregate-cells',
+          data: airAggregateCells,
+          getPosition: (d) => [d.lon, d.lat],
+          getRadius: (d) => getAggregateRadius(d.count, localViewport.zoom),
+          radiusUnits: 'pixels',
+          stroked: true,
+          filled: true,
+          getLineWidth: 0.8,
+          lineWidthUnits: 'pixels',
+          getLineColor: getAggregateLineColor('Air'),
+          getFillColor: (d) => getAggregateFillColor('Air', d.count),
+          pickable: false,
+          opacity: domainOpacity('Air'),
+        }))
+        nextLayers.push(new TextLayer<AggregateCell>({
+          id: 'adsb-background-aggregate-labels',
+          data: labelCells.filter((cell) => cell.count > 1),
+          getPosition: (d) => [d.lon, d.lat],
+          getText: (d) => formatAggregateCount(d.count),
+          getColor: [219, 234, 254, 220],
+          getSize: localViewport.zoom < 2.5 ? 11 : 10,
+          sizeUnits: 'pixels',
+          getTextAnchor: 'middle',
+          getAlignmentBaseline: 'center',
+          pickable: false,
+        }))
+      } else {
+        nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
+          id: 'adsb-background-points',
+          data: renderBackgroundAirAssets,
+          getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
+          getRadius: localViewport.zoom < 3 ? 2.8 : localViewport.zoom < 5 ? 3.6 : 4.5,
+          radiusUnits: 'pixels',
+          stroked: true,
+          filled: true,
+          lineWidthUnits: 'pixels',
+          getLineWidth: 0.75,
+          getLineColor: [226, 232, 240, 80],
+          getFillColor: (d) => {
+            const base = CLASSIFICATION_COLORS[d.classification ?? 'Unknown']
+            return [base[0], base[1], base[2], Math.max(36, Math.round(getAlpha(d) * 0.55))] as [number, number, number, number]
+          },
+          updateTriggers: {
+            getFillColor: [declutterMode, searchMatchSet],
+            getRadius: [localViewport.zoom],
+          },
+          pickable: true,
+          opacity: domainOpacity('Air') * 0.9,
+          onHover: ({ x, y, object }) =>
+            setHoverInfo(object ? { x, y, object: { kind: 'track', item: object } } : null),
+          onClick: ({ object }) =>
+            object && selectAsset(object.track_id, object.source_domain),
+        }))
+      }
 
       if (focusAirAssets.length > 0) {
         nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
@@ -1263,6 +1367,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     return { layers: nextLayers, buildMs: performance.now() - buildStarted }
   }, [
     layers.Air.visibility,
+    useAirAggregation,
+    airAggregateCells,
     renderBackgroundAirAssets,
     focusAirAssets,
     selectedAirAsset,
@@ -1283,7 +1389,36 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     const nextLayers: Layer<object>[] = []
 
     if (layers.Space.visibility !== 'hidden') {
-      if (renderBackgroundSpaceAssets.length > 0) {
+      if (useSpaceAggregation) {
+        const labelCells = chooseAggregateLabelCells(spaceAggregateCells, 14)
+        nextLayers.push(new ScatterplotLayer<AggregateCell>({
+          id: 'space-background-aggregate-cells',
+          data: spaceAggregateCells,
+          getPosition: (d) => getRenderPosition(d.lon, d.lat, undefined, useSpaceAltitude),
+          getRadius: (d) => getAggregateRadius(d.count, localViewport.zoom),
+          radiusUnits: 'pixels',
+          stroked: true,
+          filled: true,
+          getLineWidth: 0.8,
+          lineWidthUnits: 'pixels',
+          getLineColor: getAggregateLineColor('Space'),
+          getFillColor: (d) => getAggregateFillColor('Space', d.count),
+          pickable: false,
+          opacity: domainOpacity('Space') * 0.9,
+        }))
+        nextLayers.push(new TextLayer<AggregateCell>({
+          id: 'space-background-aggregate-labels',
+          data: labelCells.filter((cell) => cell.count > 1),
+          getPosition: (d) => getRenderPosition(d.lon, d.lat, undefined, useSpaceAltitude),
+          getText: (d) => formatAggregateCount(d.count),
+          getColor: [243, 232, 255, 220],
+          getSize: localViewport.zoom < 2.5 ? 10 : 9,
+          sizeUnits: 'pixels',
+          getTextAnchor: 'middle',
+          getAlignmentBaseline: 'center',
+          pickable: false,
+        }))
+      } else if (renderBackgroundSpaceAssets.length > 0) {
         nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'space-background-points',
           data: renderBackgroundSpaceAssets,
@@ -1388,6 +1523,8 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     return { layers: nextLayers, buildMs: performance.now() - buildStarted }
   }, [
     layers.Space.visibility,
+    useSpaceAggregation,
+    spaceAggregateCells,
     renderBackgroundSpaceAssets,
     prioritySpaceAssets,
     selectedSpaceAsset,
@@ -1396,6 +1533,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     selectedOrbitPoints,
     showTrails,
     renderSpaceTrails,
+    localViewport.zoom,
     spaceTrackDuration,
     useSpaceAltitude,
     domainOpacity,
@@ -1515,11 +1653,11 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     visibleDisruptions: visibleDisruptions.length,
     layerCount: deckLayers.length,
     deckBuildMs: staticLayerBuild.buildMs + maritimeLayerBuild.buildMs + airLayerBuild.buildMs + spaceLayerBuild.buildMs + disruptionLayerBuild.buildMs,
-    airCount: renderBackgroundAirAssets.length + focusAirAssets.length,
-    maritimeCount: renderBackgroundMaritimeAssets.length + focusMaritimeAssets.length,
+    airCount: (useAirAggregation ? airAggregateCells.length : renderBackgroundAirAssets.length) + focusAirAssets.length,
+    maritimeCount: (useMaritimeAggregation ? maritimeAggregateCells.length : renderBackgroundMaritimeAssets.length) + focusMaritimeAssets.length,
     spacePriorityCount: spacePriorityKeys.size,
-    spaceAggregateCount: 0,
-    spaceBackgroundCount: renderBackgroundSpaceAssets.length,
+    spaceAggregateCount: spaceAggregateCells.length,
+    spaceBackgroundCount: useSpaceAggregation ? spaceAggregateCells.length : renderBackgroundSpaceAssets.length,
   }), [
     viewportAssets.length,
     visibleDisruptions.length,
@@ -1529,11 +1667,17 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     airLayerBuild.buildMs,
     spaceLayerBuild.buildMs,
     disruptionLayerBuild.buildMs,
+    useAirAggregation,
+    airAggregateCells.length,
     renderBackgroundAirAssets.length,
     focusAirAssets.length,
+    useMaritimeAggregation,
+    maritimeAggregateCells.length,
     renderBackgroundMaritimeAssets.length,
     focusMaritimeAssets.length,
     spacePriorityKeys.size,
+    spaceAggregateCells.length,
+    useSpaceAggregation,
     renderBackgroundSpaceAssets.length,
   ])
 
@@ -1580,7 +1724,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
 
   const zoomContext = useMemo(() => {
     if (localViewport.zoom < 2.5) return 'Global view'
-    if (lodActive && localViewport.zoom < 4) return 'Regional view · background tracks simplified'
+    if (lodActive && localViewport.zoom < 4) return 'Regional view · aggregated background tracks'
     if (localViewport.zoom < LANDING_POINT_INTERACTIVE_ZOOM) {
       return showUnderseaCables ? `Regional view · zoom to ${LANDING_POINT_INTERACTIVE_ZOOM}+ for landing points` : 'Regional view'
     }

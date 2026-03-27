@@ -88,8 +88,8 @@ Completed in code:
 - removed one extra `uiViewportAssets` clone and batched multi-domain viewport replacement into a single store write
 - reduced repeated trail-buffer prefix scans by grouping trail entries once per render
 - restored clear ownership of `viewportAssets`: scoped query results determine membership, while websocket updates now refresh only existing viewport members and immediately drop streamed tracks that move out of bounds
-- added an initial zoom-based LOD pass that thins low-zoom background points and suppresses low-zoom background trails while preserving selected, pinned, alert-relevant, and watched tracks
-- added an initial worker-backed websocket preprocessing path for event deduplication and viewport membership partitioning, with a main-thread fallback if worker setup fails
+- added an explicit low-zoom aggregation pass that renders background Air, Maritime, and Space density as aggregate cells instead of sparse individual-point thinning, while still suppressing low-zoom background trails
+- added a worker-backed websocket preprocessing path for event deduplication, viewport membership partitioning, and trail shaping, with a main-thread fallback if worker setup fails
 
 Still intentionally deferred:
 
@@ -321,7 +321,7 @@ test(frontend): add store throughput and trail path coverage
 
 **Outcome so far**:
 
-- At low zoom, background Air, Maritime, and Space tracks are thinned using deterministic geographic cell bucketing
+- At low zoom, background Air, Maritime, and Space tracks are rendered as deterministic aggregate cells instead of individual low-signal points
 - At low zoom, background trails are suppressed unless the track is pinned, selected, alert-relevant, or otherwise priority-scoped
 - At higher zoom, individual tracks and full trail sets still render normally
 
@@ -348,12 +348,12 @@ This is a better scale lever than premature framework migration.
 
 - event deduplication
 - trail shaping or simplification
-- optional domain bucketing
+- domain bucketing
 - optional search index maintenance
 
 Implemented so far:
 
-- websocket batch deduplication and viewport membership partitioning now run through a dedicated frontend worker when available
+- websocket batch deduplication, domain bucketing, viewport membership partitioning, and trail shaping now run through a dedicated frontend worker when available
 - the UI falls back to the same pure processing path on the main thread if the worker is unavailable or faults
 
 Do not start with the worker. First shrink the main-thread work so the worker boundary is clear and justified.

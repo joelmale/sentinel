@@ -1,4 +1,9 @@
-import { processIncomingTrackEvents, type ProcessedLiveEvents, type TrackEventBounds } from '@/lib/liveEventProcessing'
+import {
+  processIncomingTrackEvents,
+  type ProcessedLiveEvents,
+  type TrackEventBounds,
+  type TrailHeadSnapshot,
+} from '@/lib/liveEventProcessing'
 import type { TrackEventProperties } from '@/types/track'
 
 type ProcessLiveEventsRequest = {
@@ -6,6 +11,7 @@ type ProcessLiveEventsRequest = {
   events: TrackEventProperties[]
   viewportKeys: string[]
   viewportBounds: TrackEventBounds | null
+  trailHeads: Partial<Record<string, TrailHeadSnapshot>>
 }
 
 type ProcessLiveEventsResponse = {
@@ -20,6 +26,7 @@ self.onmessage = (message: MessageEvent<ProcessLiveEventsRequest>) => {
     message.data.events,
     message.data.viewportKeys,
     message.data.viewportBounds,
+    message.data.trailHeads,
   )
 
   const response: ProcessLiveEventsResponse = {

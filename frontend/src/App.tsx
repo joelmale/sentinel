@@ -28,7 +28,11 @@ import { SpaceWatchDashboard, type SpaceWatchDashboardPayload } from '@/componen
 import { DomainStatusDashboard, type DomainStatusDashboardPayload } from '@/components/DomainStatusDashboard'
 import { DisruptionDashboard, type DisruptionDashboardPayload } from '@/components/DisruptionDashboard'
 import { useLiveStream } from '@/hooks/useLiveStream'
-import { processIncomingTrackEvents, type ProcessedLiveEvents } from '@/lib/liveEventProcessing'
+import {
+  processIncomingTrackEvents,
+  type ProcessedLiveEvents,
+  type TrailHeadSnapshot,
+} from '@/lib/liveEventProcessing'
 import { buildTrackScopeParams } from '@/lib/trackScopes'
 import { trackedFetchJson } from '@/lib/perf'
 import { useLiveDataStore } from '@/store/useLiveDataStore'
@@ -54,6 +58,7 @@ type LiveEventWorkerRequest = {
   events: TrackEventProperties[]
   viewportKeys: string[]
   viewportBounds: { west: number; south: number; east: number; north: number } | null
+  trailHeads: Partial<Record<string, TrailHeadSnapshot>>
 }
 
 type LiveEventWorkerResponse = {
@@ -73,6 +78,23 @@ function normalizeTrackFeatures(payload: TrackFeatureCollection): TrackEventProp
     lat: feature.geometry?.coordinates[1],
     timestamp: feature.properties.last_seen ?? feature.properties.timestamp,
   }))
+}
+
+function buildTrailHeadSnapshot(events: TrackEventProperties[]): Partial<Record<string, TrailHeadSnapshot>> {
+  const trailBuffer = useMapStore.getState().trailBuffer
+  const snapshot: Partial<Record<string, TrailHeadSnapshot>> = {}
+  const seen = new Set<string>()
+
+  for (const event of events) {
+    const key = `${event.source_domain}:${event.track_id}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const tailPoint = trailBuffer.get(key)?.at(-1)
+    if (!tailPoint) continue
+    snapshot[key] = tailPoint
+  }
+
+  return snapshot
 }
 
 const queryClient = new QueryClient({
@@ -215,7 +237,7 @@ function SentinelApp() {
 
     const now = Date.now()
     if (now - lastTrailFlushRef.current >= 500) {
-      appendTrailPoints(processed.latest)
+      appendTrailPoints(processed.trailAppendBatch)
       lastTrailFlushRef.current = now
     }
 
@@ -767,6 +789,7 @@ function SentinelApp() {
     const pendingEvents = wsBatchRef.current
     wsBatchRef.current = []
     const viewportKeys = Array.from(viewportAssets.keys())
+    const trailHeads = buildTrailHeadSnapshot(pendingEvents)
     const worker = liveEventWorkerRef.current
 
     if (worker) {
@@ -776,13 +799,14 @@ function SentinelApp() {
         events: pendingEvents,
         viewportKeys,
         viewportBounds,
+        trailHeads,
       }
       workerPendingRequestRef.current = message
       worker.postMessage(message)
       return
     }
 
-    const processed = processIncomingTrackEvents(pendingEvents, viewportKeys, viewportBounds)
+    const processed = processIncomingTrackEvents(pendingEvents, viewportKeys, viewportBounds, trailHeads)
     applyProcessedLiveEvents(processed)
   }, [
     viewportAssets,
