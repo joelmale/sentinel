@@ -10,6 +10,7 @@ from models.track_event import SourceDomain
 from perf import request_perf
 from routers.disruptions import get_disruption_dashboard
 from routers.tracks import get_domain_status
+from routers.ws import get_ws_broadcast_snapshot
 
 router = APIRouter(prefix="/telemetry", tags=["Telemetry"])
 
@@ -17,6 +18,11 @@ router = APIRouter(prefix="/telemetry", tags=["Telemetry"])
 @router.get("/performance", summary="In-memory API request timing snapshot")
 async def get_performance_snapshot() -> dict[str, Any]:
     return request_perf.snapshot()
+
+
+@router.get("/ws", summary="WebSocket broadcast runtime snapshot")
+async def get_ws_snapshot() -> dict[str, Any]:
+    return await get_ws_broadcast_snapshot()
 
 
 @router.get("/dashboard", summary="Unified telemetry dashboard payload")

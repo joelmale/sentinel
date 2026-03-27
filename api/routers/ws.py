@@ -18,6 +18,7 @@ import logging
 import math
 import socket
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -42,6 +43,16 @@ active_connections: set[WebSocket] = set()
 stream_fanout_task: asyncio.Task[None] | None = None
 pubsub_fanout_task: asyncio.Task[None] | None = None
 last_sent_track_cache: dict[str, dict[str, Any]] = {}
+ws_runtime_metrics: dict[str, Any] = {
+    "published_messages": 0,
+    "published_track_events": 0,
+    "published_track_deltas": 0,
+    "received_pubsub_messages": 0,
+    "last_published_at": None,
+    "last_pubsub_received_at": None,
+    "last_pubsub_lag_ms": None,
+    "last_leader_renewed_at": None,
+}
 
 
 class ConnectionManager:
@@ -116,11 +127,22 @@ def _should_emit_delta(current: dict[str, Any], delta: dict[str, Any]) -> bool:
     return delta_size + MIN_DELTA_BYTES_SAVED < full_size
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 async def _publish_ws_message(redis, message: dict[str, Any]) -> None:
     payload = {
         "origin": INSTANCE_ID,
+        "published_at": _utc_now_iso(),
         "payload": message,
     }
+    ws_runtime_metrics["published_messages"] += 1
+    if message.get("type") == "track_events":
+        ws_runtime_metrics["published_track_events"] += message.get("count", 0)
+    elif message.get("type") == "track_deltas":
+        ws_runtime_metrics["published_track_deltas"] += message.get("count", 0)
+    ws_runtime_metrics["last_published_at"] = payload["published_at"]
     await manager.broadcast_local(message)
     await redis.publish(WS_BROADCAST_CHANNEL, json.dumps(payload, separators=(",", ":"), allow_nan=False))
 
@@ -148,6 +170,15 @@ async def _fanout_pubsub_loop() -> None:
                 continue
             payload = envelope.get("payload")
             if isinstance(payload, dict):
+                published_at = envelope.get("published_at")
+                ws_runtime_metrics["received_pubsub_messages"] += 1
+                ws_runtime_metrics["last_pubsub_received_at"] = _utc_now_iso()
+                if isinstance(published_at, str):
+                    published_ts = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                    ws_runtime_metrics["last_pubsub_lag_ms"] = max(
+                        0,
+                        round((datetime.now(timezone.utc) - published_ts).total_seconds() * 1000, 2),
+                    )
                 await manager.broadcast_local(_sanitize_json_value(payload))
     except asyncio.CancelledError:
         pass
@@ -160,8 +191,11 @@ async def _maintain_leader(redis) -> bool:
     current = await redis.get(WS_LEADER_KEY)
     if current == INSTANCE_ID:
         await redis.expire(WS_LEADER_KEY, WS_LEADER_TTL_SECONDS)
+        ws_runtime_metrics["last_leader_renewed_at"] = _utc_now_iso()
         return True
     acquired = await redis.set(WS_LEADER_KEY, INSTANCE_ID, ex=WS_LEADER_TTL_SECONDS, nx=True)
+    if acquired:
+        ws_runtime_metrics["last_leader_renewed_at"] = _utc_now_iso()
     return bool(acquired)
 
 
@@ -293,6 +327,37 @@ async def shutdown_ws_broadcast() -> None:
             pass
     stream_fanout_task = None
     pubsub_fanout_task = None
+
+
+async def get_ws_broadcast_snapshot() -> dict[str, Any]:
+    redis = await get_redis()
+    leader_instance = await redis.get(WS_LEADER_KEY)
+    stream_length = await redis.xlen(STREAM_KEY)
+    group_pending = 0
+    group_consumers = 0
+    try:
+        groups = await redis.xinfo_groups(STREAM_KEY)
+    except Exception:
+        groups = []
+    for group in groups:
+        if group.get("name") == CONSUMER_GROUP:
+            group_pending = int(group.get("pending", 0) or 0)
+            group_consumers = int(group.get("consumers", 0) or 0)
+            break
+
+    return {
+        "generated_at": _utc_now_iso(),
+        "instance_id": INSTANCE_ID,
+        "leader_instance": leader_instance,
+        "is_leader": leader_instance == INSTANCE_ID,
+        "local_connections": len(manager.connections),
+        "stream_fanout_active": stream_fanout_task is not None and not stream_fanout_task.done(),
+        "pubsub_fanout_active": pubsub_fanout_task is not None and not pubsub_fanout_task.done(),
+        "stream_length": stream_length,
+        "group_pending": group_pending,
+        "group_consumers": group_consumers,
+        "runtime": dict(ws_runtime_metrics),
+    }
 
 
 @router.websocket("/ws/live")

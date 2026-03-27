@@ -455,10 +455,10 @@ Implemented so far:
 - API startup now launches a websocket fan-out worker that uses a Redis-backed leader lease plus Redis pub/sub for replica-safe broadcast
 - the elected leader consumes the Redis stream once and republishes normalized websocket payloads onto a shared pub/sub channel
 - every API replica subscribes to that pub/sub channel and forwards those messages to its local websocket clients
+- `GET /api/telemetry/ws` now exposes leader identity, local connection counts, task health, stream backlog, pending group work, and recent pub/sub lag metrics
 
 Remaining:
 
-- add operational visibility for leader handoff and pub/sub lag if this path becomes production-critical
 - decide whether old pending stream entries should be reclaimed more aggressively during leader failover
 
 ### Phase 4 commits
