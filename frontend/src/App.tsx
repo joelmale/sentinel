@@ -28,6 +28,7 @@ import { SpaceWatchDashboard, type SpaceWatchDashboardPayload } from '@/componen
 import { DomainStatusDashboard, type DomainStatusDashboardPayload } from '@/components/DomainStatusDashboard'
 import { DisruptionDashboard, type DisruptionDashboardPayload } from '@/components/DisruptionDashboard'
 import { useLiveStream } from '@/hooks/useLiveStream'
+import { processIncomingTrackEvents, type ProcessedLiveEvents } from '@/lib/liveEventProcessing'
 import { buildTrackScopeParams } from '@/lib/trackScopes'
 import { trackedFetchJson } from '@/lib/perf'
 import { useLiveDataStore } from '@/store/useLiveDataStore'
@@ -48,21 +49,21 @@ import type {
 } from '@/types/track'
 import { useShallow } from 'zustand/react/shallow'
 
+type LiveEventWorkerRequest = {
+  type: 'process-live-events'
+  events: TrackEventProperties[]
+  viewportKeys: string[]
+  viewportBounds: { west: number; south: number; east: number; north: number } | null
+}
+
+type LiveEventWorkerResponse = {
+  type: 'processed-live-events'
+  result: ProcessedLiveEvents
+}
+
 function serializeBbox(bounds: { west: number; south: number; east: number; north: number } | null): string | null {
   if (!bounds) return null
   return [bounds.west, bounds.south, bounds.east, bounds.north].join(',')
-}
-
-function isTrackEventInBounds(
-  asset: Pick<TrackEventProperties, 'lon' | 'lat'>,
-  bounds: { west: number; south: number; east: number; north: number } | null,
-): boolean {
-  if (!bounds || typeof asset.lon !== 'number' || typeof asset.lat !== 'number') return false
-  const { lon, lat } = asset
-  const withinLongitude = bounds.west <= bounds.east
-    ? lon >= bounds.west && lon <= bounds.east
-    : lon >= bounds.west || lon <= bounds.east
-  return withinLongitude && lat >= bounds.south && lat <= bounds.north
 }
 
 function normalizeTrackFeatures(payload: TrackFeatureCollection): TrackEventProperties[] {
@@ -169,6 +170,9 @@ function SentinelApp() {
   const wsBatchRef = useRef<TrackEventProperties[]>([])
   const wsFrameRef = useRef<number | null>(null)
   const lastTrailFlushRef = useRef(0)
+  const liveEventWorkerRef = useRef<Worker | null>(null)
+  const workerBusyRef = useRef(false)
+  const workerPendingRequestRef = useRef<LiveEventWorkerRequest | null>(null)
   const {
     mapMode,
     setMapMode,
@@ -204,6 +208,44 @@ function SentinelApp() {
     }
   }, [])
 
+  const applyProcessedLiveEvents = useCallback((processed: ProcessedLiveEvents) => {
+    upsertAssets(processed.latest)
+    refreshViewportAssets(processed.viewportRefreshBatch)
+    removeViewportAssetKeys(processed.viewportRemovalKeys)
+
+    const now = Date.now()
+    if (now - lastTrailFlushRef.current >= 500) {
+      appendTrailPoints(processed.latest)
+      lastTrailFlushRef.current = now
+    }
+
+    if (selectedTrackId && selectedDomain) {
+      const selectedEvent = processed.latest.find((event) => (
+        event.track_id === selectedTrackId && event.source_domain === selectedDomain
+      ))
+      if (selectedEvent) {
+        setSelectedAssetDetail({
+          ...(selectedAssetDetail ?? {}),
+          ...selectedEvent,
+        } as TrackEventProperties)
+      }
+    }
+  }, [
+    appendTrailPoints,
+    upsertAssets,
+    refreshViewportAssets,
+    removeViewportAssetKeys,
+    selectedTrackId,
+    selectedDomain,
+    selectedAssetDetail,
+    setSelectedAssetDetail,
+  ])
+
+  const applyProcessedLiveEventsRef = useRef(applyProcessedLiveEvents)
+  applyProcessedLiveEventsRef.current = applyProcessedLiveEvents
+
+  const scheduleWsFlushRef = useRef<() => void>(() => {})
+
   useEffect(() => {
     const timerId = window.setTimeout(() => {
       setPriorityPrefetchEnabled(true)
@@ -228,6 +270,53 @@ function SentinelApp() {
       }
     } catch {
       setDisclaimerOpen(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof Worker === 'undefined') return
+
+    const worker = new Worker(new URL('./workers/liveEventWorker.ts', import.meta.url), { type: 'module' })
+    liveEventWorkerRef.current = worker
+
+    worker.onmessage = (message: MessageEvent<LiveEventWorkerResponse>) => {
+      if (message.data.type !== 'processed-live-events') return
+      workerBusyRef.current = false
+      workerPendingRequestRef.current = null
+      applyProcessedLiveEventsRef.current(message.data.result)
+      if (wsBatchRef.current.length > 0) {
+        scheduleWsFlushRef.current()
+      }
+    }
+
+    worker.onerror = () => {
+      workerBusyRef.current = false
+      const pendingRequest = workerPendingRequestRef.current
+      workerPendingRequestRef.current = null
+      if (liveEventWorkerRef.current === worker) {
+        liveEventWorkerRef.current = null
+      }
+      if (pendingRequest) {
+        applyProcessedLiveEventsRef.current(
+          processIncomingTrackEvents(
+            pendingRequest.events,
+            pendingRequest.viewportKeys,
+            pendingRequest.viewportBounds,
+          )
+        )
+      }
+      if (wsBatchRef.current.length > 0) {
+        scheduleWsFlushRef.current()
+      }
+    }
+
+    return () => {
+      worker.terminate()
+      if (liveEventWorkerRef.current === worker) {
+        liveEventWorkerRef.current = null
+      }
+      workerBusyRef.current = false
+      workerPendingRequestRef.current = null
     }
   }, [])
 
@@ -668,56 +757,44 @@ function SentinelApp() {
     wsFrameRef.current = null
     if (wsBatchRef.current.length === 0) return
 
-    const latestByKey = new Map<string, TrackEventProperties>()
-    for (const event of wsBatchRef.current) {
-      latestByKey.set(`${event.source_domain}:${event.track_id}`, event)
-    }
-    wsBatchRef.current = []
-    const latest = Array.from(latestByKey.values())
-    upsertAssets(latest)
-    const viewportRemovalKeys: string[] = []
-    const viewportRefreshBatch = latest.filter((event) => {
-      const key = `${event.source_domain}:${event.track_id}`
-      if (!viewportAssets.has(key)) return false
-      if (isTrackEventInBounds(event, viewportBounds)) return true
-      viewportRemovalKeys.push(key)
-      return false
-    })
-    refreshViewportAssets(viewportRefreshBatch)
-    removeViewportAssetKeys(viewportRemovalKeys)
-    const now = Date.now()
-    if (now - lastTrailFlushRef.current >= 500) {
-      appendTrailPoints(latest)
-      lastTrailFlushRef.current = now
+    if (workerBusyRef.current) {
+      if (wsFrameRef.current === null) {
+        wsFrameRef.current = requestAnimationFrame(flushWsBatch)
+      }
+      return
     }
 
-    if (selectedTrackId && selectedDomain) {
-      const selectedKey = `${selectedDomain}:${selectedTrackId}`
-      const selectedEvent = latestByKey.get(selectedKey)
-      if (selectedEvent) {
-        setSelectedAssetDetail({
-          ...(selectedAssetDetail ?? {}),
-          ...selectedEvent,
-        } as TrackEventProperties)
+    const pendingEvents = wsBatchRef.current
+    wsBatchRef.current = []
+    const viewportKeys = Array.from(viewportAssets.keys())
+    const worker = liveEventWorkerRef.current
+
+    if (worker) {
+      workerBusyRef.current = true
+      const message: LiveEventWorkerRequest = {
+        type: 'process-live-events',
+        events: pendingEvents,
+        viewportKeys,
+        viewportBounds,
       }
+      workerPendingRequestRef.current = message
+      worker.postMessage(message)
+      return
     }
+
+    const processed = processIncomingTrackEvents(pendingEvents, viewportKeys, viewportBounds)
+    applyProcessedLiveEvents(processed)
   }, [
-    appendTrailPoints,
-    upsertAssets,
     viewportAssets,
     viewportBounds,
-    refreshViewportAssets,
-    removeViewportAssetKeys,
-    selectedTrackId,
-    selectedDomain,
-    selectedAssetDetail,
-    setSelectedAssetDetail,
+    applyProcessedLiveEvents,
   ])
 
   const scheduleWsFlush = useCallback(() => {
     if (wsFrameRef.current !== null) return
     wsFrameRef.current = requestAnimationFrame(flushWsBatch)
   }, [flushWsBatch])
+  scheduleWsFlushRef.current = scheduleWsFlush
 
   // Route WebSocket messages into the shared store
   const handleWsMessage = useCallback((msg: WsMessage) => {

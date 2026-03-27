@@ -89,6 +89,7 @@ Completed in code:
 - reduced repeated trail-buffer prefix scans by grouping trail entries once per render
 - restored clear ownership of `viewportAssets`: scoped query results determine membership, while websocket updates now refresh only existing viewport members and immediately drop streamed tracks that move out of bounds
 - added an initial zoom-based LOD pass that thins low-zoom background points and suppresses low-zoom background trails while preserving selected, pinned, alert-relevant, and watched tracks
+- added an initial worker-backed websocket preprocessing path for event deduplication and viewport membership partitioning, with a main-thread fallback if worker setup fails
 
 Still intentionally deferred:
 
@@ -312,7 +313,7 @@ test(frontend): add store throughput and trail path coverage
 
 **Goal**: Make the map path resilient once Phase 1 and 2 have removed avoidable CPU waste.
 **Effort**: 4–7 days.
-**Status**: In progress. The first low-risk LOD pass is implemented; worker offload and richer aggregation are still pending.
+**Status**: In progress. The first low-risk LOD pass is implemented, and websocket preprocessing now has an initial worker path. Richer aggregation and broader worker offload are still pending.
 
 ### 3.1 Add zoom-based level of detail
 
@@ -349,6 +350,11 @@ This is a better scale lever than premature framework migration.
 - trail shaping or simplification
 - optional domain bucketing
 - optional search index maintenance
+
+Implemented so far:
+
+- websocket batch deduplication and viewport membership partitioning now run through a dedicated frontend worker when available
+- the UI falls back to the same pure processing path on the main thread if the worker is unavailable or faults
 
 Do not start with the worker. First shrink the main-thread work so the worker boundary is clear and justified.
 
