@@ -15,7 +15,7 @@ import httpx
 
 import sys
 sys.path.insert(0, "/app/base")
-from base_collector import BaseCollector, TrackEventDict
+from base_collector import BaseCollector, DEFAULT_DATABASE_URL, DEFAULT_REDIS_URL, TrackEventDict
 
 ACLED_API = "https://acleddata.com/api/acled/read"
 ACLED_TOKEN_URL = "https://acleddata.com/oauth/token"
@@ -28,8 +28,8 @@ class ACLEDCollector(BaseCollector):
 
     def __init__(self):
         super().__init__(
-            db_url=os.environ["DATABASE_URL"],
-            redis_url=os.environ["REDIS_URL"],
+            db_url=os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL),
+            redis_url=os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
             poll_interval=float(os.environ.get("POLL_INTERVAL_SEC", 1800)),
         )
         self._enabled = os.environ.get("ACLED_ENABLED", "true").lower() != "false"

@@ -54,7 +54,7 @@ import httpx
 
 import sys
 sys.path.insert(0, "/app/base")
-from base_collector import BaseCollector, TrackEventDict
+from base_collector import BaseCollector, DEFAULT_DATABASE_URL, DEFAULT_REDIS_URL, TrackEventDict
 
 logger = logging.getLogger(__name__)
 
@@ -276,8 +276,8 @@ class SpaceCollector(BaseCollector):
 
     def __init__(self):
         super().__init__(
-            db_url=os.environ["DATABASE_URL"],
-            redis_url=os.environ["REDIS_URL"],
+            db_url=os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL),
+            redis_url=os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
             poll_interval=float(os.environ.get("POSITION_INTERVAL_SEC", POSITION_INTERVAL_SEC)),
         )
         self._tle_refresh_interval = float(

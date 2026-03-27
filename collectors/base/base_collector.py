@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 STREAM_KEY = "sentinel:track_events"
 CURRENT_STATE_PREFIX = "sentinel:state:"
+DEFAULT_DATABASE_URL = "postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel"
+DEFAULT_REDIS_URL = "redis://localhost:6379"
 
 
 def _public_metadata(metadata: dict | None) -> dict:

@@ -75,6 +75,7 @@ function SentinelApp() {
   const {
     playback,
     upsertAssets,
+    appendTrailPoints,
     addAlert,
     selectedTrackId,
     selectedDomain,
@@ -108,6 +109,7 @@ function SentinelApp() {
   const [annotationPos, setAnnotationPos] = useState<{ lon: number; lat: number } | null>(null)
   const [now, setNow] = useState(new Date())
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('overview')
+  const [mapCanvasActive, setMapCanvasActive] = useState(false)
   const [browserInitialDomain, setBrowserInitialDomain] = useState<SourceDomain | 'All'>('All')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [disclaimerOpen, setDisclaimerOpen] = useState(false)
@@ -119,6 +121,7 @@ function SentinelApp() {
   const settingsRef = useRef<HTMLDivElement | null>(null)
   const wsBatchRef = useRef<TrackEventProperties[]>([])
   const wsFrameRef = useRef<number | null>(null)
+  const lastTrailFlushRef = useRef(0)
   const {
     mapMode,
     setMapMode,
@@ -464,6 +467,7 @@ function SentinelApp() {
         .map((feature) => ({
           lon: feature.geometry!.coordinates[0],
           lat: feature.geometry!.coordinates[1],
+          altitude_m: feature.properties.altitude_m,
           timestamp: new Date(feature.properties.timestamp).getTime(),
         }))
     },
@@ -594,11 +598,17 @@ function SentinelApp() {
       clearSelectedOrbitPoints()
       return
     }
+    if (orbitalTrackQuery.isFetching && !orbitalTrackQuery.data) {
+      clearSelectedOrbitPoints()
+      return
+    }
     setSelectedOrbitPoints(orbitalTrackQuery.data ?? [])
   }, [
     selectedTrackId,
     selectedDomain,
+    spaceTrackDuration,
     orbitalTrackQuery.data,
+    orbitalTrackQuery.isFetching,
     setSelectedOrbitPoints,
     clearSelectedOrbitPoints,
   ])
@@ -624,6 +634,11 @@ function SentinelApp() {
     const latest = Array.from(latestByKey.values())
     upsertAssets(latest)
     upsertViewportAssets(latest)
+    const now = Date.now()
+    if (now - lastTrailFlushRef.current >= 500) {
+      appendTrailPoints(latest)
+      lastTrailFlushRef.current = now
+    }
 
     if (selectedTrackId && selectedDomain) {
       const selectedKey = `${selectedDomain}:${selectedTrackId}`
@@ -635,7 +650,7 @@ function SentinelApp() {
         } as TrackEventProperties)
       }
     }
-  }, [upsertAssets, upsertViewportAssets, selectedTrackId, selectedDomain, selectedAssetDetail, setSelectedAssetDetail])
+  }, [appendTrailPoints, upsertAssets, upsertViewportAssets, selectedTrackId, selectedDomain, selectedAssetDetail, setSelectedAssetDetail])
 
   const scheduleWsFlush = useCallback(() => {
     if (wsFrameRef.current !== null) return
@@ -648,13 +663,14 @@ function SentinelApp() {
       wsBatchRef.current.push(...msg.events)
       scheduleWsFlush()
     } else if (msg.type === 'alert') {
+      if (!msg.track_id) return
       addAlert({
-        alertId: msg.rule_id + ':' + msg.track_id,
+        alertId: msg.alert_id ?? msg.rule_id + ':' + msg.track_id,
         ruleId: msg.rule_id,
         ruleName: msg.rule_name,
         trackId: msg.track_id,
         domain: msg.domain,
-        triggeredAt: new Date().toISOString(),
+        triggeredAt: msg.triggered_at ?? new Date().toISOString(),
       })
     }
   }, [addAlert, scheduleWsFlush])
@@ -755,6 +771,22 @@ function SentinelApp() {
     flyTo(centerLon, (south + north) / 2, zoom)
   }, [flyTo])
 
+  const transitionWorkspaceView = useCallback((nextView: WorkspaceView) => {
+    if (nextView === 'map') {
+      setMapCanvasActive(true)
+      setWorkspaceView('map')
+      return
+    }
+
+    if (workspaceView === 'map') {
+      setMapCanvasActive(false)
+      window.setTimeout(() => setWorkspaceView(nextView), 0)
+      return
+    }
+
+    setWorkspaceView(nextView)
+  }, [workspaceView])
+
   const openScopedMap = useCallback((domain?: SourceDomain, bbox?: [number, number, number, number]) => {
     if (domain) {
       const allDomains = ['Air', 'Maritime', 'Space', 'GPS', 'Infra'] as const
@@ -762,16 +794,16 @@ function SentinelApp() {
         setLayerEnabled(layerDomain, layerDomain === domain)
       })
     }
-    setWorkspaceView('map')
+    transitionWorkspaceView('map')
     if (bbox) {
       window.setTimeout(() => focusBbox(bbox), 0)
     }
-  }, [focusBbox, setLayerEnabled])
+  }, [focusBbox, setLayerEnabled, transitionWorkspaceView])
 
   const openScopedTable = useCallback((domain?: SourceDomain) => {
     setBrowserInitialDomain(domain ?? 'All')
-    setWorkspaceView('table')
-  }, [])
+    transitionWorkspaceView('table')
+  }, [transitionWorkspaceView])
 
   const investigateOverviewAlert = useCallback((alert: OverviewAlertItem) => {
     if (alert.track_id) {
@@ -784,11 +816,11 @@ function SentinelApp() {
         triggeredAt: alert.triggered_at,
         triage: 'new',
       })
-      setWorkspaceView('map')
+      transitionWorkspaceView('map')
       return
     }
     openScopedMap(alert.domain, alert.bbox ?? undefined)
-  }, [openInvestigation, openScopedMap])
+  }, [openInvestigation, openScopedMap, transitionWorkspaceView])
 
   return (
     <div className="relative w-screen h-screen bg-slate-950">
@@ -837,10 +869,14 @@ function SentinelApp() {
           <div style={{ display: 'flex', alignItems: 'stretch', gap: 8, justifyContent: 'center', overflow: 'hidden' }}>
             <button
               type="button"
-              onClick={() => setWorkspaceView((current) => {
-                if (current === 'overview') return 'map'
-                return current === 'map' ? 'table' : 'overview'
-              })}
+              onClick={() => {
+                const nextView = workspaceView === 'overview'
+                  ? 'map'
+                  : workspaceView === 'map'
+                    ? 'table'
+                    : 'overview'
+                transitionWorkspaceView(nextView)
+              }}
               style={{
                 ...headerCardStyle,
                 minWidth: 92,
@@ -1015,13 +1051,13 @@ function SentinelApp() {
           unsupportedReason={overviewUnsupportedReason}
           clientWsConnected={wsConnected}
           clientReconnects={wsReconnects}
-          onOpenMap={() => setWorkspaceView('map')}
-          onOpenTable={() => setWorkspaceView('table')}
+          onOpenMap={() => transitionWorkspaceView('map')}
+          onOpenTable={() => transitionWorkspaceView('table')}
           onOpenDomainMap={(domain) => openScopedMap(domain)}
           onOpenDomainTable={(domain) => openScopedTable(domain)}
           onInvestigateAlert={investigateOverviewAlert}
           onOpenAlertMap={(alert) => openScopedMap(alert.domain, alert.bbox ?? undefined)}
-          onResumeInvestigation={() => setWorkspaceView('map')}
+          onResumeInvestigation={() => transitionWorkspaceView('map')}
         />
       ) : workspaceView === 'map' ? (
         <>
@@ -1033,6 +1069,7 @@ function SentinelApp() {
               liveAssets={assetsArray}
               disruptions={disruptionEventsQuery.data?.items ?? []}
               onMapClick={(lon, lat) => setAnnotationPos({ lon, lat })}
+              active={mapCanvasActive}
             />
           </div>
 

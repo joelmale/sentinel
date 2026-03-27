@@ -4,7 +4,7 @@ services:
 
   # ── Reverse proxy ────────────────────────────────────────────────
   caddy:
-    image: caddy:2-alpine
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
     container_name: sentinel-caddy
     ports:
       - "80:80"
@@ -43,10 +43,10 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379
-      - SECRET_KEY=${SECRET_KEY}
+      - SECRET_KEY=${SECRET_KEY:-dev_secret_change_in_production}
       - ENVIRONMENT=${ENVIRONMENT:-development}
       # Keycloak — only relevant when running with --profile auth
-      - KEYCLOAK_URL=${KEYCLOAK_URL:-}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sentinel}
       - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-sentinel-api}
     depends_on:
@@ -65,11 +65,11 @@ services:
   # `timescaledb-ha` is the PostGIS-capable image line for this prototype.
   # Sentinel's schema and queries depend on PostGIS geometry functions.
   timescaledb:
-    image: timescale/timescaledb-ha:pg16-ts2.24
+    image: ${TIMESCALE_IMAGE:-timescale/timescaledb-ha:pg16-ts2.24}
     container_name: sentinel-db
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-sentinel}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-sentinel}
       - POSTGRES_DB=${POSTGRES_DB:-sentinel}
     volumes:
       - timescale_data:/home/postgres/pgdata/data
@@ -83,9 +83,9 @@ services:
 
   # ── Redis ────────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     container_name: sentinel-redis
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-512mb} --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-allkeys-lru}
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -100,13 +100,13 @@ services:
   # Phase 1-2: skip this entirely and use API_KEY auth instead.
   # Phase 5 (Team Features): enable when you need multi-user SSO.
   keycloak:
-    image: quay.io/keycloak/keycloak:24.0
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:24.0}
     container_name: sentinel-keycloak
     profiles: ["auth"]
     command: ["start-dev", "--import-realm"]
     environment:
       - KEYCLOAK_ADMIN=${KEYCLOAK_ADMIN:-admin}
-      - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}
+      - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-admin}
     volumes:
       - keycloak_data:/opt/keycloak/data
       - ./docker/keycloak/sentinel-realm.json:/opt/keycloak/data/import/sentinel-realm.json:ro
@@ -370,7 +370,7 @@ services:
   # Provides ops dashboards: collector throughput, DB size, Redis lag.
   # Enable once Phase 2 collectors are running and you want visibility.
   grafana:
-    image: grafana/grafana-oss:latest
+    image: ${GRAFANA_IMAGE:-grafana/grafana-oss:latest}
     container_name: sentinel-grafana
     profiles: ["monitoring"]
     environment:
@@ -397,4 +397,4 @@ volumes:
 
 networks:
   default:
-    name: sentinel-net
+    name: ${INTERNAL_DOCKER_NETWORK:-sentinel-net}

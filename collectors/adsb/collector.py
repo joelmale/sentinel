@@ -89,7 +89,7 @@ import zstandard as zstd
 
 import sys
 sys.path.insert(0, "/app/base")
-from base_collector import BaseCollector, TrackEventDict
+from base_collector import BaseCollector, DEFAULT_DATABASE_URL, DEFAULT_REDIS_URL, TrackEventDict
 from bincraft_decoder import decode_aircraft_payload
 
 logger = logging.getLogger(__name__)
@@ -426,8 +426,8 @@ class AdsbCollector(BaseCollector):
 
     def __init__(self):
         super().__init__(
-            db_url=os.environ["DATABASE_URL"],
-            redis_url=os.environ["REDIS_URL"],
+            db_url=os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL),
+            redis_url=os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
             poll_interval=float(os.environ.get("POLL_INTERVAL_SEC", 10)),
         )
         # OpenSky OAuth client credentials

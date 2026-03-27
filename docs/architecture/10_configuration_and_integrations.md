@@ -1,10 +1,12 @@
 # Configuration And Integrations
 
-Primary environment template:
+Primary environment templates:
 
 - [.env.example](/Users/JoelN/Coding/sentinel/.env.example)
+- [.env.advanced.example](/Users/JoelN/Coding/sentinel/.env.advanced.example)
 
-This file should be treated as the main reference for runtime-integrated services and credentials.
+Use `.env.example` for the minimal local startup surface.
+Use `.env.advanced.example` for full integration tuning and non-default overrides.
 
 ## Core stack configuration
 
@@ -16,6 +18,19 @@ Core runtime:
 - Docker stack/network settings
 - Keycloak
 - Grafana
+
+Defaults now exist for most local runtime configuration:
+
+- docker-compose provides development defaults for image tags, network name, Redis sizing, database password, Keycloak admin password, and API secret/keycloak URL
+- API settings already default `DATABASE_URL`, `REDIS_URL`, `ENVIRONMENT`, and baseline Keycloak values
+- collectors now default `DATABASE_URL` and `REDIS_URL` for local non-Docker runs
+
+The minimal required overrides for a useful local stack should be treated as:
+
+- `POSTGRES_PASSWORD`
+- `SECRET_KEY`
+- profile-specific admin passwords if running Keycloak or Grafana
+- source credentials only for integrations you actually intend to use
 
 ## Collector integrations
 
@@ -96,6 +111,7 @@ Must document explicitly:
 - which integrations are brittle or best-effort
 - which cookies/headers should never be committed
 - which credentials gate coverage quality in each domain
+- which values are safe to leave at defaults in local development
 
 ## Recommended table for this page
 

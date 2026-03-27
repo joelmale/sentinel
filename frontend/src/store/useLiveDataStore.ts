@@ -35,7 +35,7 @@ function scheduleUiSync(
     const state = get()
     set({
       uiGlobalSummary: state.globalSummary,
-      uiViewportAssets: new Map(state.viewportAssets),
+      uiViewportAssets: state.viewportAssets,
     })
   }, UI_SYNC_DELAY_MS)
 }

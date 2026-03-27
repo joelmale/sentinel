@@ -75,7 +75,7 @@ export type LayerMap = Record<SourceDomain | 'Annotations', LayerState>
 const DEFAULT_LAYERS: LayerMap = {
   Air:         { visibility: 'hidden', opacity: 0.9 },
   Maritime:    { visibility: 'hidden', opacity: 0.9 },
-  Space:       { visibility: 'muted', opacity: 0.8 },
+  Space:       { visibility: 'hidden', opacity: 0.8 },
   GPS:         { visibility: 'hidden', opacity: 0.7 },
   Infra:       { visibility: 'hidden', opacity: 0.6 },
   Annotations: { visibility: 'hidden', opacity: 1.0 },
@@ -83,8 +83,8 @@ const DEFAULT_LAYERS: LayerMap = {
 
 const DEFAULT_DOMAIN_SCOPES: Record<SourceDomain, DomainScopeState> = {
   Air: {
-    selectedQuickScope: 'military',
-    appliedQuickScope: null,
+    selectedQuickScope: 'commercial_sample',
+    appliedQuickScope: 'commercial_sample',
     resultLimit: 50,
     customOperator: '',
     customConstellation: '',
@@ -93,7 +93,7 @@ const DEFAULT_DOMAIN_SCOPES: Record<SourceDomain, DomainScopeState> = {
   },
   Maritime: {
     selectedQuickScope: 'major_routes',
-    appliedQuickScope: null,
+    appliedQuickScope: 'major_routes',
     resultLimit: 50,
     customOperator: '',
     customConstellation: '',
@@ -101,8 +101,8 @@ const DEFAULT_DOMAIN_SCOPES: Record<SourceDomain, DomainScopeState> = {
     advancedOpen: false,
   },
   Space: {
-    selectedQuickScope: 'watchlist',
-    appliedQuickScope: null,
+    selectedQuickScope: 'priority_constellations',
+    appliedQuickScope: 'priority_constellations',
     resultLimit: 50,
     customOperator: '',
     customConstellation: '',
@@ -196,14 +196,15 @@ interface MapStore {
   // Live asset data — shared across all panels so no prop drilling
   liveAssets: Map<string, TrackEventProperties>
   upsertAssets: (events: TrackEventProperties[]) => void
+  appendTrailPoints: (events: TrackEventProperties[]) => void
   replaceDomainAssets: (domain: SourceDomain, events: TrackEventProperties[]) => void
   clearAssets: () => void
 
   // Trail buffer: last 60 positions per track for live trail rendering
-  trailBuffer: Map<string, Array<{ lon: number; lat: number; timestamp: number }>>
+  trailBuffer: Map<string, Array<{ lon: number; lat: number; altitude_m?: number; timestamp: number }>>
   clearTrailBuffer: () => void
-  selectedTrackHistory: Array<{ lon: number; lat: number; timestamp: number }>
-  setSelectedTrackHistory: (points: Array<{ lon: number; lat: number; timestamp: number }>) => void
+  selectedTrackHistory: Array<{ lon: number; lat: number; altitude_m?: number; timestamp: number }>
+  setSelectedTrackHistory: (points: Array<{ lon: number; lat: number; altitude_m?: number; timestamp: number }>) => void
   clearSelectedTrackHistory: () => void
 
   // Layer visibility — tri-state (active / muted / hidden)
@@ -337,15 +338,24 @@ export const useMapStore = create<MapStore>()(
 
     // ── Assets ──────────────────────────────────────────────────
     liveAssets: new Map(),
-    upsertAssets: (events) =>
+    upsertAssets: (events) => {
+      if (events.length === 0) return
       set((s) => {
         const next = new Map(s.liveAssets)
-        const nextTrailBuffer = new Map(s.trailBuffer)
 
         for (const e of events) {
           next.set(`${e.source_domain}:${e.track_id}`, e)
+        }
 
-          // Update trail buffer if lon/lat are valid numbers
+        return { liveAssets: next }
+      })
+    },
+    appendTrailPoints: (events) => {
+      if (events.length === 0) return
+      set((s) => {
+        const nextTrailBuffer = new Map(s.trailBuffer)
+
+        for (const e of events) {
           if (typeof e.lon === 'number' && typeof e.lat === 'number') {
             const key = `${e.source_domain}:${e.track_id}`
             const trail = nextTrailBuffer.get(key) ?? []
@@ -354,7 +364,7 @@ export const useMapStore = create<MapStore>()(
             const timestamp = new Date(e.timestamp).getTime()
 
             // Add new position
-            trail.push({ lon: e.lon, lat: e.lat, timestamp })
+            trail.push({ lon: e.lon, lat: e.lat, altitude_m: e.altitude_m, timestamp })
 
             // Keep max 60 entries per track (FIFO)
             if (trail.length > 60) {
@@ -365,8 +375,9 @@ export const useMapStore = create<MapStore>()(
           }
         }
 
-        return { liveAssets: next, trailBuffer: nextTrailBuffer }
-      }),
+        return { trailBuffer: nextTrailBuffer }
+      })
+    },
     replaceDomainAssets: (domain, events) =>
       set((s) => {
         const next = new Map(s.liveAssets)

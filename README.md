@@ -47,12 +47,20 @@ Optional profiles:
 cp .env.example .env
 ```
 
-At minimum, set:
+The base stack now has development-safe defaults for most runtime settings.
+You can often run locally without changing anything in `.env` at all.
+
+Set or override these first:
 
 - `POSTGRES_PASSWORD`
 - `SECRET_KEY`
 
-Most collectors support blank credentials and will degrade gracefully, but you will get a much more useful system if you also configure the source-specific variables you intend to use.
+Only set the rest if you actually need them:
+
+- Keycloak and Grafana passwords when using `auth` or `monitoring`
+- source-specific API credentials for the collectors you want enabled
+
+Use [`.env.advanced.example`](/Users/JoelN/Coding/sentinel/.env.advanced.example) for the full override surface and advanced collector tuning.
 
 ### 2. Start the full stack
 
@@ -136,7 +144,12 @@ Run `make help` for the full list.
 
 ## Data Sources And Credentials
 
-The `.env.example` file is the source of truth for supported environment variables. The main external integrations currently wired into the stack are:
+The environment configuration is now split:
+
+- [`.env.example`](/Users/JoelN/Coding/sentinel/.env.example): minimal local startup configuration
+- [`.env.advanced.example`](/Users/JoelN/Coding/sentinel/.env.advanced.example): advanced overrides, tuning knobs, and optional integration settings
+
+The main external integrations currently wired into the stack are:
 
 - OpenSky Network: ADS-B auth
 - ADSBexchange: optional ADS-B enrichment
@@ -151,7 +164,7 @@ The `.env.example` file is the source of truth for supported environment variabl
 - EIA: optional US grid stress feed
 - ACLED: conflict event feed
 
-Not every source is required for a working local stack. Missing credentials generally reduce coverage rather than preventing startup.
+Not every source is required for a working local stack. Missing credentials generally reduce coverage rather than preventing startup, and many integrations will auto-disable or fall back when secrets are blank.
 
 ## Architecture
 
@@ -235,7 +248,8 @@ sentinel/
 ├── docker-compose.yml       Full stack definition
 ├── docker-compose.dev.yml   Development override for direct API + Vite workflow
 ├── Makefile                 Main entry point for common tasks
-└── .env.example             Environment variable reference
+├── .env.example             Minimal local environment template
+└── .env.advanced.example    Advanced override and integration template
 ```
 
 ## Useful Docs
