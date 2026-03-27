@@ -12,7 +12,8 @@ interface LiveDataStore {
   uiGlobalSummary: LiveSummaryResponse | null
 
   viewportAssets: Map<string, TrackEventProperties>
-  upsertViewportAssets: (events: TrackEventProperties[]) => void
+  refreshViewportAssets: (events: TrackEventProperties[]) => void
+  removeViewportAssetKeys: (keys: string[]) => void
   replaceDomainViewportAssets: (domain: SourceDomain, events: TrackEventProperties[]) => void
   replaceViewportAssetDomains: (domains: Partial<Record<SourceDomain, TrackEventProperties[]>>) => void
   clearViewportAssets: () => void
@@ -52,11 +53,25 @@ export const useLiveDataStore = create<LiveDataStore>()(
 
     viewportAssets: new Map(),
     uiViewportAssets: new Map(),
-    upsertViewportAssets: (events) => {
+    refreshViewportAssets: (events) => {
+      if (events.length === 0) return
       set((state) => {
         const next = new Map(state.viewportAssets)
         for (const event of events) {
-          next.set(`${event.source_domain}:${event.track_id}`, event)
+          const key = `${event.source_domain}:${event.track_id}`
+          if (!next.has(key)) continue
+          next.set(key, event)
+        }
+        return { viewportAssets: next }
+      })
+      scheduleUiSync(set, get)
+    },
+    removeViewportAssetKeys: (keys) => {
+      if (keys.length === 0) return
+      set((state) => {
+        const next = new Map(state.viewportAssets)
+        for (const key of keys) {
+          next.delete(key)
         }
         return { viewportAssets: next }
       })

@@ -121,6 +121,40 @@ const UNDERSEA_NETWORK_FOCUS_VIEW = {
   bearing: 0,
   pitch: 0,
 }
+const BACKGROUND_POINT_LOD = {
+  Air: {
+    fullDetailZoom: 4.2,
+    wideZoomCutoff: 2.8,
+    wideCellDegrees: 8,
+    midCellDegrees: 4,
+    widePerCell: 1,
+    midPerCell: 2,
+    softLimit: 450,
+  },
+  Maritime: {
+    fullDetailZoom: 4.0,
+    wideZoomCutoff: 2.6,
+    wideCellDegrees: 10,
+    midCellDegrees: 5,
+    widePerCell: 1,
+    midPerCell: 2,
+    softLimit: 400,
+  },
+  Space: {
+    fullDetailZoom: 3.6,
+    wideZoomCutoff: 2.4,
+    wideCellDegrees: 18,
+    midCellDegrees: 8,
+    widePerCell: 1,
+    midPerCell: 1,
+    softLimit: 250,
+  },
+} as const
+const BACKGROUND_TRAIL_MIN_ZOOM = {
+  Air: 4.1,
+  Maritime: 3.8,
+  Space: 3.4,
+} as const
 
 interface MapCanvasProps {
   liveAssets: TrackEventProperties[]
@@ -255,6 +289,64 @@ function deriveVisibleTrails(
       trail.positions.length >= 2 &&
       trail.positions.some((point) => isPointInBounds(point.lon, point.lat, cullBounds))
     ))
+}
+
+function trackFreshnessMs(asset: TrackEventProperties): number {
+  const raw = asset.last_seen ?? asset.timestamp
+  const parsed = raw ? Date.parse(raw) : Number.NaN
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function collapseBackgroundAssetsForLod(
+  assets: TrackEventProperties[],
+  domain: keyof typeof BACKGROUND_POINT_LOD,
+  zoom: number,
+): TrackEventProperties[] {
+  const config = BACKGROUND_POINT_LOD[domain]
+  if (zoom >= config.fullDetailZoom || assets.length <= config.softLimit) {
+    return assets
+  }
+
+  const cellDegrees = zoom < config.wideZoomCutoff ? config.wideCellDegrees : config.midCellDegrees
+  const maxPerCell = zoom < config.wideZoomCutoff ? config.widePerCell : config.midPerCell
+  const buckets = new Map<string, TrackEventProperties[]>()
+
+  for (const asset of assets) {
+    if (typeof asset.lon !== 'number' || typeof asset.lat !== 'number') continue
+    const cellLon = Math.floor((normalizeLongitude(asset.lon) + 180) / cellDegrees)
+    const cellLat = Math.floor((asset.lat + 90) / cellDegrees)
+    const bucketKey = `${cellLon}:${cellLat}`
+    const bucket = buckets.get(bucketKey) ?? []
+    const freshness = trackFreshnessMs(asset)
+
+    let inserted = false
+    for (let index = 0; index < bucket.length; index += 1) {
+      if (freshness > trackFreshnessMs(bucket[index])) {
+        bucket.splice(index, 0, asset)
+        inserted = true
+        break
+      }
+    }
+    if (!inserted) {
+      bucket.push(asset)
+    }
+    if (bucket.length > maxPerCell) {
+      bucket.length = maxPerCell
+    }
+    buckets.set(bucketKey, bucket)
+  }
+
+  return Array.from(buckets.values()).flat()
+}
+
+function trimBackgroundTrailsForLod(
+  trails: VisibleTrail[],
+  zoom: number,
+  minZoom: number,
+  priorityKeys: Set<string>,
+): VisibleTrail[] {
+  if (zoom >= minZoom) return trails
+  return trails.filter((trail) => priorityKeys.has(trail.key))
 }
 
 export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }: MapCanvasProps) {
@@ -601,6 +693,15 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
       !spacePriorityKeys.has(`Space:${asset.track_id}`) && !pinnedTrackKeys.has(`Space:${asset.track_id}`)
     ))
   ), [spaceViewportAssets, spacePriorityKeys, pinnedTrackKeys])
+  const renderBackgroundMaritimeAssets = useMemo(() => (
+    collapseBackgroundAssetsForLod(backgroundMaritimeAssets, 'Maritime', localViewport.zoom)
+  ), [backgroundMaritimeAssets, localViewport.zoom])
+  const renderBackgroundAirAssets = useMemo(() => (
+    collapseBackgroundAssetsForLod(backgroundAirAssets, 'Air', localViewport.zoom)
+  ), [backgroundAirAssets, localViewport.zoom])
+  const renderBackgroundSpaceAssets = useMemo(() => (
+    collapseBackgroundAssetsForLod(backgroundSpaceAssets, 'Space', localViewport.zoom)
+  ), [backgroundSpaceAssets, localViewport.zoom])
 
   const selectedMaritimeAsset = useMemo(() => (
     selectedDomain === 'Maritime'
@@ -648,6 +749,23 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
   const spaceTrails = useMemo(() => (
     deriveVisibleTrails(trailEntriesByDomain.Space, cullBounds, getTrailVisibilityMode)
   ), [trailEntriesByDomain, cullBounds, getTrailVisibilityMode])
+  const renderMaritimeTrails = useMemo(() => (
+    trimBackgroundTrailsForLod(maritimeTrails, localViewport.zoom, BACKGROUND_TRAIL_MIN_ZOOM.Maritime, pinnedTrackKeys)
+  ), [maritimeTrails, localViewport.zoom, pinnedTrackKeys])
+  const renderAirTrails = useMemo(() => (
+    trimBackgroundTrailsForLod(airTrails, localViewport.zoom, BACKGROUND_TRAIL_MIN_ZOOM.Air, pinnedTrackKeys)
+  ), [airTrails, localViewport.zoom, pinnedTrackKeys])
+  const renderSpaceTrails = useMemo(() => (
+    trimBackgroundTrailsForLod(spaceTrails, localViewport.zoom, BACKGROUND_TRAIL_MIN_ZOOM.Space, pinnedTrackKeys)
+  ), [spaceTrails, localViewport.zoom, pinnedTrackKeys])
+  const lodActive = (
+    renderBackgroundMaritimeAssets.length < backgroundMaritimeAssets.length ||
+    renderBackgroundAirAssets.length < backgroundAirAssets.length ||
+    renderBackgroundSpaceAssets.length < backgroundSpaceAssets.length ||
+    renderMaritimeTrails.length < maritimeTrails.length ||
+    renderAirTrails.length < airTrails.length ||
+    renderSpaceTrails.length < spaceTrails.length
+  )
 
   const disruptionFeatures = useMemo(() => (
     visibleDisruptions
@@ -901,7 +1019,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     if (layers.Maritime.visibility !== 'hidden') {
       nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
         id: 'ais-background-points',
-        data: backgroundMaritimeAssets,
+        data: renderBackgroundMaritimeAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
         getRadius: localViewport.zoom < 3 ? 2.4 : localViewport.zoom < 5 ? 3.2 : 4,
         radiusUnits: 'pixels',
@@ -992,7 +1110,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
       if (showTrails) {
         nextLayers.push(new PathLayer({
           id: 'maritime-trails',
-          data: maritimeTrails,
+          data: renderMaritimeTrails,
           getPath: (d: VisibleTrail) => d.positions.map((point) => [point.lon, point.lat] as [number, number]),
           getColor: (d: VisibleTrail) =>
             d.visibility === 'ghost' ? [100, 116, 139, 45] : [80, 80, 80, 100],
@@ -1007,13 +1125,13 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     return { layers: nextLayers, buildMs: performance.now() - buildStarted }
   }, [
     layers.Maritime.visibility,
-    backgroundMaritimeAssets,
+    renderBackgroundMaritimeAssets,
     focusMaritimeAssets,
     selectedMaritimeAsset,
     selectedDomain,
     selectedTrackHistory,
     showTrails,
-    maritimeTrails,
+    renderMaritimeTrails,
     localViewport.zoom,
     domainOpacity,
     getAlpha,
@@ -1029,7 +1147,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     if (layers.Air.visibility !== 'hidden') {
       nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
         id: 'adsb-background-points',
-        data: backgroundAirAssets,
+        data: renderBackgroundAirAssets,
         getPosition: (d) => [d.lon ?? 0, d.lat ?? 0],
         getRadius: localViewport.zoom < 3 ? 2.8 : localViewport.zoom < 5 ? 3.6 : 4.5,
         radiusUnits: 'pixels',
@@ -1130,7 +1248,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
       if (showTrails) {
         nextLayers.push(new PathLayer({
           id: 'air-trails',
-          data: airTrails,
+          data: renderAirTrails,
           getPath: (d: VisibleTrail) => d.positions.map((point) => [point.lon, point.lat] as [number, number]),
           getColor: (d: VisibleTrail) =>
             d.visibility === 'ghost' ? [148, 163, 184, 40] : [100, 181, 246, 120],
@@ -1145,13 +1263,13 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     return { layers: nextLayers, buildMs: performance.now() - buildStarted }
   }, [
     layers.Air.visibility,
-    backgroundAirAssets,
+    renderBackgroundAirAssets,
     focusAirAssets,
     selectedAirAsset,
     selectedDomain,
     selectedTrackHistory,
     showTrails,
-    airTrails,
+    renderAirTrails,
     localViewport.zoom,
     domainOpacity,
     getAlpha,
@@ -1165,10 +1283,10 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     const nextLayers: Layer<object>[] = []
 
     if (layers.Space.visibility !== 'hidden') {
-      if (backgroundSpaceAssets.length > 0) {
+      if (renderBackgroundSpaceAssets.length > 0) {
         nextLayers.push(new ScatterplotLayer<TrackEventProperties>({
           id: 'space-background-points',
-          data: backgroundSpaceAssets,
+          data: renderBackgroundSpaceAssets,
           getPosition: (d) => getRenderPosition(d.lon, d.lat, d.altitude_m, useSpaceAltitude),
           getRadius: 2.5,
           radiusUnits: 'pixels',
@@ -1228,7 +1346,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
       if (showTrails) {
         nextLayers.push(new PathLayer({
           id: 'space-trails',
-          data: spaceTrails,
+          data: renderSpaceTrails,
           getPath: (d: VisibleTrail) => d.positions.map((point) => getRenderPosition(point.lon, point.lat, point.altitude_m, useSpaceAltitude)),
           getColor: (d: VisibleTrail) =>
             d.visibility === 'ghost' ? [100, 116, 139, 35] : [148, 163, 184, 90],
@@ -1270,14 +1388,14 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     return { layers: nextLayers, buildMs: performance.now() - buildStarted }
   }, [
     layers.Space.visibility,
-    backgroundSpaceAssets,
+    renderBackgroundSpaceAssets,
     prioritySpaceAssets,
     selectedSpaceAsset,
     selectedDomain,
     selectedTrackHistory,
     selectedOrbitPoints,
     showTrails,
-    spaceTrails,
+    renderSpaceTrails,
     spaceTrackDuration,
     useSpaceAltitude,
     domainOpacity,
@@ -1397,11 +1515,11 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     visibleDisruptions: visibleDisruptions.length,
     layerCount: deckLayers.length,
     deckBuildMs: staticLayerBuild.buildMs + maritimeLayerBuild.buildMs + airLayerBuild.buildMs + spaceLayerBuild.buildMs + disruptionLayerBuild.buildMs,
-    airCount: airViewportAssets.length,
-    maritimeCount: maritimeViewportAssets.length,
+    airCount: renderBackgroundAirAssets.length + focusAirAssets.length,
+    maritimeCount: renderBackgroundMaritimeAssets.length + focusMaritimeAssets.length,
     spacePriorityCount: spacePriorityKeys.size,
     spaceAggregateCount: 0,
-    spaceBackgroundCount: backgroundSpaceAssets.length,
+    spaceBackgroundCount: renderBackgroundSpaceAssets.length,
   }), [
     viewportAssets.length,
     visibleDisruptions.length,
@@ -1411,10 +1529,12 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
     airLayerBuild.buildMs,
     spaceLayerBuild.buildMs,
     disruptionLayerBuild.buildMs,
-    airViewportAssets.length,
-    maritimeViewportAssets.length,
+    renderBackgroundAirAssets.length,
+    focusAirAssets.length,
+    renderBackgroundMaritimeAssets.length,
+    focusMaritimeAssets.length,
     spacePriorityKeys.size,
-    backgroundSpaceAssets.length,
+    renderBackgroundSpaceAssets.length,
   ])
 
   useEffect(() => {
@@ -1460,6 +1580,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
 
   const zoomContext = useMemo(() => {
     if (localViewport.zoom < 2.5) return 'Global view'
+    if (lodActive && localViewport.zoom < 4) return 'Regional view · background tracks simplified'
     if (localViewport.zoom < LANDING_POINT_INTERACTIVE_ZOOM) {
       return showUnderseaCables ? `Regional view · zoom to ${LANDING_POINT_INTERACTIVE_ZOOM}+ for landing points` : 'Regional view'
     }
@@ -1467,7 +1588,7 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
       return showUnderseaCables ? 'Infrastructure selection enabled' : 'Operational view'
     }
     return 'Local detail view'
-  }, [showUnderseaCables, localViewport.zoom])
+  }, [showUnderseaCables, lodActive, localViewport.zoom])
 
   const compassVisible = globeView || Math.abs(localViewport.bearing) > 0.5 || Math.abs(localViewport.pitch) > 0.5
 

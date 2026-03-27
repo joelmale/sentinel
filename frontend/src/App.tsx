@@ -53,6 +53,18 @@ function serializeBbox(bounds: { west: number; south: number; east: number; nort
   return [bounds.west, bounds.south, bounds.east, bounds.north].join(',')
 }
 
+function isTrackEventInBounds(
+  asset: Pick<TrackEventProperties, 'lon' | 'lat'>,
+  bounds: { west: number; south: number; east: number; north: number } | null,
+): boolean {
+  if (!bounds || typeof asset.lon !== 'number' || typeof asset.lat !== 'number') return false
+  const { lon, lat } = asset
+  const withinLongitude = bounds.west <= bounds.east
+    ? lon >= bounds.west && lon <= bounds.east
+    : lon >= bounds.west || lon <= bounds.east
+  return withinLongitude && lat >= bounds.south && lat <= bounds.north
+}
+
 function normalizeTrackFeatures(payload: TrackFeatureCollection): TrackEventProperties[] {
   return payload.features.map((feature) => ({
     ...feature.properties,
@@ -123,7 +135,8 @@ function SentinelApp() {
     uiGlobalSummary,
     setGlobalSummary,
     viewportAssets,
-    upsertViewportAssets,
+    refreshViewportAssets,
+    removeViewportAssetKeys,
     replaceViewportAssetDomains,
     selectedAssetDetail,
     setSelectedAssetDetail,
@@ -133,7 +146,8 @@ function SentinelApp() {
     uiGlobalSummary: state.uiGlobalSummary,
     setGlobalSummary: state.setGlobalSummary,
     viewportAssets: state.viewportAssets,
-    upsertViewportAssets: state.upsertViewportAssets,
+    refreshViewportAssets: state.refreshViewportAssets,
+    removeViewportAssetKeys: state.removeViewportAssetKeys,
     replaceViewportAssetDomains: state.replaceViewportAssetDomains,
     selectedAssetDetail: state.selectedAssetDetail,
     setSelectedAssetDetail: state.setSelectedAssetDetail,
@@ -661,7 +675,16 @@ function SentinelApp() {
     wsBatchRef.current = []
     const latest = Array.from(latestByKey.values())
     upsertAssets(latest)
-    upsertViewportAssets(latest)
+    const viewportRemovalKeys: string[] = []
+    const viewportRefreshBatch = latest.filter((event) => {
+      const key = `${event.source_domain}:${event.track_id}`
+      if (!viewportAssets.has(key)) return false
+      if (isTrackEventInBounds(event, viewportBounds)) return true
+      viewportRemovalKeys.push(key)
+      return false
+    })
+    refreshViewportAssets(viewportRefreshBatch)
+    removeViewportAssetKeys(viewportRemovalKeys)
     const now = Date.now()
     if (now - lastTrailFlushRef.current >= 500) {
       appendTrailPoints(latest)
@@ -678,7 +701,18 @@ function SentinelApp() {
         } as TrackEventProperties)
       }
     }
-  }, [appendTrailPoints, upsertAssets, upsertViewportAssets, selectedTrackId, selectedDomain, selectedAssetDetail, setSelectedAssetDetail])
+  }, [
+    appendTrailPoints,
+    upsertAssets,
+    viewportAssets,
+    viewportBounds,
+    refreshViewportAssets,
+    removeViewportAssetKeys,
+    selectedTrackId,
+    selectedDomain,
+    selectedAssetDetail,
+    setSelectedAssetDetail,
+  ])
 
   const scheduleWsFlush = useCallback(() => {
     if (wsFrameRef.current !== null) return

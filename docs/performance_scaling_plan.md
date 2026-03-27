@@ -1,8 +1,8 @@
 # Sentinel Performance Scaling Plan
 
 **Goal**: Scale Sentinel to 10,000+ live assets while keeping the map responsive and interaction latency predictable.
-**Status**: Phase 1 complete; Phase 2 mostly complete; Phase 3 and 4 pending
-**Last validated against code**: 2026-03-26
+**Status**: Phase 1 complete; Phase 2 complete in code; Phase 3 in progress; Phase 4 browser-path work partially complete; backend-scale work pending
+**Last validated against code**: 2026-03-27
 
 This plan is based on the current frontend implementation, not on a hypothetical full-global render model. The map path is already partially bounded by viewport-scoped API queries, so the highest-value work is reducing unnecessary React/Zustand invalidation, cutting layer rebuild scope, and simplifying duplicate store update paths.
 
@@ -87,14 +87,21 @@ Completed in code:
 - split trail updates from point upserts and throttled trail writes
 - removed one extra `uiViewportAssets` clone and batched multi-domain viewport replacement into a single store write
 - reduced repeated trail-buffer prefix scans by grouping trail entries once per render
+- restored clear ownership of `viewportAssets`: scoped query results determine membership, while websocket updates now refresh only existing viewport members and immediately drop streamed tracks that move out of bounds
+- added an initial zoom-based LOD pass that thins low-zoom background points and suppresses low-zoom background trails while preserving selected, pinned, alert-relevant, and watched tracks
 
 Still intentionally deferred:
 
 - benchmark-driven replacement of full-`Map` cloning in the stores
-- final ownership cleanup for `liveAssets` versus throttled `uiViewportAssets`
-- browser/table query scaling
-- worker, LOD, websocket delta payloads, and multi-replica broadcast
+- websocket delta payloads and multi-replica broadcast
+- worker-based preprocessing, deeper aggregation layers, and multi-replica broadcast
 - automated render-scope and throughput tests, since the frontend still has no dedicated test runner configured
+
+Additional completed work after the original Phase 1/2 pass:
+
+- default live-map scoped queries now apply a 60-minute `last_seen` cutoff via `max_age_minutes=60`, which reduces stale-track clutter on the map without changing broader summary freshness windows
+- the track browser now uses a dedicated server-driven query path instead of fetching full live domain datasets into the client
+- the browser sidebar summaries are now computed server-side across the full filtered result set rather than the current page sample
 
 ---
 
@@ -202,7 +209,7 @@ test(frontend): add selector and layer memo coverage
 
 **Goal**: Reduce asset update fan-out and duplicate allocation across stores.
 **Effort**: 3–5 days.
-**Status**: Mostly complete in code. Remaining work is benchmark-driven and should be done only if profiling still shows store update cost as a dominant bottleneck.
+**Status**: Complete for the current architecture. Remaining work is optional and benchmark-driven if profiling still shows store update cost as a dominant bottleneck.
 
 ### 2.1 Audit and reduce duplicate map copies
 
@@ -233,6 +240,8 @@ Implemented so far:
 
 - `uiViewportAssets` now reuses the latest `viewportAssets` map reference on sync instead of cloning
 - `App.tsx` replaces Air/Maritime/Space viewport results in one `replaceViewportAssetDomains` store write instead of three sequential writes
+- websocket refreshes now only mutate tracks that are already members of the current viewport-scoped result set
+- websocket updates that move a currently visible track outside the current bounds now remove it from `viewportAssets` immediately instead of waiting for the next poll
 
 ### 2.2 Replace full-map cloning with a safer mutation strategy
 
@@ -284,6 +293,10 @@ Implemented so far:
 
 The current plan should not move every filter into the store immediately. Some filters are view-specific and should stay close to the map. First reduce redundant derivation and subscription churn; only then decide what belongs in store state.
 
+Additional completed refinement:
+
+- map-scoped live queries now use a stricter `max_age_minutes=60` filter, which effectively makes the default operational map view “recent activity only” rather than inheriting the broader per-domain freshness windows used elsewhere
+
 ### Phase 2 commits
 
 ```text
@@ -299,18 +312,23 @@ test(frontend): add store throughput and trail path coverage
 
 **Goal**: Make the map path resilient once Phase 1 and 2 have removed avoidable CPU waste.
 **Effort**: 4–7 days.
+**Status**: In progress. The first low-risk LOD pass is implemented; worker offload and richer aggregation are still pending.
 
 ### 3.1 Add zoom-based level of detail
 
 **File**: `frontend/src/components/MapCanvas.tsx`
 
-**Plan**:
+**Outcome so far**:
 
-- At low zoom, render aggregated representations for dense domains
-- At higher zoom, render individual tracks
-- Start with the most crowded domains first
+- At low zoom, background Air, Maritime, and Space tracks are thinned using deterministic geographic cell bucketing
+- At low zoom, background trails are suppressed unless the track is pinned, selected, alert-relevant, or otherwise priority-scoped
+- At higher zoom, individual tracks and full trail sets still render normally
 
-Candidate layers:
+**Next step**:
+
+- If profiling still shows low-zoom density pressure after the current pass, replace the thinning approach with explicit aggregation layers for the densest domains first
+
+Candidate future layers:
 
 - `HexagonLayer`
 - `ScreenGridLayer`
@@ -370,6 +388,7 @@ test(frontend): add LOD and worker processing coverage
 
 **Goal**: Fix the non-map path and reduce network overhead once render invalidation is under control.
 **Effort**: 4–6 days.
+**Status**: Browser query work is partially complete. Backend websocket/network scale work is still pending.
 
 ### 4.1 Fix table-view scaling at the data source
 
@@ -383,11 +402,22 @@ test(frontend): add LOD and worker processing coverage
 
 The browser view fetches full live domain datasets and then filters and sorts entirely on the client.
 
-**Plan**:
+**Outcome so far**:
 
 - Add server-side filtering and pagination for track browser queries
 - Return only the fields needed for the table path where possible
 - Keep the current 100-row page size unless UX requires virtualization later
+
+Implemented:
+
+- `api/routers/tracks.py` now exposes a dedicated `/api/tracks/browser` endpoint
+- `TrackBrowserView.tsx` now queries that endpoint directly instead of loading the full live track set into the client
+- browser facets and right-hand summaries now come from the backend, computed over the full filtered result set
+
+Remaining:
+
+- refine group-summary semantics if the current backend approximations are not strong enough for air/maritime analysis
+- add tests and benchmark tracking for browser query latency and payload size
 
 ### 4.2 Add list virtualization only if page size grows
 
@@ -414,6 +444,7 @@ If deployment moves beyond a single in-process broadcaster, add Redis pub/sub or
 ```text
 feat(api): add paginated and filterable track browser endpoint
 perf(frontend): use server-driven browser query path
+perf(api): add full-result browser summaries for sidebar correlation
 perf(api): emit websocket delta payloads for incremental updates
 feat(api): add multi-replica websocket broadcast path
 test(api): add browser query and websocket delta coverage
@@ -479,6 +510,7 @@ Rejected as a default assumption. Benchmark first.
 **Browser path tests**
 
 - server-driven browser filtering returns stable paginated results
+- browser summaries are computed over the full filtered result set, not the current page
 - client no longer sorts and filters a full live dataset unnecessarily
 
 ### Benchmark focus
@@ -512,6 +544,7 @@ Success criteria:
 - unrelated store writes do not trigger heavy map recomputation
 - low-zoom dense views remain usable after LOD work
 - table view no longer depends on full-dataset client-side filtering
+- default live-map view no longer surfaces stale assets older than the operational freshness cutoff
 
 ---
 
