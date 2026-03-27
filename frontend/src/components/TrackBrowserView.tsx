@@ -47,7 +47,8 @@ export function TrackBrowserView({
   loading: boolean
   initialDomain?: SourceDomain | 'All'
 }) {
-  const { selectAsset, flyTo } = useMapStore()
+  const selectAsset = useMapStore((state) => state.selectAsset)
+  const flyTo = useMapStore((state) => state.flyTo)
   const [search, setSearch] = useState('')
   const [selectedDomain, setSelectedDomain] = useState<SourceDomain | 'All'>(initialDomain)
   const [selectedClassification, setSelectedClassification] = useState<string>('All')

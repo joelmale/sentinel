@@ -31,6 +31,7 @@ import type {
   SatelliteTleResponse,
   SourceDomain,
 } from '@/types/track'
+import { useShallow } from 'zustand/react/shallow'
 
 // ── Domain colour/icon config ─────────────────────────────────────
 const DOMAIN_META: Record<SourceDomain, { icon: string; color: string; border: string; accent: string }> = {
@@ -507,8 +508,22 @@ export function AssetCard() {
     assetCardOpen, setAssetCardOpen, selectedTrackId, selectedDomain,
     clearSelection, flyTo, setTimeWindow, setCurrentTime,
     setPlaybackMode, playback,
-  } = useMapStore()
-  const { viewportAssets, selectedAssetDetail } = useLiveDataStore()
+  } = useMapStore(useShallow((state) => ({
+    assetCardOpen: state.assetCardOpen,
+    setAssetCardOpen: state.setAssetCardOpen,
+    selectedTrackId: state.selectedTrackId,
+    selectedDomain: state.selectedDomain,
+    clearSelection: state.clearSelection,
+    flyTo: state.flyTo,
+    setTimeWindow: state.setTimeWindow,
+    setCurrentTime: state.setCurrentTime,
+    setPlaybackMode: state.setPlaybackMode,
+    playback: state.playback,
+  })))
+  const { viewportAssets, selectedAssetDetail } = useLiveDataStore(useShallow((state) => ({
+    viewportAssets: state.viewportAssets,
+    selectedAssetDetail: state.selectedAssetDetail,
+  })))
 
   const { size: cardWidth, handleRef: resizeHandleRef, isDragging: isResizing } = useResize({
     direction: 'left', defaultSize: 380, minSize: 320, maxSize: 580,

@@ -44,7 +44,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export function UnderseaLandingPointCard() {
-  const { selectedLandingPoint, clearLandingPointSelection, flyTo } = useMapStore()
+  const selectedLandingPoint = useMapStore((state) => state.selectedLandingPoint)
+  const clearLandingPointSelection = useMapStore((state) => state.clearLandingPointSelection)
+  const flyTo = useMapStore((state) => state.flyTo)
 
   if (!selectedLandingPoint) return null
 

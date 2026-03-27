@@ -1,7 +1,7 @@
 # Sentinel Performance Scaling Plan
 
 **Goal**: Scale Sentinel to 10,000+ live assets while keeping the map responsive and interaction latency predictable.
-**Status**: Planning
+**Status**: Phase 1 complete; Phase 2 mostly complete; Phase 3 and 4 pending
 **Last validated against code**: 2026-03-26
 
 This plan is based on the current frontend implementation, not on a hypothetical full-global render model. The map path is already partially bounded by viewport-scoped API queries, so the highest-value work is reducing unnecessary React/Zustand invalidation, cutting layer rebuild scope, and simplifying duplicate store update paths.
@@ -76,10 +76,33 @@ This is the updated implementation order.
 
 ---
 
+## Current Implementation Status
+
+Completed in code:
+
+- selector-based Zustand subscriptions for the heaviest map and workspace surfaces
+- split `MapCanvas` layer building into static, domain, and disruption memos
+- pre-derived per-domain viewport asset arrays for layer factories
+- memoized `viewState` and narrowed several remaining non-critical store consumers
+- split trail updates from point upserts and throttled trail writes
+- removed one extra `uiViewportAssets` clone and batched multi-domain viewport replacement into a single store write
+- reduced repeated trail-buffer prefix scans by grouping trail entries once per render
+
+Still intentionally deferred:
+
+- benchmark-driven replacement of full-`Map` cloning in the stores
+- final ownership cleanup for `liveAssets` versus throttled `uiViewportAssets`
+- browser/table query scaling
+- worker, LOD, websocket delta payloads, and multi-replica broadcast
+- automated render-scope and throughput tests, since the frontend still has no dedicated test runner configured
+
+---
+
 ## Phase 1 — Reduce Invalidations
 
 **Goal**: Stop unrelated state changes from forcing expensive map and panel re-renders.
 **Effort**: 2–4 days.
+**Status**: Complete in code. Targeted validation is in place via type-check and lint; render-scope tests are still pending.
 
 ### 1.1 Convert heavy Zustand consumers to narrow selectors
 
@@ -94,7 +117,7 @@ This is the updated implementation order.
 
 These components currently destructure from `useMapStore()` without a selector, which subscribes them to the entire store. Any store write can invalidate them.
 
-**Plan**:
+**Outcome**:
 
 - Replace whole-store reads with field-level selectors.
 - Use `zustand/shallow` where grouped selection is appropriate.
@@ -119,9 +142,10 @@ const {
 )
 ```
 
-**Why first**:
+Additional follow-through completed:
 
-This is the fastest way to reduce unnecessary work before changing deeper architecture.
+- `App.tsx` now uses selector-based subscriptions for both `useMapStore` and `useLiveDataStore`
+- smaller interactive surfaces such as `AssetCard`, `TimelinePanel`, `TrackBrowserView`, `UnderseaLandingPointCard`, and `AlertNotification` no longer subscribe to full stores
 
 ### 1.2 Split `deckLayerBuild` into smaller memos
 
@@ -131,7 +155,7 @@ This is the fastest way to reduce unnecessary work before changing deeper archit
 
 One memo builds static layers, disruption layers, and all domain layers together.
 
-**Plan**:
+**Outcome**:
 
 - Extract `staticLayers`
 - Extract `maritimeLayers`
@@ -149,7 +173,7 @@ Keep memo dependencies tight. Static overlays should not rebuild on every asset 
 
 The current layer build repeatedly filters `viewportAssets` by domain and focus state inside the large memo.
 
-**Plan**:
+**Outcome**:
 
 - Derive `airViewportAssets`, `maritimeViewportAssets`, `spaceViewportAssets` in dedicated memos
 - Derive `focus` and `background` subsets from those domain arrays once
@@ -161,7 +185,7 @@ This is lower risk than immediately changing store shape.
 
 **File**: `frontend/src/components/MapCanvas.tsx`
 
-`viewState` can be memoized for reference stability, but this is not one of the top leverage changes. Do it only as part of the surrounding memo cleanup.
+`viewState` is now memoized as part of the broader `MapCanvas` memo cleanup.
 
 ### Phase 1 commits
 
@@ -178,6 +202,7 @@ test(frontend): add selector and layer memo coverage
 
 **Goal**: Reduce asset update fan-out and duplicate allocation across stores.
 **Effort**: 3–5 days.
+**Status**: Mostly complete in code. Remaining work is benchmark-driven and should be done only if profiling still shows store update cost as a dominant bottleneck.
 
 ### 2.1 Audit and reduce duplicate map copies
 
@@ -196,13 +221,18 @@ test(frontend): add selector and layer memo coverage
 
 The current path clones and mirrors asset state multiple times.
 
-**Plan**:
+**Outcome**:
 
 - Define clear ownership:
   - `viewportAssets` should remain the render source for the map
   - `liveAssets` should exist only if panels actually need non-viewport coverage
 - Re-evaluate whether `uiViewportAssets` needs to be a full cloned `Map`, or whether the throttled UI path can instead use a versioned snapshot or derived array
 - Avoid duplicating the same asset set in multiple stores when one source of truth is sufficient
+
+Implemented so far:
+
+- `uiViewportAssets` now reuses the latest `viewportAssets` map reference on sync instead of cloning
+- `App.tsx` replaces Air/Maritime/Space viewport results in one `replaceViewportAssetDomains` store write instead of three sequential writes
 
 ### 2.2 Replace full-map cloning with a safer mutation strategy
 
@@ -215,7 +245,7 @@ The current path clones and mirrors asset state multiple times.
 
 Each upsert clones the whole `Map`, even for small batches.
 
-**Plan**:
+**Remaining work**:
 
 - Benchmark before choosing a replacement
 - Prefer one of:
@@ -238,13 +268,17 @@ Do not assume `Record<string, ...>` is automatically better. The shape change sh
 
 `upsertAssets` updates both live assets and trail buffers in the same hot path.
 
-**Plan**:
+**Outcome**:
 
 - Split trail writes into an explicit trail update path
 - Allow trails to run at a lower cadence than point positions if needed
 - Pre-separate trails by domain if that materially reduces render work
 
-Do this after Phase 1 so the effect is measurable.
+Implemented so far:
+
+- trail writes now use a dedicated `appendTrailPoints` path
+- live point upserts still happen per frame batch, while trail writes are throttled
+- `MapCanvas` now groups trail entries by domain once before deriving visible trails
 
 ### 2.4 Keep map-specific filtering where it belongs
 

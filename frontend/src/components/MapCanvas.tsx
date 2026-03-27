@@ -244,13 +244,11 @@ function getRenderPosition(
 }
 
 function deriveVisibleTrails(
-  trailBuffer: Map<string, TrailPoint[]>,
-  prefix: string,
+  trailEntries: Array<[string, TrailPoint[]]>,
   cullBounds: ViewBounds | null,
   getTrailVisibilityMode: (trackKey: string) => 'visible' | 'ghost' | 'hidden',
 ): VisibleTrail[] {
-  return Array.from(trailBuffer.entries())
-    .filter(([key]) => key.startsWith(prefix))
+  return trailEntries
     .map(([key, positions]) => ({ key, positions, visibility: getTrailVisibilityMode(key) }))
     .filter((trail) => (
       trail.visibility !== 'hidden' &&
@@ -620,15 +618,36 @@ export function MapCanvas({ liveAssets, disruptions, onMapClick, active = true }
       : undefined
   ), [spaceViewportAssets, selectedDomain, selectedTrackId])
 
+  const trailEntriesByDomain = useMemo(() => {
+    const grouped = {
+      Air: [] as Array<[string, TrailPoint[]]>,
+      Maritime: [] as Array<[string, TrailPoint[]]>,
+      Space: [] as Array<[string, TrailPoint[]]>,
+    }
+
+    for (const entry of trailBuffer.entries()) {
+      const [key] = entry
+      if (key.startsWith('Air:')) {
+        grouped.Air.push(entry)
+      } else if (key.startsWith('Maritime:')) {
+        grouped.Maritime.push(entry)
+      } else if (key.startsWith('Space:')) {
+        grouped.Space.push(entry)
+      }
+    }
+
+    return grouped
+  }, [trailBuffer])
+
   const maritimeTrails = useMemo(() => (
-    deriveVisibleTrails(trailBuffer, 'Maritime:', cullBounds, getTrailVisibilityMode)
-  ), [trailBuffer, cullBounds, getTrailVisibilityMode])
+    deriveVisibleTrails(trailEntriesByDomain.Maritime, cullBounds, getTrailVisibilityMode)
+  ), [trailEntriesByDomain, cullBounds, getTrailVisibilityMode])
   const airTrails = useMemo(() => (
-    deriveVisibleTrails(trailBuffer, 'Air:', cullBounds, getTrailVisibilityMode)
-  ), [trailBuffer, cullBounds, getTrailVisibilityMode])
+    deriveVisibleTrails(trailEntriesByDomain.Air, cullBounds, getTrailVisibilityMode)
+  ), [trailEntriesByDomain, cullBounds, getTrailVisibilityMode])
   const spaceTrails = useMemo(() => (
-    deriveVisibleTrails(trailBuffer, 'Space:', cullBounds, getTrailVisibilityMode)
-  ), [trailBuffer, cullBounds, getTrailVisibilityMode])
+    deriveVisibleTrails(trailEntriesByDomain.Space, cullBounds, getTrailVisibilityMode)
+  ), [trailEntriesByDomain, cullBounds, getTrailVisibilityMode])
 
   const disruptionFeatures = useMemo(() => (
     visibleDisruptions

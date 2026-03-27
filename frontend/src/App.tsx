@@ -46,6 +46,7 @@ import type {
   TrackFeatureCollection,
   WsMessage,
 } from '@/types/track'
+import { useShallow } from 'zustand/react/shallow'
 
 function serializeBbox(bounds: { west: number; south: number; east: number; north: number } | null): string | null {
   if (!bounds) return null
@@ -94,18 +95,50 @@ function SentinelApp() {
     setLayerEnabled,
     flyTo,
     openInvestigation,
-  } = useMapStore()
+  } = useMapStore(useShallow((state) => ({
+    playback: state.playback,
+    upsertAssets: state.upsertAssets,
+    appendTrailPoints: state.appendTrailPoints,
+    addAlert: state.addAlert,
+    selectedTrackId: state.selectedTrackId,
+    selectedDomain: state.selectedDomain,
+    viewport: state.viewport,
+    viewportBounds: state.viewportBounds,
+    setSelectedTrackHistory: state.setSelectedTrackHistory,
+    clearSelectedTrackHistory: state.clearSelectedTrackHistory,
+    spaceTrackDuration: state.spaceTrackDuration,
+    setWatchedSpaceTrackIds: state.setWatchedSpaceTrackIds,
+    setSelectedOrbitPoints: state.setSelectedOrbitPoints,
+    clearSelectedOrbitPoints: state.clearSelectedOrbitPoints,
+    layers: state.layers,
+    domainScopes: state.domainScopes,
+    pendingAlerts: state.pendingAlerts,
+    watchedSpaceTrackIds: state.watchedSpaceTrackIds,
+    setLayerEnabled: state.setLayerEnabled,
+    flyTo: state.flyTo,
+    openInvestigation: state.openInvestigation,
+  })))
   const {
     globalSummary,
     uiGlobalSummary,
     setGlobalSummary,
     viewportAssets,
     upsertViewportAssets,
-    replaceDomainViewportAssets,
+    replaceViewportAssetDomains,
     selectedAssetDetail,
     setSelectedAssetDetail,
     clearSelectedAssetDetail,
-  } = useLiveDataStore()
+  } = useLiveDataStore(useShallow((state) => ({
+    globalSummary: state.globalSummary,
+    uiGlobalSummary: state.uiGlobalSummary,
+    setGlobalSummary: state.setGlobalSummary,
+    viewportAssets: state.viewportAssets,
+    upsertViewportAssets: state.upsertViewportAssets,
+    replaceViewportAssetDomains: state.replaceViewportAssetDomains,
+    selectedAssetDetail: state.selectedAssetDetail,
+    setSelectedAssetDetail: state.setSelectedAssetDetail,
+    clearSelectedAssetDetail: state.clearSelectedAssetDetail,
+  })))
   const [annotationPos, setAnnotationPos] = useState<{ lon: number; lat: number } | null>(null)
   const [now, setNow] = useState(new Date())
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('overview')
@@ -131,7 +164,16 @@ function SentinelApp() {
     toggleShowFilteredTrackGhosts,
     globeView,
     toggleGlobeView,
-  } = useMapStore()
+  } = useMapStore(useShallow((state) => ({
+    mapMode: state.mapMode,
+    setMapMode: state.setMapMode,
+    showTrails: state.showTrails,
+    toggleShowTrails: state.toggleShowTrails,
+    showFilteredTrackGhosts: state.showFilteredTrackGhosts,
+    toggleShowFilteredTrackGhosts: state.toggleShowFilteredTrackGhosts,
+    globeView: state.globeView,
+    toggleGlobeView: state.toggleGlobeView,
+  })))
   const perfPanelOpen = usePerfStore((state) => state.panelOpen)
   const setPerfPanelOpen = usePerfStore((state) => state.setPanelOpen)
   const wsConnected = usePerfStore((state) => state.ws.connected)
@@ -333,15 +375,11 @@ function SentinelApp() {
   })
 
   useEffect(() => {
-    if (!airScopeApplied || layers.Air.visibility === 'hidden') {
-      replaceDomainViewportAssets('Air', [])
-    }
-    if (!maritimeScopeApplied || layers.Maritime.visibility === 'hidden') {
-      replaceDomainViewportAssets('Maritime', [])
-    }
-    if (!spaceScopeApplied || layers.Space.visibility === 'hidden') {
-      replaceDomainViewportAssets('Space', [])
-    }
+    const clearedDomains: Partial<Record<SourceDomain, TrackEventProperties[]>> = {}
+    if (!airScopeApplied || layers.Air.visibility === 'hidden') clearedDomains.Air = []
+    if (!maritimeScopeApplied || layers.Maritime.visibility === 'hidden') clearedDomains.Maritime = []
+    if (!spaceScopeApplied || layers.Space.visibility === 'hidden') clearedDomains.Space = []
+    replaceViewportAssetDomains(clearedDomains)
   }, [
     airScopeApplied,
     maritimeScopeApplied,
@@ -349,7 +387,7 @@ function SentinelApp() {
     layers.Air.visibility,
     layers.Maritime.visibility,
     layers.Space.visibility,
-    replaceDomainViewportAssets,
+    replaceViewportAssetDomains,
   ])
 
   const overviewCoreQuery = useQuery({
@@ -375,18 +413,24 @@ function SentinelApp() {
   })
 
   useEffect(() => {
+    const airViewportAssets = liveViewportQuery.data?.air ?? []
+    const maritimeViewportAssets = liveViewportQuery.data?.maritime ?? []
+    const spaceViewportAssets = liveViewportQuery.data?.space ?? []
+    const nextViewportDomains: Partial<Record<SourceDomain, TrackEventProperties[]>> = {
+      Air: airViewportAssets,
+      Maritime: maritimeViewportAssets,
+      Space: spaceViewportAssets,
+    }
     const allViewportAssets = [
-      ...(liveViewportQuery.data?.air ?? []),
-      ...(liveViewportQuery.data?.maritime ?? []),
-      ...(liveViewportQuery.data?.space ?? []),
+      ...airViewportAssets,
+      ...maritimeViewportAssets,
+      ...spaceViewportAssets,
     ]
-    replaceDomainViewportAssets('Air', liveViewportQuery.data?.air ?? [])
-    replaceDomainViewportAssets('Maritime', liveViewportQuery.data?.maritime ?? [])
-    replaceDomainViewportAssets('Space', liveViewportQuery.data?.space ?? [])
+    replaceViewportAssetDomains(nextViewportDomains)
     if (allViewportAssets.length > 0) {
       upsertAssets(allViewportAssets)
     }
-  }, [liveViewportQuery.data, replaceDomainViewportAssets, upsertAssets])
+  }, [liveViewportQuery.data, replaceViewportAssetDomains, upsertAssets])
 
   const browserAssetsQuery = useQuery({
     queryKey: ['browser-assets-live'],
@@ -664,13 +708,17 @@ function SentinelApp() {
       scheduleWsFlush()
     } else if (msg.type === 'alert') {
       if (!msg.track_id) return
+      const alertMeta = msg as typeof msg & {
+        alert_id?: string
+        triggered_at?: string
+      }
       addAlert({
-        alertId: msg.alert_id ?? msg.rule_id + ':' + msg.track_id,
+        alertId: alertMeta.alert_id ?? msg.rule_id + ':' + msg.track_id,
         ruleId: msg.rule_id,
         ruleName: msg.rule_name,
         trackId: msg.track_id,
         domain: msg.domain,
-        triggeredAt: msg.triggered_at ?? new Date().toISOString(),
+        triggeredAt: alertMeta.triggered_at ?? new Date().toISOString(),
       })
     }
   }, [addAlert, scheduleWsFlush])
@@ -681,7 +729,7 @@ function SentinelApp() {
     onMessage: handleWsMessage,
   })
 
-  const assetsArray = Array.from(viewportAssets.values())
+  const assetsArray = useMemo(() => Array.from(viewportAssets.values()), [viewportAssets])
 
   // Domain counts for the header
   const counts = uiGlobalSummary?.domains ?? globalSummary?.domains ?? {

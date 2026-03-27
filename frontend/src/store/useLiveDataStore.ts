@@ -14,6 +14,7 @@ interface LiveDataStore {
   viewportAssets: Map<string, TrackEventProperties>
   upsertViewportAssets: (events: TrackEventProperties[]) => void
   replaceDomainViewportAssets: (domain: SourceDomain, events: TrackEventProperties[]) => void
+  replaceViewportAssetDomains: (domains: Partial<Record<SourceDomain, TrackEventProperties[]>>) => void
   clearViewportAssets: () => void
   uiViewportAssets: Map<string, TrackEventProperties>
 
@@ -72,6 +73,33 @@ export const useLiveDataStore = create<LiveDataStore>()(
         for (const event of events) {
           next.set(`${event.source_domain}:${event.track_id}`, event)
         }
+        return { viewportAssets: next }
+      })
+      scheduleUiSync(set, get)
+    },
+    replaceViewportAssetDomains: (domains) => {
+      const domainEntries = Object.entries(domains).filter(([, events]) => Array.isArray(events)) as Array<[SourceDomain, TrackEventProperties[]]>
+      if (domainEntries.length === 0) return
+
+      set((state) => {
+        const next = new Map(state.viewportAssets)
+        const domainSet = new Set(domainEntries.map(([domain]) => domain))
+
+        for (const key of next.keys()) {
+          const separatorIndex = key.indexOf(':')
+          if (separatorIndex === -1) continue
+          const domain = key.slice(0, separatorIndex) as SourceDomain
+          if (domainSet.has(domain)) {
+            next.delete(key)
+          }
+        }
+
+        for (const [, events] of domainEntries) {
+          for (const event of events) {
+            next.set(`${event.source_domain}:${event.track_id}`, event)
+          }
+        }
+
         return { viewportAssets: next }
       })
       scheduleUiSync(set, get)

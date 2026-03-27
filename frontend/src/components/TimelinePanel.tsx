@@ -22,6 +22,7 @@ import { useLiveDataStore } from '@/store/useLiveDataStore'
 import { useMapStore } from '@/store/useMapStore'
 import type { PlaybackState } from '@/store/useMapStore'
 import type { SourceDomain } from '@/types/track'
+import { useShallow } from 'zustand/react/shallow'
 
 // ── Constants ─────────────────────────────────────────────────────
 const SPEEDS: PlaybackState['speedMultiplier'][] = [1, 5, 30, 60]
@@ -277,8 +278,20 @@ export function TimelinePanel() {
     layers,
     focusAlert,
     setPlaybackMode, setCurrentTime, setTimeWindow, setSpeedMultiplier, tickPlayback,
-  } = useMapStore()
-  const { uiViewportAssets } = useLiveDataStore()
+  } = useMapStore(useShallow((state) => ({
+    playback: state.playback,
+    pendingAlerts: state.pendingAlerts,
+    investigationContext: state.investigationContext,
+    investigationWindowPreset: state.investigationWindowPreset,
+    layers: state.layers,
+    focusAlert: state.focusAlert,
+    setPlaybackMode: state.setPlaybackMode,
+    setCurrentTime: state.setCurrentTime,
+    setTimeWindow: state.setTimeWindow,
+    setSpeedMultiplier: state.setSpeedMultiplier,
+    tickPlayback: state.tickPlayback,
+  })))
+  const uiViewportAssets = useLiveDataStore((state) => state.uiViewportAssets)
 
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [activePreset, setActivePreset] = useState<number | null>(null)

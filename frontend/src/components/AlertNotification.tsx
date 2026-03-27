@@ -1,7 +1,12 @@
 import { useMapStore } from '@/store/useMapStore'
+import { useShallow } from 'zustand/react/shallow'
 
 export function AlertNotification() {
-  const { pendingAlerts, dismissAlert, selectAsset } = useMapStore()
+  const { pendingAlerts, dismissAlert, selectAsset } = useMapStore(useShallow((state) => ({
+    pendingAlerts: state.pendingAlerts,
+    dismissAlert: state.dismissAlert,
+    selectAsset: state.selectAsset,
+  })))
   if (pendingAlerts.length === 0) return null
   return (
     <div className="absolute bottom-24 right-2 flex flex-col gap-2" style={{ zIndex: 25 }}>
