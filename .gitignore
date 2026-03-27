@@ -1,6 +1,8 @@
 # Environment & secrets
 .env
 .env.*
+.env.dockhand
+.env.dockhand.advanced
 !.env.example
 !.env.advanced.example
 !.env.dockhand.example
@@ -36,6 +38,7 @@ docker/timescaledb/pgdata/
 docker/secrets/*
 !docker/secrets/
 !docker/secrets/.gitkeep
+!docker/secrets/README.md
 
 # IDE
 .vscode/
