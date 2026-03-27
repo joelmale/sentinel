@@ -16,18 +16,32 @@ import asyncio
 import json
 import logging
 import math
+import socket
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from redis_client import STREAM_KEY, get_redis
+from redis.asyncio.client import PubSub
+
+from redis_client import CONSUMER_GROUP, STREAM_KEY, get_redis
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["WebSocket"])
 WS_BATCH_SIZE = 100
+MAX_TRACK_STATE_CACHE = 50_000
+MIN_DELTA_BYTES_SAVED = 24
+WS_BROADCAST_CHANNEL = "sentinel:ws:broadcast"
+WS_LEADER_KEY = "sentinel:ws:broadcast:leader"
+WS_LEADER_TTL_SECONDS = 15
+WS_PENDING_IDLE_MS = 30_000
+INSTANCE_ID = f"{socket.gethostname()}:{uuid.uuid4().hex[:8]}"
 
 # Track active connections in-process
 # In production with multiple API replicas, move this to Redis pub/sub
 active_connections: set[WebSocket] = set()
+stream_fanout_task: asyncio.Task[None] | None = None
+pubsub_fanout_task: asyncio.Task[None] | None = None
+last_sent_track_cache: dict[str, dict[str, Any]] = {}
 
 
 class ConnectionManager:
@@ -43,7 +57,7 @@ class ConnectionManager:
         self.connections.discard(websocket)
         logger.info(f"WS disconnected. Total: {len(self.connections)}")
 
-    async def broadcast(self, message: dict[str, Any]):
+    async def broadcast_local(self, message: dict[str, Any]):
         if not self.connections:
             return
         data = json.dumps(_sanitize_json_value(message), allow_nan=False)
@@ -96,6 +110,191 @@ def _build_track_delta(previous: dict[str, Any], current: dict[str, Any]) -> dic
     return delta if changed else None
 
 
+def _should_emit_delta(current: dict[str, Any], delta: dict[str, Any]) -> bool:
+    full_size = len(json.dumps(current, separators=(",", ":"), sort_keys=True))
+    delta_size = len(json.dumps(delta, separators=(",", ":"), sort_keys=True))
+    return delta_size + MIN_DELTA_BYTES_SAVED < full_size
+
+
+async def _publish_ws_message(redis, message: dict[str, Any]) -> None:
+    payload = {
+        "origin": INSTANCE_ID,
+        "payload": message,
+    }
+    await manager.broadcast_local(message)
+    await redis.publish(WS_BROADCAST_CHANNEL, json.dumps(payload, separators=(",", ":"), allow_nan=False))
+
+
+async def _fanout_pubsub_loop() -> None:
+    redis = await get_redis()
+    pubsub: PubSub = redis.pubsub()
+    await pubsub.subscribe(WS_BROADCAST_CHANNEL)
+    try:
+        while True:
+            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if message is None:
+                await asyncio.sleep(0.05)
+                continue
+            raw = message.get("data")
+            if not isinstance(raw, str):
+                continue
+            try:
+                envelope = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(envelope, dict):
+                continue
+            if envelope.get("origin") == INSTANCE_ID:
+                continue
+            payload = envelope.get("payload")
+            if isinstance(payload, dict):
+                await manager.broadcast_local(_sanitize_json_value(payload))
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await pubsub.unsubscribe(WS_BROADCAST_CHANNEL)
+        await pubsub.aclose()
+
+
+async def _maintain_leader(redis) -> bool:
+    current = await redis.get(WS_LEADER_KEY)
+    if current == INSTANCE_ID:
+        await redis.expire(WS_LEADER_KEY, WS_LEADER_TTL_SECONDS)
+        return True
+    acquired = await redis.set(WS_LEADER_KEY, INSTANCE_ID, ex=WS_LEADER_TTL_SECONDS, nx=True)
+    return bool(acquired)
+
+
+async def _claim_pending_entries(redis) -> None:
+    next_start = "0-0"
+    while True:
+        entries = await redis.xautoclaim(
+            STREAM_KEY,
+            CONSUMER_GROUP,
+            INSTANCE_ID,
+            min_idle_time=WS_PENDING_IDLE_MS,
+            start_id=next_start,
+            count=WS_BATCH_SIZE,
+        )
+        if not entries:
+            return
+        next_start = entries[0] if isinstance(entries[0], str) else "0-0"
+        claimed = entries[1] if len(entries) > 1 else []
+        if not claimed:
+            return
+        await _publish_stream_entries(redis, claimed)
+
+
+async def _publish_stream_entries(redis, entries) -> None:
+    events = []
+    deltas = []
+    entry_ids: list[str] = []
+    for entry_id, fields in entries:
+        entry_ids.append(entry_id)
+        try:
+            event_data = json.loads(fields.get("payload", "{}"))
+        except json.JSONDecodeError:
+            continue
+
+        if isinstance(event_data, dict) and event_data.get("type") in {"alert", "anomaly", "incident"}:
+            await _publish_ws_message(redis, _sanitize_json_value(event_data))
+            continue
+        if not isinstance(event_data, dict):
+            events.append(_sanitize_json_value(event_data))
+            continue
+
+        sanitized_event = _sanitize_json_value(event_data)
+        if not isinstance(sanitized_event, dict):
+            events.append(sanitized_event)
+            continue
+
+        track_key = _track_stream_key(sanitized_event)
+        if not track_key:
+            events.append(sanitized_event)
+            continue
+
+        previous_event = last_sent_track_cache.get(track_key)
+        if previous_event is None:
+            events.append(sanitized_event)
+        else:
+            delta = _build_track_delta(previous_event, sanitized_event)
+            if delta is not None:
+                if _should_emit_delta(sanitized_event, delta):
+                    deltas.append(delta)
+                else:
+                    events.append(sanitized_event)
+        last_sent_track_cache.pop(track_key, None)
+        last_sent_track_cache[track_key] = sanitized_event
+        if len(last_sent_track_cache) > MAX_TRACK_STATE_CACHE:
+            last_sent_track_cache.pop(next(iter(last_sent_track_cache)))
+
+    if events:
+        for i in range(0, len(events), WS_BATCH_SIZE):
+            chunk = events[i:i + WS_BATCH_SIZE]
+            await _publish_ws_message(redis, {
+                "type": "track_events",
+                "events": chunk,
+                "count": len(chunk),
+            })
+    if deltas:
+        for i in range(0, len(deltas), WS_BATCH_SIZE):
+            chunk = deltas[i:i + WS_BATCH_SIZE]
+            await _publish_ws_message(redis, {
+                "type": "track_deltas",
+                "deltas": chunk,
+                "count": len(chunk),
+            })
+
+    if entry_ids:
+        await redis.xack(STREAM_KEY, CONSUMER_GROUP, *entry_ids)
+
+async def _stream_fanout_loop() -> None:
+    redis = await get_redis()
+    try:
+        while True:
+            if not await _maintain_leader(redis):
+                await asyncio.sleep(1)
+                continue
+
+            await _claim_pending_entries(redis)
+            messages = await redis.xreadgroup(
+                groupname=CONSUMER_GROUP,
+                consumername=INSTANCE_ID,
+                streams={STREAM_KEY: ">"},
+                count=WS_BATCH_SIZE,
+                block=1000,
+            )
+            if not messages:
+                continue
+
+            for _, entries in messages:
+                await _publish_stream_entries(redis, entries)
+    except asyncio.CancelledError:
+        pass
+
+
+async def startup_ws_broadcast() -> None:
+    global stream_fanout_task, pubsub_fanout_task
+    if stream_fanout_task is None or stream_fanout_task.done():
+        stream_fanout_task = asyncio.create_task(_stream_fanout_loop())
+    if pubsub_fanout_task is None or pubsub_fanout_task.done():
+        pubsub_fanout_task = asyncio.create_task(_fanout_pubsub_loop())
+
+
+async def shutdown_ws_broadcast() -> None:
+    global stream_fanout_task, pubsub_fanout_task
+    for task in (stream_fanout_task, pubsub_fanout_task):
+        if task is None:
+            continue
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    stream_fanout_task = None
+    pubsub_fanout_task = None
+
+
 @router.websocket("/ws/live")
 async def websocket_live(websocket: WebSocket):
     """
@@ -103,76 +302,11 @@ async def websocket_live(websocket: WebSocket):
     Sends a batch of new events every ~1 second.
     """
     await manager.connect(websocket)
-    redis = await get_redis()
 
-    # Send initial snapshot of current state
     try:
         await websocket.send_json({"type": "connected", "message": "SENTINEL live stream"})
-
-        # Poll Redis Stream for new events
-        last_id = "$"  # only new messages from this point
-        last_sent_tracks: dict[str, dict[str, Any]] = {}
         while True:
-            try:
-                # Block up to 1 second for new messages
-                messages = await redis.xread(
-                    {STREAM_KEY: last_id}, count=WS_BATCH_SIZE, block=1000
-                )
-                if messages:
-                    events = []
-                    deltas = []
-                    for _, entries in messages:
-                        for entry_id, fields in entries:
-                            last_id = entry_id
-                            try:
-                                event_data = json.loads(fields.get("payload", "{}"))
-                                if isinstance(event_data, dict) and event_data.get("type") in {"alert", "anomaly", "incident"}:
-                                    await websocket.send_json(_sanitize_json_value(event_data))
-                                    continue
-                                if not isinstance(event_data, dict):
-                                    events.append(_sanitize_json_value(event_data))
-                                    continue
-
-                                sanitized_event = _sanitize_json_value(event_data)
-                                if not isinstance(sanitized_event, dict):
-                                    events.append(sanitized_event)
-                                    continue
-
-                                track_key = _track_stream_key(sanitized_event)
-                                if not track_key:
-                                    events.append(sanitized_event)
-                                    continue
-
-                                previous_event = last_sent_tracks.get(track_key)
-                                if previous_event is None:
-                                    events.append(sanitized_event)
-                                else:
-                                    delta = _build_track_delta(previous_event, sanitized_event)
-                                    if delta is not None:
-                                        deltas.append(delta)
-                                last_sent_tracks[track_key] = sanitized_event
-                            except json.JSONDecodeError:
-                                pass
-
-                    if events:
-                        for i in range(0, len(events), WS_BATCH_SIZE):
-                            chunk = events[i:i + WS_BATCH_SIZE]
-                            await websocket.send_json({
-                                "type": "track_events",
-                                "events": chunk,
-                                "count": len(chunk),
-                            })
-                    if deltas:
-                        for i in range(0, len(deltas), WS_BATCH_SIZE):
-                            chunk = deltas[i:i + WS_BATCH_SIZE]
-                            await websocket.send_json({
-                                "type": "track_deltas",
-                                "deltas": chunk,
-                                "count": len(chunk),
-                            })
-            except asyncio.CancelledError:
-                break
-
+            await websocket.receive_text()
     except WebSocketDisconnect:
         pass
     finally:

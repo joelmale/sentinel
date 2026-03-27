@@ -1,7 +1,7 @@
 # Sentinel Performance Scaling Plan
 
 **Goal**: Scale Sentinel to 10,000+ live assets while keeping the map responsive and interaction latency predictable.
-**Status**: Phase 1 complete; Phase 2 complete in code; Phase 3 in progress; Phase 4 browser-path work partially complete; backend-scale work pending
+**Status**: Phase 1 complete; Phase 2 complete in code; Phase 3 in progress; Phase 4 browser-path work partially complete; websocket delta and replica-safe fan-out are in progress
 **Last validated against code**: 2026-03-27
 
 This plan is based on the current frontend implementation, not on a hypothetical full-global render model. The map path is already partially bounded by viewport-scoped API queries, so the highest-value work is reducing unnecessary React/Zustand invalidation, cutting layer rebuild scope, and simplifying duplicate store update paths.
@@ -90,12 +90,13 @@ Completed in code:
 - restored clear ownership of `viewportAssets`: scoped query results determine membership, while websocket updates now refresh only existing viewport members and immediately drop streamed tracks that move out of bounds
 - added an explicit low-zoom aggregation pass that renders background Air, Maritime, and Space density as aggregate cells instead of sparse individual-point thinning, while still suppressing low-zoom background trails
 - added a worker-backed websocket preprocessing path for event deduplication, viewport membership partitioning, and trail shaping, with a main-thread fallback if worker setup fails
+- added opportunistic websocket delta delivery so repeat track updates can ship compact payloads instead of full events when that materially reduces message size
+- added a Redis-backed leader-and-pubsub websocket fan-out path so one replica consumes the stream while all replicas can broadcast to their local websocket clients
 
 Still intentionally deferred:
 
 - benchmark-driven replacement of full-`Map` cloning in the stores
-- websocket delta payloads and multi-replica broadcast
-- worker-based preprocessing, deeper aggregation layers, and multi-replica broadcast
+- deeper aggregation layers, richer worker preprocessing, and operational visibility around leader handoff / pubsub lag
 - automated render-scope and throughput tests, since the frontend still has no dedicated test runner configured
 
 Additional completed work after the original Phase 1/2 pass:
@@ -394,7 +395,7 @@ test(frontend): add LOD and worker processing coverage
 
 **Goal**: Fix the non-map path and reduce network overhead once render invalidation is under control.
 **Effort**: 4–6 days.
-**Status**: Browser query work is partially complete. Backend websocket delta work is in progress; broader network-scale work is still pending.
+**Status**: Browser query work is partially complete. Backend websocket delta work and multi-replica-safe websocket fan-out are now in progress.
 
 ### 4.1 Fix table-view scaling at the data source
 
@@ -444,11 +445,21 @@ This is worthwhile once the frontend is ready to merge deltas efficiently. It re
 Implemented so far:
 
 - `api/routers/ws.py` now emits `track_deltas` for tracks already seen on a connection, while still sending full `track_events` for first-seen tracks
+- delta emission is opportunistic: the backend now falls back to full events when a delta is not materially smaller than the full payload
 - the frontend websocket path now rehydrates those deltas back into full track objects before they enter the existing live-processing pipeline
 
 ### 4.4 Add multi-replica-safe broadcast if horizontal scale is required
 
-If deployment moves beyond a single in-process broadcaster, add Redis pub/sub or equivalent fan-out. This is operational scale work, not first-pass frame-time work.
+Implemented so far:
+
+- API startup now launches a websocket fan-out worker that uses a Redis-backed leader lease plus Redis pub/sub for replica-safe broadcast
+- the elected leader consumes the Redis stream once and republishes normalized websocket payloads onto a shared pub/sub channel
+- every API replica subscribes to that pub/sub channel and forwards those messages to its local websocket clients
+
+Remaining:
+
+- add operational visibility for leader handoff and pub/sub lag if this path becomes production-critical
+- decide whether old pending stream entries should be reclaimed more aggressively during leader failover
 
 ### Phase 4 commits
 

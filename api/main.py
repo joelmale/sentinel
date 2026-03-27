@@ -43,11 +43,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # Startup: initialize connection pools
     await db_pool.startup()
     await redis_pool.startup()
+    await ws.startup_ws_broadcast()
     print("✓ Database and Redis connected")
 
     yield  # Application runs here
 
     # Shutdown: close pools cleanly
+    await ws.shutdown_ws_broadcast()
     await db_pool.shutdown()
     await redis_pool.shutdown()
     print("✓ Connections closed")
