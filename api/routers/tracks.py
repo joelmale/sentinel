@@ -15,6 +15,7 @@ import csv
 import io
 import logging
 import math
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -68,6 +69,22 @@ def _sanitize_json_value(value: Any) -> Any:
     return value
 
 
+def _resolve_altitude_m(altitude_m: Any, metadata: dict[str, Any] | None) -> float | None:
+    if isinstance(altitude_m, (int, float)) and math.isfinite(float(altitude_m)):
+        return float(altitude_m)
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("altitude_m", "altitudeMeters"):
+        value = metadata.get(key)
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            return float(value)
+    for key in ("altitude_km", "alt_km"):
+        value = metadata.get(key)
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            return float(value) * 1000.0
+    return None
+
+
 def _split_csv(value: str | None) -> list[str]:
     if not value:
         return []
@@ -101,6 +118,26 @@ def _space_constellation_sql(
     """
 
 
+def _space_constellation_category_sql(
+    callsign_column: str,
+    object_type_column: str,
+) -> str:
+    constellation_sql = _space_constellation_sql(callsign_column, object_type_column)
+    return f"""
+        CASE
+            WHEN ({constellation_sql}) IN ('Starlink', 'LEO (Kuiper)', 'OneWeb', 'Qianfan', 'Guowang', 'GalaxySpace', 'E-space') THEN 'Internet'
+            WHEN ({constellation_sql}) IN ('GPS (USAF)', 'GLONASS', 'Galileo', 'BeiDou') THEN 'Positioning'
+            WHEN ({constellation_sql}) IN ('Iridium', 'Intelsat', 'SES', 'Eutelsat', 'Telesat', 'Viasat', 'Inmarsat', 'Thuraya', 'Arabsat / Badr', 'Turksat', 'Hispasat', 'JSAT / Superbird', 'Astra', 'Tianlian', 'Russia (Comms)') THEN 'Communications'
+            WHEN ({constellation_sql}) IN ('Gaofen', 'Yaogan', 'Jilin', 'Capella Space', 'ICEYE', 'Umbra', 'Pleiades', 'PAZ', 'Tianhui', 'Ziyuan', 'SARah (Germany)', 'Helios', 'Persona') THEN 'Earth Imaging'
+            WHEN ({constellation_sql}) IN ('GOES (NOAA)', 'NOAA', 'MetOp', 'Himawari', 'Fengyun', 'Meteosat (EUMETSAT)') THEN 'Weather'
+            WHEN ({constellation_sql}) IN ('ISS', 'Tiangong / CSS', 'Hubble', 'JWST', 'TESS', 'Chandra', 'XMM-Newton', 'Swift', 'CHEOPS') THEN 'Science'
+            WHEN ({constellation_sql}) IN ('Orbcomm', 'Globalstar', 'O3b (SES MEO)', 'AST SpaceMobile', 'Lynk Global', 'Swarm', 'Kepler Communications', 'Kineis', 'Astrocast', 'FOSSA Systems') THEN 'IoT'
+            WHEN ({constellation_sql}) = 'Finder' THEN 'Finder'
+            ELSE 'Other'
+        END
+    """
+
+
 def _build_live_filter_conditions(
     *,
     domain: SourceDomain | None,
@@ -113,6 +150,7 @@ def _build_live_filter_conditions(
     purpose: str | None,
     constellations: list[str],
     min_severity: float | None,
+    source_feed_column: str = "acs.winning_source_feed",
 ) -> tuple[list[str], dict[str, Any]]:
     conditions = ["TRUE"]
     params: dict[str, Any] = {}
@@ -142,7 +180,7 @@ def _build_live_filter_conditions(
         params["classifications"] = classifications
 
     if source_feeds:
-        conditions.append("COALESCE(acs.winning_source_feed, '') = ANY(:source_feeds)")
+        conditions.append(f"COALESCE({source_feed_column}, '') = ANY(:source_feeds)")
         params["source_feeds"] = source_feeds
 
     if track_ids:
@@ -168,6 +206,52 @@ def _build_live_filter_conditions(
     if min_severity is not None:
         conditions.append("COALESCE((acs.metadata->>'severity')::double precision, 0) >= :min_severity")
         params["min_severity"] = min_severity
+
+    return conditions, params
+
+
+def _build_browser_filter_conditions(
+    *,
+    domain: SourceDomain | None,
+    now: datetime,
+    search: str | None,
+    classification: str | None,
+    source_feed: str | None,
+    space_category: str | None,
+    source_feed_column: str = "acs.winning_source_feed",
+) -> tuple[list[str], dict[str, Any]]:
+    conditions, params = _build_live_filter_conditions(
+        domain=domain,
+        now=now,
+        bbox=None,
+        classifications=[classification] if classification and classification != "All" else [],
+        source_feeds=[source_feed] if source_feed and source_feed != "All" else [],
+        track_ids=[],
+        operator=None,
+        purpose=None,
+        constellations=[],
+        min_severity=None,
+        source_feed_column=source_feed_column,
+    )
+
+    if search:
+        conditions.append("""
+            (
+                LOWER(COALESCE(acs.track_id, '')) LIKE :search
+                OR LOWER(COALESCE(acs.callsign, '')) LIKE :search
+                OR LOWER(COALESCE(acs.classification, '')) LIKE :search
+                OR LOWER(COALESCE(""" + source_feed_column + """, '')) LIKE :search
+            )
+        """)
+        params["search"] = f"%{search.strip().lower()}%"
+
+    if space_category and space_category != "All":
+        category_sql = _space_constellation_category_sql(
+            "acs.callsign",
+            "COALESCE(ee.object_type, acs.metadata->>'object_type')",
+        )
+        conditions.append(f"({category_sql}) = :space_category")
+        params["space_category"] = space_category
 
     return conditions, params
 
@@ -397,6 +481,137 @@ def _space_constellation(name: str | None, object_type: str | None = None) -> st
     return "Other"
 
 
+def _space_constellation_category(constellation: str) -> str:
+    mapping = {
+        "Starlink": "Internet",
+        "LEO (Kuiper)": "Internet",
+        "OneWeb": "Internet",
+        "Qianfan": "Internet",
+        "Guowang": "Internet",
+        "GalaxySpace": "Internet",
+        "E-space": "Internet",
+        "GPS (USAF)": "Positioning",
+        "GLONASS": "Positioning",
+        "Galileo": "Positioning",
+        "BeiDou": "Positioning",
+        "Iridium": "Communications",
+        "Intelsat": "Communications",
+        "SES": "Communications",
+        "Eutelsat": "Communications",
+        "Telesat": "Communications",
+        "Viasat": "Communications",
+        "Inmarsat": "Communications",
+        "Thuraya": "Communications",
+        "Arabsat / Badr": "Communications",
+        "Turksat": "Communications",
+        "Hispasat": "Communications",
+        "JSAT / Superbird": "Communications",
+        "Astra": "Communications",
+        "Tianlian": "Communications",
+        "Russia (Comms)": "Communications",
+        "Gaofen": "Earth Imaging",
+        "Yaogan": "Earth Imaging",
+        "Jilin": "Earth Imaging",
+        "Capella Space": "Earth Imaging",
+        "ICEYE": "Earth Imaging",
+        "Umbra": "Earth Imaging",
+        "Pleiades": "Earth Imaging",
+        "PAZ": "Earth Imaging",
+        "Tianhui": "Earth Imaging",
+        "Ziyuan": "Earth Imaging",
+        "SARah (Germany)": "Earth Imaging",
+        "Helios": "Earth Imaging",
+        "Persona": "Earth Imaging",
+        "GOES (NOAA)": "Weather",
+        "NOAA": "Weather",
+        "MetOp": "Weather",
+        "Himawari": "Weather",
+        "Fengyun": "Weather",
+        "Meteosat (EUMETSAT)": "Weather",
+        "ISS": "Science",
+        "Tiangong / CSS": "Science",
+        "Hubble": "Science",
+        "JWST": "Science",
+        "TESS": "Science",
+        "Chandra": "Science",
+        "XMM-Newton": "Science",
+        "Swift": "Science",
+        "CHEOPS": "Science",
+        "Orbcomm": "IoT",
+        "Globalstar": "IoT",
+        "O3b (SES MEO)": "IoT",
+        "AST SpaceMobile": "IoT",
+        "Lynk Global": "IoT",
+        "Swarm": "IoT",
+        "Kepler Communications": "IoT",
+        "Kineis": "IoT",
+        "Astrocast": "IoT",
+        "FOSSA Systems": "IoT",
+    }
+    return mapping.get(constellation, "Other")
+
+
+def _air_browser_group(callsign: str | None, classification: str | None) -> str:
+    if classification == "Military":
+        return "🎖 Military"
+    if classification == "Government":
+        return "🏛 Government"
+    if not callsign or not callsign.strip():
+        return "❓ Unknown"
+
+    raw = callsign.strip().upper()
+    if raw.isdigit():
+        return "✈ General Aviation"
+
+    prefix = re.sub(r"[^A-Z]", "", raw[:3])
+    if not prefix:
+        return "❓ Unknown"
+    if prefix in {"RCH", "SAM", "PAT", "NAF", "MAC", "RAM", "AIO", "CVS", "DUKE"}:
+        return "🎖 Military"
+    return f"{prefix}…"
+
+
+def _maritime_browser_group(track_id: str | None) -> str:
+    if not track_id:
+        return "Unknown"
+    s = track_id.strip()
+    if s.startswith("00"):
+        return "Coast Station"
+    if s.startswith("0") and not s.startswith("00"):
+        return "Group / Broadcast"
+    if s.startswith("970") or s.startswith("972"):
+        return "SAR Aircraft"
+    if s.startswith("98"):
+        return "Craft (Vessel Group)"
+    if s.startswith("99"):
+        return "AIS Aids to Navigation"
+    mid = s[:3]
+    return f"MID {mid}" if mid else "Unknown"
+
+
+def _browser_group_label(
+    domain: str,
+    track_id: str | None,
+    callsign: str | None,
+    classification: str | None,
+    object_type: str | None,
+) -> str:
+    if domain == SourceDomain.AIR.value:
+        return _air_browser_group(callsign, classification)
+    if domain == SourceDomain.MARITIME.value:
+        return _maritime_browser_group(track_id)
+    if domain == SourceDomain.SPACE.value:
+        return _space_constellation(callsign, object_type)
+    return classification or "Unknown"
+
+
+def _top_summary_items(counts: dict[str, int], limit: int = 8) -> list[dict[str, Any]]:
+    return [
+        {"label": label, "count": count}
+        for label, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    ]
+
+
 def _serialize_live_row(row: Any) -> dict[str, Any]:
     lon = row["lon"]
     lat = row["lat"]
@@ -406,30 +621,37 @@ def _serialize_live_row(row: Any) -> dict[str, Any]:
     if isinstance(lon, (int, float)) and isinstance(lat, (int, float)) and math.isfinite(lon) and math.isfinite(lat):
         geometry = {"type": "Point", "coordinates": [lon, lat]}
 
+    metadata = row["metadata"] or {}
+    altitude_m = _resolve_altitude_m(row["altitude_m"], metadata)
+    properties = {
+        "entity_id": str(row["entity_id"]) if row.get("entity_id") else None,
+        "source_domain": row["source_domain"],
+        "source_feed": row["source_feed"],
+        "track_id": row["track_id"],
+        "callsign": row["callsign"],
+        "altitude_m": _sanitize_json_value(altitude_m),
+        "heading_deg": _sanitize_json_value(row["heading_deg"]),
+        "speed_mps": _sanitize_json_value(row["speed_mps"]),
+        "timestamp": last_seen.isoformat() if last_seen else None,
+        "last_seen": last_seen.isoformat() if last_seen else None,
+        "classification": row["classification"],
+        "first_seen": first_seen.isoformat() if first_seen else None,
+        "source_trust_score": _sanitize_json_value(row.get("source_trust_score")),
+        "identity_confidence": _sanitize_json_value(row.get("identity_confidence")),
+        "state_confidence": _sanitize_json_value(row.get("state_confidence")),
+        "winning_event_id": str(row["winning_event_id"]) if row.get("winning_event_id") else None,
+        "provenance": _sanitize_json_value(row.get("provenance") or {}),
+        **_live_metadata_subset(row["source_domain"], metadata),
+    }
     return {
         "type": "Feature",
         "geometry": geometry,
-        "properties": {
-            "entity_id": str(row["entity_id"]) if row.get("entity_id") else None,
-            "source_domain": row["source_domain"],
-            "source_feed": row["source_feed"],
-            "track_id": row["track_id"],
-            "callsign": row["callsign"],
-            "altitude_m": _sanitize_json_value(row["altitude_m"]),
-            "heading_deg": _sanitize_json_value(row["heading_deg"]),
-            "speed_mps": _sanitize_json_value(row["speed_mps"]),
-            "timestamp": last_seen.isoformat() if last_seen else None,
-            "last_seen": last_seen.isoformat() if last_seen else None,
-            "classification": row["classification"],
-            "first_seen": first_seen.isoformat() if first_seen else None,
-            "source_trust_score": _sanitize_json_value(row.get("source_trust_score")),
-            "identity_confidence": _sanitize_json_value(row.get("identity_confidence")),
-            "state_confidence": _sanitize_json_value(row.get("state_confidence")),
-            "winning_event_id": str(row["winning_event_id"]) if row.get("winning_event_id") else None,
-            "provenance": _sanitize_json_value(row.get("provenance") or {}),
-            **_live_metadata_subset(row["source_domain"], row["metadata"] or {}),
-        },
+        "properties": properties,
     }
+
+
+def _serialize_live_properties(row: Any) -> dict[str, Any]:
+    return _serialize_live_row(row)["properties"]
 
 
 @router.get("/tracks/domain-status", summary="Operational status summary for a domain")
@@ -922,11 +1144,12 @@ async def get_live_assets(
         purpose=purpose,
         constellations=_split_csv(constellations),
         min_severity=min_severity,
+        source_feed_column=f"acs.{source_feed_column}",
     )
     where_clause = " AND ".join(conditions)
     sql = text(f"""
         SELECT
-            entity_id::text AS entity_id,
+            acs.entity_id::text AS entity_id,
             acs.source_domain, acs.{source_feed_column} AS source_feed, acs.track_id, acs.callsign,
             ST_X(acs.position) AS lon, ST_Y(acs.position) AS lat,
             acs.altitude_m, acs.heading_deg, acs.speed_mps, acs.last_seen,
@@ -999,6 +1222,135 @@ async def get_live_assets(
     return {"type": "FeatureCollection", "features": features}
 
 
+@router.get("/tracks/browser", summary="Paginated live browser query for tracks")
+async def get_track_browser(
+    domain: SourceDomain | None = Query(None),
+    search: str | None = Query(None, max_length=128),
+    classification: str | None = Query(None, max_length=64),
+    source_feed: str | None = Query(None, max_length=64),
+    space_category: str | None = Query(None, max_length=64),
+    sort: str = Query("timestamp", pattern="^(timestamp|domain|classification|feed|track)$"),
+    limit: int = Query(100, ge=1, le=250),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    use_canonical = bool((await db.execute(text("SELECT 1 FROM asset_current_state LIMIT 1"))).first())
+    table_name = "asset_current_state" if use_canonical else "asset_states"
+    source_feed_column = "winning_source_feed" if use_canonical else "source_feed"
+    where_conditions, params = _build_browser_filter_conditions(
+        domain=domain,
+        now=now,
+        search=search,
+        classification=classification,
+        source_feed=source_feed,
+        space_category=space_category,
+        source_feed_column=f"acs.{source_feed_column}",
+    )
+    where_clause = " AND ".join(where_conditions)
+
+    order_by = {
+        "timestamp": "acs.last_seen DESC, acs.track_id ASC",
+        "domain": f"acs.source_domain ASC, acs.track_id ASC, acs.{source_feed_column} ASC",
+        "classification": "COALESCE(acs.classification, 'Unknown') ASC, acs.last_seen DESC, acs.track_id ASC",
+        "feed": f"acs.{source_feed_column} ASC, acs.last_seen DESC, acs.track_id ASC",
+        "track": "COALESCE(acs.callsign, acs.track_id) ASC, acs.track_id ASC",
+    }[sort]
+
+    items_sql = text(f"""
+        SELECT
+            acs.entity_id::text AS entity_id,
+            acs.source_domain, acs.{source_feed_column} AS source_feed, acs.track_id, acs.callsign,
+            ST_X(acs.position) AS lon, ST_Y(acs.position) AS lat,
+            acs.altitude_m, acs.heading_deg, acs.speed_mps, acs.last_seen,
+            acs.first_seen, acs.source_trust_score, acs.identity_confidence, acs.state_confidence,
+            acs.winning_event_id, acs.provenance,
+            COALESCE(acs.metadata, '{{}}'::jsonb)
+                || jsonb_strip_nulls(jsonb_build_object(
+                    'operator', ee.operator,
+                    'purpose', ee.purpose,
+                    'object_type', ee.object_type,
+                    'orbit_class', ee.orbit_class
+                )) AS metadata,
+            acs.classification
+        FROM {table_name} acs
+        LEFT JOIN entity_enrichments ee ON ee.entity_id = acs.entity_id
+        WHERE {where_clause}
+        ORDER BY {order_by}
+        LIMIT :limit OFFSET :offset
+    """)
+    summary_sql = text(f"""
+        SELECT
+            acs.source_domain,
+            COALESCE(acs.{source_feed_column}, '') AS source_feed,
+            acs.track_id,
+            acs.callsign,
+            COALESCE(acs.classification, 'Unknown') AS classification,
+            COALESCE(ee.object_type, acs.metadata->>'object_type') AS object_type
+        FROM {table_name} acs
+        LEFT JOIN entity_enrichments ee ON ee.entity_id = acs.entity_id
+        WHERE {where_clause}
+    """)
+
+    queries = [
+        db.execute(items_sql, {**params, "limit": limit, "offset": offset}),
+        db.execute(summary_sql, params),
+    ]
+
+    results = await asyncio.gather(*queries)
+    item_rows = results[0].mappings().all()
+    summary_rows = results[1].mappings().all()
+
+    domain_counts: dict[str, int] = {}
+    feed_counts: dict[str, int] = {}
+    classification_counts: dict[str, int] = {}
+    group_counts: dict[str, int] = {}
+    classification_values: set[str] = set()
+    feed_values: set[str] = set()
+    space_category_values: set[str] = set()
+
+    for row in summary_rows:
+        source_domain = str(row["source_domain"])
+        source_feed = str(row["source_feed"] or "")
+        classification_value = str(row["classification"] or "Unknown")
+        track_id = str(row["track_id"] or "")
+        callsign = row["callsign"] if isinstance(row["callsign"], str) else None
+        object_type = row["object_type"] if isinstance(row["object_type"], str) else None
+
+        domain_counts[source_domain] = domain_counts.get(source_domain, 0) + 1
+        if source_feed:
+            feed_counts[source_feed] = feed_counts.get(source_feed, 0) + 1
+            feed_values.add(source_feed)
+        classification_counts[classification_value] = classification_counts.get(classification_value, 0) + 1
+        classification_values.add(classification_value)
+
+        group_label = _browser_group_label(source_domain, track_id, callsign, classification_value, object_type)
+        group_counts[group_label] = group_counts.get(group_label, 0) + 1
+
+        if source_domain == SourceDomain.SPACE.value:
+            space_category = _space_constellation_category(_space_constellation(callsign, object_type))
+            space_category_values.add(space_category)
+
+    return {
+        "generated_at": now.isoformat(),
+        "items": [_serialize_live_properties(row) for row in item_rows],
+        "total": len(summary_rows),
+        "limit": limit,
+        "offset": offset,
+        "facets": {
+            "classifications": sorted(classification_values),
+            "source_feeds": sorted(feed_values),
+            "space_categories": sorted(space_category_values),
+        },
+        "summaries": {
+            "domains": _top_summary_items(domain_counts, limit=5),
+            "source_feeds": _top_summary_items(feed_counts),
+            "classifications": _top_summary_items(classification_counts),
+            "groups": _top_summary_items(group_counts),
+        },
+    }
+
+
 @router.get("/tracks/live/preview", summary="Preview how many live assets a scoped query would load")
 async def preview_live_assets(
     domain: SourceDomain = Query(...),
@@ -1014,7 +1366,7 @@ async def preview_live_assets(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
-    conditions, params = _build_live_filter_conditions(
+    canonical_conditions, canonical_params = _build_live_filter_conditions(
         domain=domain,
         now=now,
         bbox=bbox,
@@ -1025,21 +1377,36 @@ async def preview_live_assets(
         purpose=purpose,
         constellations=_split_csv(constellations),
         min_severity=min_severity,
+        source_feed_column="acs.winning_source_feed",
     )
-    where_clause = " AND ".join(conditions)
+    legacy_conditions, legacy_params = _build_live_filter_conditions(
+        domain=domain,
+        now=now,
+        bbox=bbox,
+        classifications=_split_csv(classifications),
+        source_feeds=_split_csv(source_feeds),
+        track_ids=_split_csv(track_ids),
+        operator=operator,
+        purpose=purpose,
+        constellations=_split_csv(constellations),
+        min_severity=min_severity,
+        source_feed_column="acs.source_feed",
+    )
+    canonical_where_clause = " AND ".join(canonical_conditions)
+    legacy_where_clause = " AND ".join(legacy_conditions)
 
     sql = text(f"""
         WITH canonical_count AS (
             SELECT COUNT(*) AS count
             FROM asset_current_state acs
             LEFT JOIN entity_enrichments ee ON ee.entity_id = acs.entity_id
-            WHERE {where_clause}
+            WHERE {canonical_where_clause}
         ),
         legacy_count AS (
             SELECT COUNT(*) AS count
             FROM asset_states acs
             LEFT JOIN entity_enrichments ee ON ee.entity_id = acs.entity_id
-            WHERE {where_clause}
+            WHERE {legacy_where_clause}
         )
         SELECT
             CASE
@@ -1048,11 +1415,12 @@ async def preview_live_assets(
             END AS count
         FROM canonical_count, legacy_count
     """)
-    result = await db.execute(sql, params)
+    result = await db.execute(sql, {**canonical_params, **legacy_params})
     row = result.mappings().first()
+    count = int(row.get("count") or 0) if row is not None else 0
     return {
         "generated_at": now.isoformat(),
-        "count": int((row or {}).get("count") or 0),
+        "count": count,
         "domain": domain.value,
         "applied_quick_scope": quick_scope,
     }
@@ -1147,13 +1515,15 @@ async def get_asset_detail(
     for source_row in source_result.mappings().all():
         source_first_seen = _ensure_tz(source_row["first_seen"])
         source_last_seen = _ensure_tz(source_row["last_seen"])
+        source_metadata = source_row["metadata"] or {}
+        source_altitude_m = _resolve_altitude_m(source_row["altitude_m"], source_metadata)
         source_states.append({
             "source_feed": source_row["source_feed"],
             "track_id": source_row["track_id"],
             "callsign": source_row["callsign"],
             "lon": _sanitize_json_value(source_row["lon"]),
             "lat": _sanitize_json_value(source_row["lat"]),
-            "altitude_m": _sanitize_json_value(source_row["altitude_m"]),
+            "altitude_m": _sanitize_json_value(source_altitude_m),
             "heading_deg": _sanitize_json_value(source_row["heading_deg"]),
             "speed_mps": _sanitize_json_value(source_row["speed_mps"]),
             "first_seen": source_first_seen.isoformat() if source_first_seen else None,
@@ -1164,7 +1534,7 @@ async def get_asset_detail(
             "winning_event_id": str(source_row["winning_event_id"]) if source_row.get("winning_event_id") else None,
             "classification": source_row["classification"],
             "provenance": _sanitize_json_value(source_row.get("provenance") or {}),
-            "metadata": _sanitize_json_value(source_row["metadata"] or {}),
+            "metadata": _sanitize_json_value(source_metadata),
         })
 
     lon = row["lon"]
@@ -1174,6 +1544,8 @@ async def get_asset_detail(
     geometry = None
     if isinstance(lon, (int, float)) and isinstance(lat, (int, float)) and math.isfinite(lon) and math.isfinite(lat):
         geometry = {"type": "Point", "coordinates": [lon, lat]}
+    row_metadata = row["metadata"] or {}
+    row_altitude_m = _resolve_altitude_m(row["altitude_m"], row_metadata)
 
     return {
         "type": "Feature",
@@ -1184,7 +1556,7 @@ async def get_asset_detail(
             "source_feed": row["source_feed"],
             "track_id": row["track_id"],
             "callsign": row["callsign"],
-            "altitude_m": _sanitize_json_value(row["altitude_m"]),
+            "altitude_m": _sanitize_json_value(row_altitude_m),
             "heading_deg": _sanitize_json_value(row["heading_deg"]),
             "speed_mps": _sanitize_json_value(row["speed_mps"]),
             "timestamp": last_seen.isoformat() if last_seen else None,
@@ -1197,7 +1569,7 @@ async def get_asset_detail(
             "winning_event_id": str(row["winning_event_id"]) if row.get("winning_event_id") else None,
             "provenance": _sanitize_json_value(row.get("provenance") or {}),
             "source_states": source_states,
-            **_sanitize_json_value(row["metadata"] or {}),
+            **_sanitize_json_value(row_metadata),
         },
     }
 
@@ -1614,14 +1986,13 @@ async def get_orbital_track(
     # ── Propagate in thread-pool (skyfield is synchronous) ───────
     def _propagate() -> list[dict]:
         try:
-            from skyfield.api import EarthSatellite, wgs84, Loader
+            from skyfield.api import EarthSatellite, load, wgs84
         except ImportError as exc:
             raise RuntimeError(f"skyfield not installed: {exc}") from exc
 
-        # Use a local Loader so we can build a fresh timescale.
-        # We don't need the cached TLE file here — we already have the lines.
-        loader = Loader('/tmp/skyfield_data')
-        ts = loader.timescale()
+        # Use Skyfield's bundled timescale data so the API endpoint does not
+        # depend on a first-run network fetch inside the container.
+        ts = load.timescale(builtin=True)
 
         sat = EarthSatellite(tle_line1, tle_line2, track_id, ts)
 

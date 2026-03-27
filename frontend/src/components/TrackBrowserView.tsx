@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { formatDistanceToNowStrict } from 'date-fns'
-import { getAirlineGroup, getConstellation, getConstellationCategory, getMmsiCountry } from '@/data/grouping'
+import { getAirlineGroup, getConstellation, getMmsiCountry } from '@/data/grouping'
 import { trackedFetchJson } from '@/lib/perf'
 import { useMapStore } from '@/store/useMapStore'
-import type { SatelliteCatalogEntry, SatelliteTleResponse, SourceDomain, TrackEventProperties } from '@/types/track'
+import type { SatelliteCatalogEntry, SatelliteTleResponse, SourceDomain, TrackBrowserResponse, TrackEventProperties } from '@/types/track'
 
 type SortKey = 'timestamp' | 'domain' | 'classification' | 'feed' | 'track'
 
@@ -39,12 +39,8 @@ function fmtRelative(iso: string | null | undefined): string {
 }
 
 export function TrackBrowserView({
-  assets,
-  loading,
   initialDomain = 'All',
 }: {
-  assets: TrackEventProperties[]
-  loading: boolean
   initialDomain?: SourceDomain | 'All'
 }) {
   const selectAsset = useMapStore((state) => state.selectAsset)
@@ -58,62 +54,41 @@ export function TrackBrowserView({
   const [page, setPage] = useState(0)
   const [selectedAssetKeyOverride, setSelectedAssetKeyOverride] = useState<string | null>(null)
 
-  const classifications = useMemo(() => (
-    Array.from(new Set(assets.map((asset) => asset.classification ?? 'Unknown'))).sort()
-  ), [assets])
+  const browserQuery = useQuery({
+    queryKey: ['track-browser', selectedDomain, search, selectedClassification, selectedFeed, selectedSpaceCategory, sortKey, page],
+    queryFn: async (): Promise<TrackBrowserResponse> => {
+      const params = new URLSearchParams({
+        sort: sortKey,
+        limit: String(PAGE_SIZE),
+        offset: String(page * PAGE_SIZE),
+      })
+      if (selectedDomain !== 'All') params.set('domain', selectedDomain)
+      if (search.trim()) params.set('search', search.trim())
+      if (selectedClassification !== 'All') params.set('classification', selectedClassification)
+      if (selectedFeed !== 'All') params.set('source_feed', selectedFeed)
+      if (selectedSpaceCategory !== 'All') params.set('space_category', selectedSpaceCategory)
+      return trackedFetchJson<TrackBrowserResponse>('track-browser', `/api/tracks/browser?${params.toString()}`)
+    },
+    placeholderData: (previousData) => previousData,
+    refetchOnWindowFocus: false,
+    staleTime: 10_000,
+  })
 
-  const feeds = useMemo(() => (
-    Array.from(new Set(assets.map((asset) => asset.source_feed))).sort()
-  ), [assets])
-
-  const spaceCategories = useMemo(() => (
-    Array.from(new Set(
-      assets
-        .filter((asset) => asset.source_domain === 'Space')
-        .map((asset) => getConstellationCategory(getConstellation(asset.callsign, asset.object_type)))
-    ))
-  ), [assets])
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    const next = assets.filter((asset) => {
-      if (selectedDomain !== 'All' && asset.source_domain !== selectedDomain) return false
-      if (selectedClassification !== 'All' && (asset.classification ?? 'Unknown') !== selectedClassification) return false
-      if (selectedFeed !== 'All' && asset.source_feed !== selectedFeed) return false
-      if (
-        selectedSpaceCategory !== 'All' &&
-        (asset.source_domain !== 'Space' || getConstellationCategory(getConstellation(asset.callsign, asset.object_type)) !== selectedSpaceCategory)
-      ) return false
-      if (!q) return true
-      return [
-        asset.track_id,
-        asset.callsign ?? '',
-        asset.source_feed,
-        asset.classification ?? '',
-        assetGroupLabel(asset),
-      ].some((value) => value.toLowerCase().includes(q))
-    })
-
-    next.sort((a, b) => {
-      if (sortKey === 'timestamp') return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-      if (sortKey === 'domain') return a.source_domain.localeCompare(b.source_domain) || a.track_id.localeCompare(b.track_id)
-      if (sortKey === 'classification') return (a.classification ?? 'Unknown').localeCompare(b.classification ?? 'Unknown')
-      if (sortKey === 'feed') return a.source_feed.localeCompare(b.source_feed) || a.track_id.localeCompare(b.track_id)
-      return (a.callsign ?? a.track_id).localeCompare(b.callsign ?? b.track_id)
-    })
-    return next
-  }, [assets, search, selectedDomain, selectedClassification, selectedFeed, selectedSpaceCategory, sortKey])
-
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const assets = useMemo(() => browserQuery.data?.items ?? [], [browserQuery.data?.items])
+  const total = browserQuery.data?.total ?? 0
+  const classifications = browserQuery.data?.facets.classifications ?? []
+  const feeds = browserQuery.data?.facets.source_feeds ?? []
+  const spaceCategories = browserQuery.data?.facets.space_categories ?? []
+  const summaries = browserQuery.data?.summaries
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const safePage = Math.min(page, pageCount - 1)
-  const paged = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE)
   const selectedAsset = useMemo(() => {
     if (selectedAssetKeyOverride) {
-      const explicit = filtered.find((asset) => assetKey(asset) === selectedAssetKeyOverride)
+      const explicit = assets.find((asset) => assetKey(asset) === selectedAssetKeyOverride)
       if (explicit) return explicit
     }
-    return paged[0] ?? filtered[0] ?? null
-  }, [filtered, paged, selectedAssetKeyOverride])
+    return assets[0] ?? null
+  }, [assets, selectedAssetKeyOverride])
   const activeSelectedAssetKey = selectedAsset ? assetKey(selectedAsset) : null
 
   const selectedSpaceNoradId = useMemo(() => {
@@ -144,28 +119,6 @@ export function TrackBrowserView({
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
   })
-
-  const correlation = useMemo(() => {
-    const byDomain = new Map<string, number>()
-    const byFeed = new Map<string, number>()
-    const byClass = new Map<string, number>()
-    const byGroup = new Map<string, number>()
-    for (const asset of filtered) {
-      byDomain.set(asset.source_domain, (byDomain.get(asset.source_domain) ?? 0) + 1)
-      byFeed.set(asset.source_feed, (byFeed.get(asset.source_feed) ?? 0) + 1)
-      const cls = asset.classification ?? 'Unknown'
-      byClass.set(cls, (byClass.get(cls) ?? 0) + 1)
-      const group = assetGroupLabel(asset)
-      byGroup.set(group, (byGroup.get(group) ?? 0) + 1)
-    }
-    const top = (map: Map<string, number>) => Array.from(map.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8)
-    return {
-      byDomain: top(byDomain),
-      byFeed: top(byFeed),
-      byClass: top(byClass),
-      byGroup: top(byGroup),
-    }
-  }, [filtered])
 
   return (
     <div style={{ position: 'fixed', inset: 72, display: 'grid', gridTemplateColumns: '280px 1fr 320px', background: '#0f172a' }}>
@@ -249,7 +202,9 @@ export function TrackBrowserView({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 18px', borderBottom: '1px solid rgba(148,163,184,0.16)' }}>
           <div>
             <div style={{ fontSize: 11, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase' }}>Track Browser</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: '#f8fafc' }}>{loading ? 'Loading live track set…' : `${filtered.length.toLocaleString()} tracks in result set`}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: '#f8fafc' }}>
+              {browserQuery.isLoading ? 'Loading live track set…' : `${total.toLocaleString()} tracks in result set`}
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button type="button" disabled={safePage === 0} onClick={() => setPage((current) => Math.max(0, current - 1))} style={pagerStyle(safePage === 0)}>Prev</button>
@@ -266,7 +221,7 @@ export function TrackBrowserView({
               </tr>
             </thead>
             <tbody>
-              {paged.map((asset) => (
+              {assets.map((asset) => (
                 <tr
                   key={assetKey(asset)}
                   onClick={() => {
@@ -304,10 +259,10 @@ export function TrackBrowserView({
 
       <div style={{ borderLeft: '1px solid rgba(148,163,184,0.16)', padding: 18, overflowY: 'auto' }}>
         <div style={{ fontSize: 11, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 12 }}>Correlation</div>
-        <SummaryBlock title="Domains" items={correlation.byDomain} />
-        <SummaryBlock title="Feeds" items={correlation.byFeed} />
-        <SummaryBlock title="Classifications" items={correlation.byClass} />
-        <SummaryBlock title="Groups" items={correlation.byGroup} />
+        <SummaryBlock title="Domains" items={summaries?.domains ?? []} />
+        <SummaryBlock title="Feeds" items={summaries?.source_feeds ?? []} />
+        <SummaryBlock title="Classifications" items={summaries?.classifications ?? []} />
+        <SummaryBlock title="Groups" items={summaries?.groups ?? []} />
         {selectedAsset && (
           <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid rgba(148,163,184,0.16)' }}>
             <div style={{ fontSize: 11, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 8 }}>Track Detail</div>
@@ -420,12 +375,12 @@ function FilterBlock({ label, children }: { label: string; children: React.React
   )
 }
 
-function SummaryBlock({ title, items }: { title: string; items: Array<[string, number]> }) {
+function SummaryBlock({ title, items }: { title: string; items: Array<{ label: string; count: number }> }) {
   return (
     <div style={{ marginBottom: 18 }}>
       <div style={{ fontSize: 10, color: '#64748b', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>{title}</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {items.map(([label, count]) => (
+        {items.map(({ label, count }) => (
           <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12 }}>
             <span style={{ color: '#cbd5e1' }}>{label}</span>
             <span style={{ color: '#f8fafc', fontWeight: 700 }}>{count.toLocaleString()}</span>

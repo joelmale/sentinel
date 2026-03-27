@@ -139,8 +139,8 @@ def labels_from_html(html: str) -> dict[str, str]:
     cleaned = re.sub(r"(?is)<script.*?>.*?</script>", " ", html)
     cleaned = re.sub(r"(?is)<style.*?>.*?</style>", " ", cleaned)
     cleaned = unescape(re.sub(r"(?is)<[^>]+>", "\n", cleaned))
-    lines = [normalize_text(line) for line in cleaned.splitlines()]
-    lines = [line for line in lines if line]
+    raw_lines = [normalize_text(line) for line in cleaned.splitlines()]
+    lines: list[str] = [line for line in raw_lines if line is not None]
     pairs: dict[str, str] = {}
     for index, line in enumerate(lines[:-1]):
         key = normalize_lookup_key(line)
@@ -199,8 +199,8 @@ def extract_payload(html: str, url: str) -> dict[str, object]:
             if value:
                 return value
         for payload in scripts:
-            value = deep_find_first(payload, aliases)
-            text = normalize_text(value)
+            payload_value = deep_find_first(payload, aliases)
+            text = normalize_text(payload_value)
             if text:
                 return text
         return None

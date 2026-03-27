@@ -28,15 +28,16 @@ class RedisPool:
         self.client: aioredis.Redis | None = None
 
     async def startup(self) -> None:
-        self.client = await aioredis.from_url(
+        client = await aioredis.from_url(
             settings.REDIS_URL,
             encoding="utf-8",
             decode_responses=True,
             max_connections=50,
         )
+        self.client = client
         # Ensure consumer group exists (idempotent)
         try:
-            await self.client.xgroup_create(
+            await client.xgroup_create(
                 STREAM_KEY, CONSUMER_GROUP, id="$", mkstream=True
             )
         except aioredis.ResponseError as e:

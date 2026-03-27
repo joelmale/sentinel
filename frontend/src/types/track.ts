@@ -57,6 +57,25 @@ export interface TrackEventProperties {
   [key: string]: unknown
 }
 
+export interface TrackBrowserResponse {
+  generated_at: string
+  items: TrackEventProperties[]
+  total: number
+  limit: number
+  offset: number
+  facets: {
+    classifications: string[]
+    source_feeds: string[]
+    space_categories: string[]
+  }
+  summaries: {
+    domains: Array<{ label: string; count: number }>
+    source_feeds: Array<{ label: string; count: number }>
+    classifications: Array<{ label: string; count: number }>
+    groups: Array<{ label: string; count: number }>
+  }
+}
+
 export interface DisruptionEvent {
   id: string
   source_domain: SourceDomain
@@ -425,7 +444,9 @@ export interface TripPath {
 export type WsMessage =
   | { type: 'connected'; message: string }
   | { type: 'track_events'; events: TrackEventProperties[]; count: number }
-  | { type: 'alert'; rule_id: string; rule_name?: string; track_id: string; domain: SourceDomain }
+  | { type: 'alert'; alert_id?: string; rule_id: string; rule_name?: string; track_id?: string | null; domain: SourceDomain; triggered_at?: string; severity?: string; title?: string; anomaly_id?: string }
+  | { type: 'anomaly'; id: string; detector_key: string; source_domain: SourceDomain; title: string; severity: string; confidence?: number }
+  | { type: 'incident'; id: string; case_key: string; title: string; severity: string; confidence?: number }
 
 // Playback state (managed by Zustand)
 export type PlaybackMode = 'live' | 'replay' | 'paused'

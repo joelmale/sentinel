@@ -432,22 +432,6 @@ function SentinelApp() {
     }
   }, [liveViewportQuery.data, replaceViewportAssetDomains, upsertAssets])
 
-  const browserAssetsQuery = useQuery({
-    queryKey: ['browser-assets-live'],
-    enabled: workspaceView === 'table',
-    queryFn: async (): Promise<TrackEventProperties[]> => {
-      const [air, maritime, space] = await Promise.all([
-        trackedFetchJson<TrackFeatureCollection>('browser-air-live', '/api/tracks/live?domain=Air').then(normalizeTrackFeatures),
-        trackedFetchJson<TrackFeatureCollection>('browser-maritime-live', '/api/tracks/live?domain=Maritime').then(normalizeTrackFeatures),
-        trackedFetchJson<TrackFeatureCollection>('browser-space-live', '/api/tracks/live?domain=Space').then(normalizeTrackFeatures),
-      ])
-      return [...air, ...maritime, ...space]
-    },
-    refetchOnWindowFocus: false,
-    refetchInterval: playback.mode === 'live' ? 30_000 : false,
-    staleTime: 10_000,
-  })
-
   const selectedAssetDetailQuery = useQuery({
     queryKey: ['selected-asset-detail', selectedDomain, selectedTrackId],
     enabled: Boolean(selectedDomain && selectedTrackId),
@@ -1136,8 +1120,6 @@ function SentinelApp() {
         </>
       ) : (
         <TrackBrowserView
-          assets={browserAssetsQuery.data ?? []}
-          loading={browserAssetsQuery.isLoading}
           initialDomain={browserInitialDomain}
         />
       )}

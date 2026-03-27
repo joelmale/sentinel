@@ -63,6 +63,14 @@ def _empty_dashboard(now: datetime) -> dict[str, Any]:
                 "stale_entries": 0,
                 "priority_items": 0,
             },
+            "anomalies": {
+                "open": 0,
+                "critical": 0,
+            },
+            "incidents": {
+                "open": 0,
+                "critical": 0,
+            },
             "disruptions": [],
         },
         "activity": {
@@ -309,6 +317,18 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
         GROUP BY source_domain
         ORDER BY source_domain
     """)
+    anomaly_counts_sql = text("""
+        SELECT
+            COUNT(*) FILTER (WHERE status = 'open') AS open_count,
+            COUNT(*) FILTER (WHERE status = 'open' AND severity = 'critical') AS critical_count
+        FROM anomaly_events
+    """)
+    incident_counts_sql = text("""
+        SELECT
+            COUNT(*) FILTER (WHERE status = 'open') AS open_count,
+            COUNT(*) FILTER (WHERE status = 'open' AND severity = 'critical') AS critical_count
+        FROM incident_cases
+    """)
 
     try:
         summary_rows = (await db.execute(summary_sql)).mappings().all()
@@ -335,6 +355,18 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
         disruption_rows = (await db.execute(disruptions_sql)).mappings().all()
     except Exception as exc:
         disruption_rows = []
+        if core["meta"]["ops"]["status"] == "ok":
+            core["meta"]["ops"] = {"status": "degraded", "error": str(exc)}
+    try:
+        anomaly_counts = (await db.execute(anomaly_counts_sql)).mappings().first()
+    except Exception as exc:
+        anomaly_counts = None
+        if core["meta"]["ops"]["status"] == "ok":
+            core["meta"]["ops"] = {"status": "degraded", "error": str(exc)}
+    try:
+        incident_counts = (await db.execute(incident_counts_sql)).mappings().first()
+    except Exception as exc:
+        incident_counts = None
         if core["meta"]["ops"]["status"] == "ok":
             core["meta"]["ops"] = {"status": "degraded", "error": str(exc)}
 
@@ -399,7 +431,7 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
             "domain": row["domain"],
             "status": status,
             "severity": severity,
-            "title": row["title"] or row["track_id"] or "Alert",
+            "title": payload.get("title") or row["title"] or row["track_id"] or "Alert",
             "subtitle": row["track_id"],
             "triggered_at": _iso_or_none(row["triggered_at"]),
             "confidence": row["confidence"],
@@ -450,6 +482,18 @@ async def _load_core(db: AsyncSession, now: datetime) -> dict[str, Any]:
         "active_tracks": int(watchlist.get("active_track_count") or 0),
         "stale_entries": int(watchlist.get("stale_count") or 0),
         "priority_items": int(watchlist.get("priority_count") or 0),
+    }
+    anomaly_open = int(anomaly_counts.get("open_count") or 0) if anomaly_counts is not None else 0
+    anomaly_critical = int(anomaly_counts.get("critical_count") or 0) if anomaly_counts is not None else 0
+    core["ops"]["anomalies"] = {
+        "open": anomaly_open,
+        "critical": anomaly_critical,
+    }
+    incident_open = int(incident_counts.get("open_count") or 0) if incident_counts is not None else 0
+    incident_critical = int(incident_counts.get("critical_count") or 0) if incident_counts is not None else 0
+    core["ops"]["incidents"] = {
+        "open": incident_open,
+        "critical": incident_critical,
     }
     core["ops"]["disruptions"] = disruptions
     return core
