@@ -48,7 +48,8 @@ In NPM, you can choose whether to redirect `www` to the apex domain.
 Use:
 
 - [`docker-compose.dockhand.yml`](/Users/JoelN/Coding/sentinel/docker-compose.dockhand.yml)
-- [`.env.example`](/Users/JoelN/Coding/sentinel/.env.example)
+- [`.env.dockhand.example`](/Users/JoelN/Coding/sentinel/.env.dockhand.example)
+- [`.env.dockhand.advanced.example`](/Users/JoelN/Coding/sentinel/.env.dockhand.advanced.example)
 
 ## Step 1: Create Stack Environment In Dockhand
 
@@ -59,26 +60,23 @@ For Dockhand, define the environment variables in the stack configuration UI or 
 Set at minimum:
 
 ```env
-POSTGRES_USER=sentinel
 POSTGRES_PASSWORD=replace_with_a_real_db_password
-POSTGRES_DB=sentinel
 
 SECRET_KEY=replace_with_a_long_random_secret
 ENVIRONMENT=production
 
+COMPOSE_PROJECT_NAME=sentinel
+INTERNAL_DOCKER_NETWORK=sentinel-net
+EXTERNAL_PROXY_NETWORK=homelab-net
+
 VITE_API_BASE_URL=/api
 VITE_WS_URL=/ws
 
-AIS_MODE=merge
 AISSTREAM_API_KEY=
-GFW_API_TOKEN=
-
+OPENSKY_CLIENT_ID=
+OPENSKY_CLIENT_SECRET=
 SPACETRACK_USER=
 SPACETRACK_PASS=
-
-ADSBEXCHANGE_API_KEY=
-OPENSKY_USERNAME=
-OPENSKY_PASSWORD=
 ```
 
 Optional deployment overrides you can also set in Dockhand:
@@ -94,19 +92,27 @@ KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:24.0
 GRAFANA_IMAGE=grafana/grafana-oss:latest
 REDIS_MAXMEMORY=512mb
 REDIS_MAXMEMORY_POLICY=allkeys-lru
+SCRAPE_SECRETS_DIR=./docker/secrets
 ```
 
 Notes:
 
 - do not put backticks or shell quotes around values
 - if a collector source is not ready yet, leave the credential blank
+- optional disruption collectors are behind the `disruptions` compose profile in the Dockhand stack
+- set `COMPOSE_PROFILES=disruptions` only if you want `collector-gpsjam`, `collector-infra`, and `collector-acled`
 - Redis and Timescale data persist in Docker volumes
+- do not place `MARINETRAFFIC_COOKIE_HEADER`, `MARINETRAFFIC_SEC_CH_UA`, `ADSBX_BINCRAFT_COOKIES`, or similar browser-fingerprint headers in the Dockhand env file; Dockhand-style parsers are brittle around semicolon-heavy values
+- use the `*_FILE` variables from [`.env.dockhand.advanced.example`](/Users/JoelN/Coding/sentinel/.env.dockhand.advanced.example) for those values instead
+- `${SCRAPE_SECRETS_DIR:-./docker/secrets}` is mounted read-only into `api`, `collector-adsb`, and `collector-ais` at `/run/secrets/sentinel`
+- no separate "file mode" toggle is required; if `NAME_FILE` is set it overrides `NAME`, while feature toggles like `MARINETRAFFIC_ENRICH_ENABLED` and `BINCRAFT_AUTO_REFRESH_COOKIES` still control whether those scrape paths run
 
 Recommended approach:
 
-- keep `.env.example` in git as documentation only
+- keep [`.env.dockhand.example`](/Users/JoelN/Coding/sentinel/.env.dockhand.example) in git as Dockhand-specific documentation only
+- keep [`.env.dockhand.advanced.example`](/Users/JoelN/Coding/sentinel/.env.dockhand.advanced.example) in git for optional file-backed scrape paths and tuning
 - put real secrets into Dockhand stack env vars
-- do not commit your real `.env`
+- do not commit your real `.env.dockhand`
 
 ## Step 2: Create The Stack In Dockhand
 
@@ -238,7 +244,9 @@ Leave these off initially unless you need them:
 
 - `keycloak`
 - `grafana`
-- future disruption collectors
+- `collector-gpsjam`
+- `collector-infra`
+- `collector-acled`
 
 ## Recommended Public Branding
 

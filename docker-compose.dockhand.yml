@@ -1,0 +1,342 @@
+name: ${COMPOSE_PROJECT_NAME:-sentinel}
+
+services:
+
+  # ── Reverse proxy (internal only; NPM proxies to this over homelab-net) ──
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    container_name: ${CADDY_CONTAINER_NAME:-sentinel-caddy}
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - frontend
+    restart: unless-stopped
+    networks:
+      - default
+      - homelab-net
+
+  # ── Frontend (served as static by Caddy) ────────────────────────
+  frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/joelmale/sentinel-frontend:main}
+    container_name: ${FRONTEND_CONTAINER_NAME:-sentinel-frontend}
+    environment:
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-/api}
+      - VITE_WS_URL=${VITE_WS_URL:-/ws}
+    restart: unless-stopped
+
+  # ── Backend API ──────────────────────────────────────────────────
+  api:
+    image: ${API_IMAGE:-ghcr.io/joelmale/sentinel-api:main}
+    container_name: ${API_CONTAINER_NAME:-sentinel-api}
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=${SECRET_KEY}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sentinel}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-sentinel-api}
+      - MARINETRAFFIC_COOKIE_HEADER_FILE=${MARINETRAFFIC_COOKIE_HEADER_FILE:-}
+      - MARINETRAFFIC_SEC_CH_UA_FILE=${MARINETRAFFIC_SEC_CH_UA_FILE:-}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ${SCRAPE_SECRETS_DIR:-./docker/secrets}:/run/secrets/sentinel:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: ${API_HEALTHCHECK_INTERVAL:-30s}
+      timeout: ${API_HEALTHCHECK_TIMEOUT:-10s}
+      retries: ${API_HEALTHCHECK_RETRIES:-3}
+
+  # ── Database ─────────────────────────────────────────────────────
+  timescaledb:
+    image: ${TIMESCALE_IMAGE:-timescale/timescaledb-ha:pg16-ts2.24}
+    container_name: ${DB_CONTAINER_NAME:-sentinel-db}
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-sentinel}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-sentinel}
+    volumes:
+      - timescale_data:/home/postgres/pgdata/data
+      - ./docker/timescaledb/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel}"]
+      interval: ${DB_HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${DB_HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${DB_HEALTHCHECK_RETRIES:-5}
+
+  # ── Redis ────────────────────────────────────────────────────────
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    container_name: ${REDIS_CONTAINER_NAME:-sentinel-redis}
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-512mb} --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-allkeys-lru}
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: ${REDIS_HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${REDIS_HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${REDIS_HEALTHCHECK_RETRIES:-3}
+
+  # ── Identity provider (OPTIONAL) ─────────────────────────────────
+  keycloak:
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:24.0}
+    container_name: ${KEYCLOAK_CONTAINER_NAME:-sentinel-keycloak}
+    profiles: ["auth"]
+    command: ["start-dev", "--import-realm"]
+    environment:
+      - KEYCLOAK_ADMIN=${KEYCLOAK_ADMIN:-admin}
+      - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - ./docker/keycloak/sentinel-realm.json:/opt/keycloak/data/import/sentinel-realm.json:ro
+    restart: unless-stopped
+
+  # ── Collectors ───────────────────────────────────────────────────
+  collector-adsb:
+    image: ${COLLECTOR_ADSB_IMAGE:-ghcr.io/joelmale/sentinel-collector-adsb:main}
+    container_name: ${COLLECTOR_ADSB_CONTAINER_NAME:-sentinel-collector-adsb}
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - OPENSKY_CLIENT_ID=${OPENSKY_CLIENT_ID:-}
+      - OPENSKY_CLIENT_SECRET=${OPENSKY_CLIENT_SECRET:-}
+      - OPENSKY_TOKEN_URL=${OPENSKY_TOKEN_URL:-https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token}
+      - POLL_INTERVAL_SEC=${ADSB_POLL_INTERVAL:-10}
+      - OPENSKY_RATE_LIMIT_COOLDOWN_SEC=${OPENSKY_RATE_LIMIT_COOLDOWN_SEC:-300}
+      - OPENSKY_AUTH_FAILURE_COOLDOWN_SEC=${OPENSKY_AUTH_FAILURE_COOLDOWN_SEC:-3600}
+      - ADSBX_ERROR_COOLDOWN_SEC=${ADSBX_ERROR_COOLDOWN_SEC:-1800}
+      - ADSBEXCHANGE_API_KEY=${ADSBEXCHANGE_API_KEY:-}
+      - ADSBEXCHANGE_RAPID_KEY=${ADSBEXCHANGE_RAPID_KEY:-}
+      - ADSBEXCHANGE_BASE_URL=${ADSBEXCHANGE_BASE_URL:-}
+      - ADSBX_BINCRAFT_COOKIES_FILE=${ADSBX_BINCRAFT_COOKIES_FILE:-}
+      - BINCRAFT_AUTO_REFRESH_COOKIES=${BINCRAFT_AUTO_REFRESH_COOKIES:-true}
+      - BINCRAFT_COOKIE_REFRESH_INTERVAL_SEC=${BINCRAFT_COOKIE_REFRESH_INTERVAL_SEC:-10800}
+      - BINCRAFT_SESSION_URL=${BINCRAFT_SESSION_URL:-https://globe.adsbexchange.com/}
+      - BINCRAFT_USER_AGENT=${BINCRAFT_USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0}
+      - BINCRAFT_SEC_CH_UA_FILE=${BINCRAFT_SEC_CH_UA_FILE:-}
+      - BINCRAFT_SEC_CH_UA_PLATFORM=${BINCRAFT_SEC_CH_UA_PLATFORM:-macOS}
+      - ADSBX_BINCRAFT_BOX=${ADSBX_BINCRAFT_BOX:--90,90,-180,180}
+      - BINCRAFT_MIN_INTERVAL_SEC=${BINCRAFT_MIN_INTERVAL_SEC:-120}
+      - BINCRAFT_MAX_INTERVAL_SEC=${BINCRAFT_MAX_INTERVAL_SEC:-200}
+      - BINCRAFT_ERROR_COOLDOWN_SEC=${BINCRAFT_ERROR_COOLDOWN_SEC:-600}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ${SCRAPE_SECRETS_DIR:-./docker/secrets}:/run/secrets/sentinel:ro
+    restart: unless-stopped
+
+  collector-ais:
+    image: ${COLLECTOR_AIS_IMAGE:-ghcr.io/joelmale/sentinel-collector-ais:main}
+    container_name: ${COLLECTOR_AIS_CONTAINER_NAME:-sentinel-collector-ais}
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - AIS_MODE=${AIS_MODE:-aisstream}
+      - AISSTREAM_API_KEY=${AISSTREAM_API_KEY:-}
+      - AISSTREAM_BOUNDING_BOXES=${AISSTREAM_BOUNDING_BOXES:-[[[24.0,-125.0],[50.0,-66.0]]]}
+      - AISSTREAM_FILTERS_SHIP_MMSI=${AISSTREAM_FILTERS_SHIP_MMSI:-[]}
+      - AISSTREAM_MESSAGE_TYPES=${AISSTREAM_MESSAGE_TYPES:-["PositionReport","StandardClassBPositionReport","ShipStaticData"]}
+      - AISSTREAM_MAX_MESSAGES=${AISSTREAM_MAX_MESSAGES:-250}
+      - AISSTREAM_WINDOW_SEC=${AISSTREAM_WINDOW_SEC:-20}
+      - GFW_API_TOKEN=${GFW_API_TOKEN:-}
+      - GFW_DATASET=${GFW_DATASET:-public-global-presence:latest}
+      - GFW_BOUNDING_BOX=${GFW_BOUNDING_BOX:-[[-90,-180],[90,180]]}
+      - GFW_FILTERS=${GFW_FILTERS:-[]}
+      - GFW_SPATIAL_RESOLUTION=${GFW_SPATIAL_RESOLUTION:-HIGH}
+      - GFW_TEMPORAL_RESOLUTION=${GFW_TEMPORAL_RESOLUTION:-HOURLY}
+      - GFW_LAG_HOURS=${GFW_LAG_HOURS:-96}
+      - GFW_WINDOW_HOURS=${GFW_WINDOW_HOURS:-1}
+      - GFW_MAX_ROWS=${GFW_MAX_ROWS:-5000}
+      - GFW_ENRICH_ONLY=${GFW_ENRICH_ONLY:-true}
+      - GFW_PUBLISH_LIVE=${GFW_PUBLISH_LIVE:-false}
+      - GFW_STATE_ELIGIBLE=${GFW_STATE_ELIGIBLE:-false}
+      - GFW_SUPPRESS_IF_LIVE_SEEN_HOURS=${GFW_SUPPRESS_IF_LIVE_SEEN_HOURS:-24}
+      - AIS_MERGE_SOURCES=${AIS_MERGE_SOURCES:-["aisstream","gfw"]}
+      - MARINETRAFFIC_ENRICH_ENABLED=${MARINETRAFFIC_ENRICH_ENABLED:-false}
+      - MARINETRAFFIC_COOKIE_HEADER_FILE=${MARINETRAFFIC_COOKIE_HEADER_FILE:-}
+      - MARINETRAFFIC_USER_AGENT=${MARINETRAFFIC_USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0}
+      - MARINETRAFFIC_ACCEPT_LANGUAGE=${MARINETRAFFIC_ACCEPT_LANGUAGE:-en-US,en;q=0.9}
+      - MARINETRAFFIC_REFERER=${MARINETRAFFIC_REFERER:-https://www.google.com/}
+      - MARINETRAFFIC_SEC_CH_UA_FILE=${MARINETRAFFIC_SEC_CH_UA_FILE:-}
+      - MARINETRAFFIC_SEC_CH_UA_PLATFORM=${MARINETRAFFIC_SEC_CH_UA_PLATFORM:-macOS}
+      - MARINETRAFFIC_TIMEOUT_SEC=${MARINETRAFFIC_TIMEOUT_SEC:-20}
+      - MARINETRAFFIC_MAX_LOOKUPS_PER_POLL=${MARINETRAFFIC_MAX_LOOKUPS_PER_POLL:-5}
+      - MARINETRAFFIC_REFRESH_HOURS=${MARINETRAFFIC_REFRESH_HOURS:-24}
+      - POLL_INTERVAL_SEC=${AIS_POLL_INTERVAL:-30}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ${SCRAPE_SECRETS_DIR:-./docker/secrets}:/run/secrets/sentinel:ro
+    restart: unless-stopped
+
+  collector-ais-history:
+    image: ${COLLECTOR_AIS_IMAGE:-ghcr.io/joelmale/sentinel-collector-ais:main}
+    container_name: ${COLLECTOR_AIS_HISTORY_CONTAINER_NAME:-sentinel-collector-ais-history}
+    profiles: ["historical"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - AIS_MODE=accessais
+      - ACCESSAIS_IMPORT_PATH=${ACCESSAIS_IMPORT_PATH:-}
+      - POLL_INTERVAL_SEC=3600
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  collector-space:
+    image: ${COLLECTOR_SPACE_IMAGE:-ghcr.io/joelmale/sentinel-collector-space:main}
+    container_name: ${COLLECTOR_SPACE_CONTAINER_NAME:-sentinel-collector-space}
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - TLE_REFRESH_INTERVAL_SEC=${TLE_REFRESH_INTERVAL:-7200}
+      - POSITION_INTERVAL_SEC=${SPACE_POSITION_INTERVAL:-30}
+      - SPACETRACK_USER=${SPACETRACK_USER:-}
+      - SPACETRACK_PASS=${SPACETRACK_PASS:-}
+      - N2YO_API_KEY=${N2YO_API_KEY:-}
+      - N2YO_NORAD_IDS=${N2YO_NORAD_IDS:-}
+      - SATNOGS_NORAD_IDS=${SATNOGS_NORAD_IDS:-}
+      - SATNOGS_SAT_IDS=${SATNOGS_SAT_IDS:-}
+      - SPACE_WATCHLIST_PATH=${SPACE_WATCHLIST_PATH:-/app/watchlist.json}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  collector-gpsjam:
+    image: ${COLLECTOR_GPSJAM_IMAGE:-ghcr.io/joelmale/sentinel-collector-gpsjam:main}
+    container_name: ${COLLECTOR_GPSJAM_CONTAINER_NAME:-sentinel-collector-gpsjam}
+    profiles: ["disruptions"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - POLL_INTERVAL_SEC=${GPSJAM_POLL_INTERVAL:-3600}
+      - GPSJAM_ENABLED=${GPSJAM_ENABLED:-true}
+      - GPSJAM_DATA_URL_TEMPLATE=${GPSJAM_DATA_URL_TEMPLATE:-https://gpsjam.org/data/{date}-h3_{resolution}.csv}
+      - GPSJAM_H3_RESOLUTION=${GPSJAM_H3_RESOLUTION:-4}
+      - GPSJAM_DATE_FORMAT=${GPSJAM_DATE_FORMAT:-%Y-%m-%d}
+      - GPSJAM_DATE_OFFSET_DAYS=${GPSJAM_DATE_OFFSET_DAYS:-0}
+      - GPSJAM_MAX_DAYS_BACK=${GPSJAM_MAX_DAYS_BACK:-2}
+      - GPSJAM_BACKFILL_DAYS=${GPSJAM_BACKFILL_DAYS:-180}
+      - GPSJAM_BACKFILL_BATCH_DAYS=${GPSJAM_BACKFILL_BATCH_DAYS:-7}
+      - GPSJAM_TIMEOUT_SEC=${GPSJAM_TIMEOUT_SEC:-30}
+      - GPSJAM_MIN_SCORE=${GPSJAM_MIN_SCORE:-0.05}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  collector-infra:
+    image: ${COLLECTOR_INFRA_IMAGE:-ghcr.io/joelmale/sentinel-collector-infra:main}
+    container_name: ${COLLECTOR_INFRA_CONTAINER_NAME:-sentinel-collector-infra}
+    profiles: ["disruptions"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - POLL_INTERVAL_SEC=${INFRA_POLL_INTERVAL:-300}
+      - INFRA_TIMEOUT_SEC=${INFRA_TIMEOUT_SEC:-30}
+      - IODA_ENABLED=${IODA_ENABLED:-true}
+      - IODA_API_URL=${IODA_API_URL:-https://api.ioda.inetintel.cc.gatech.edu/v2/outages/alerts}
+      - IODA_LOOKBACK_MINUTES=${IODA_LOOKBACK_MINUTES:-30}
+      - POWEROUTAGE_ENABLED=${POWEROUTAGE_ENABLED:-false}
+      - POWEROUTAGE_API_KEY=${POWEROUTAGE_API_KEY:-}
+      - POWEROUTAGE_MIN_PERCENT=${POWEROUTAGE_MIN_PERCENT:-1.0}
+      - CLOUDFLARE_RADAR_ENABLED=${CLOUDFLARE_RADAR_ENABLED:-false}
+      - CLOUDFLARE_RADAR_API_TOKEN=${CLOUDFLARE_RADAR_API_TOKEN:-}
+      - CLOUDFLARE_RADAR_DATE_RANGE=${CLOUDFLARE_RADAR_DATE_RANGE:-1d}
+      - CLOUDFLARE_RADAR_LIMIT=${CLOUDFLARE_RADAR_LIMIT:-100}
+      - EIA_ENABLED=${EIA_ENABLED:-false}
+      - EIA_API_KEY=${EIA_API_KEY:-}
+      - EIA_RTO_URL=${EIA_RTO_URL:-https://api.eia.gov/v2/electricity/rto/region-data/data/}
+      - EIA_LIMIT=${EIA_LIMIT:-500}
+      - EIA_STRESS_DELTA_PCT=${EIA_STRESS_DELTA_PCT:-10}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  collector-acled:
+    image: ${COLLECTOR_ACLED_IMAGE:-ghcr.io/joelmale/sentinel-collector-acled:main}
+    container_name: ${ACLED_COLLECTOR_CONTAINER_NAME:-sentinel-collector-acled}
+    profiles: ["disruptions"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - POLL_INTERVAL_SEC=${ACLED_POLL_INTERVAL:-1800}
+      - ACLED_ENABLED=${ACLED_ENABLED:-false}
+      - ACLED_API_URL=${ACLED_API_URL:-https://acleddata.com/api/acled/read}
+      - ACLED_TOKEN_URL=${ACLED_TOKEN_URL:-https://acleddata.com/oauth/token}
+      - ACLED_CLIENT_ID=${ACLED_CLIENT_ID:-acled}
+      - ACLED_USERNAME=${ACLED_USERNAME:-}
+      - ACLED_PASSWORD=${ACLED_PASSWORD:-}
+      - ACLED_TIMEOUT_SEC=${ACLED_TIMEOUT_SEC:-45}
+      - ACLED_TOKEN_REFRESH_SKEW_SEC=${ACLED_TOKEN_REFRESH_SKEW_SEC:-300}
+      - ACLED_LOOKBACK_DAYS=${ACLED_LOOKBACK_DAYS:-7}
+      - ACLED_LIMIT=${ACLED_LIMIT:-500}
+      - ACLED_COUNTRIES=${ACLED_COUNTRIES:-}
+      - ACLED_EVENT_TYPES=${ACLED_EVENT_TYPES:-}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Monitoring (OPTIONAL) ────────────────────────────────────────
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana-oss:latest}
+    container_name: ${GRAFANA_CONTAINER_NAME:-sentinel-grafana}
+    profiles: ["monitoring"]
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_SERVER_ROOT_URL=/grafana
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - POSTGRES_USER=${POSTGRES_USER:-sentinel}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-sentinel}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - timescaledb
+    restart: unless-stopped
+
+volumes:
+  timescale_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+  keycloak_data:
+  grafana_data:
+
+networks:
+  default:
+    name: ${INTERNAL_DOCKER_NETWORK:-sentinel-net}
+  homelab-net:
+    external: true
+    name: ${EXTERNAL_PROXY_NETWORK:-homelab-net}

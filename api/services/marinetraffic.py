@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import unescape
+from pathlib import Path
 from urllib.parse import quote
 
 import httpx
@@ -22,6 +23,17 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
         if key and value:
             cookies[key] = value
     return cookies
+
+
+def read_env_text(name: str, default: str = "") -> str:
+    file_var = f"{name}_FILE"
+    file_path = os.environ.get(file_var, "").strip()
+    if file_path:
+        try:
+            return Path(file_path).read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    return os.environ.get(name, default).strip()
 
 
 def normalize_text(value: object) -> str | None:
@@ -79,7 +91,7 @@ class MarineTrafficConfig:
 
     @classmethod
     def from_env(cls) -> "MarineTrafficConfig":
-        cookie_header = os.environ.get("MARINETRAFFIC_COOKIE_HEADER", "").strip()
+        cookie_header = read_env_text("MARINETRAFFIC_COOKIE_HEADER", "")
         return cls(
             enabled=os.environ.get("MARINETRAFFIC_ENRICH_ENABLED", "false").strip().lower() in {"1", "true", "yes"},
             timeout_sec=float(os.environ.get("MARINETRAFFIC_TIMEOUT_SEC", "20")),
@@ -91,7 +103,7 @@ class MarineTrafficConfig:
             ).strip(),
             accept_language=os.environ.get("MARINETRAFFIC_ACCEPT_LANGUAGE", "en-US,en;q=0.9").strip(),
             referer=os.environ.get("MARINETRAFFIC_REFERER", "https://www.google.com/").strip(),
-            sec_ch_ua=os.environ.get(
+            sec_ch_ua=read_env_text(
                 "MARINETRAFFIC_SEC_CH_UA",
                 '"Not:A-Brand";v="99", "Microsoft Edge";v="145", "Chromium";v="145"',
             ).strip(),

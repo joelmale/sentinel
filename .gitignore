@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 !.env.advanced.example
+!.env.dockhand.example
+!.env.dockhand.advanced.example
 !.env.sample
 !.env.template
 .envrc
@@ -31,7 +33,9 @@ frontend/.vite/
 
 # Docker
 docker/timescaledb/pgdata/
-docker-compose.dockhand.yml
+docker/secrets/*
+!docker/secrets/
+!docker/secrets/.gitkeep
 
 # IDE
 .vscode/

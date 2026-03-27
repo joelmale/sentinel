@@ -29,7 +29,7 @@ import websockets
 
 import sys
 sys.path.insert(0, "/app/base")
-from base_collector import BaseCollector, DEFAULT_DATABASE_URL, DEFAULT_REDIS_URL, TrackEventDict
+from base_collector import BaseCollector, DEFAULT_DATABASE_URL, DEFAULT_REDIS_URL, TrackEventDict, read_env_text
 
 logger = logging.getLogger(__name__)
 LIVE_AIS_FEEDS = {"AISStream", "AccessAIS"}
@@ -223,12 +223,12 @@ class AISCollector(BaseCollector):
         ).strip()
         self.marinetraffic_accept_language = os.environ.get("MARINETRAFFIC_ACCEPT_LANGUAGE", "en-US,en;q=0.9").strip()
         self.marinetraffic_referer = os.environ.get("MARINETRAFFIC_REFERER", "https://www.google.com/").strip()
-        self.marinetraffic_sec_ch_ua = os.environ.get(
+        self.marinetraffic_sec_ch_ua = read_env_text(
             "MARINETRAFFIC_SEC_CH_UA",
             '"Not:A-Brand";v="99", "Microsoft Edge";v="145", "Chromium";v="145"',
         ).strip()
         self.marinetraffic_sec_ch_ua_platform = os.environ.get("MARINETRAFFIC_SEC_CH_UA_PLATFORM", "macOS").strip()
-        self.marinetraffic_cookie_header = os.environ.get("MARINETRAFFIC_COOKIE_HEADER", "").strip()
+        self.marinetraffic_cookie_header = read_env_text("MARINETRAFFIC_COOKIE_HEADER", "")
         self.marinetraffic_cookies = parse_cookie_header(self.marinetraffic_cookie_header)
         self._marinetraffic_cache: dict[str, tuple[datetime, dict[str, object]]] = {}
         self._marinetraffic_blocked_until: datetime | None = None

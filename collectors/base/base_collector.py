@@ -21,9 +21,11 @@ import asyncio
 import json
 import logging
 import math
+import os
 import time
 from abc import ABC, abstractmethod
 from datetime import date, datetime
+from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import asyncpg
@@ -115,6 +117,17 @@ def _text_or_none(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def read_env_text(name: str, default: str = "") -> str:
+    file_var = f"{name}_FILE"
+    file_path = _text_or_none(os.environ.get(file_var))
+    if file_path:
+        try:
+            return Path(file_path).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            logger.warning("Failed to read %s=%s: %s", file_var, file_path, exc)
+    return os.environ.get(name, default).strip()
 
 
 class BaseCollector(ABC):

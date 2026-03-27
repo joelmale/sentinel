@@ -89,7 +89,7 @@ import zstandard as zstd
 
 import sys
 sys.path.insert(0, "/app/base")
-from base_collector import BaseCollector, DEFAULT_DATABASE_URL, DEFAULT_REDIS_URL, TrackEventDict
+from base_collector import BaseCollector, DEFAULT_DATABASE_URL, DEFAULT_REDIS_URL, TrackEventDict, read_env_text
 from bincraft_decoder import decode_aircraft_payload
 
 logger = logging.getLogger(__name__)
@@ -458,7 +458,7 @@ class AdsbCollector(BaseCollector):
         #   ADSBX_BINCRAFT_COOKIES=adsbx_sid=abc123; adsbx_identity_exp=xyz
         # Bounding box: "south,north,west,east" (signed decimal degrees)
         #   Default covers the entire globe.
-        self._bincraft_cookies      = os.environ.get("ADSBX_BINCRAFT_COOKIES", "").strip()
+        self._bincraft_cookies      = read_env_text("ADSBX_BINCRAFT_COOKIES", "")
         self._bincraft_box          = os.environ.get("ADSBX_BINCRAFT_BOX", "-90,90,-180,180").strip()
         self._bincraft_min_interval = int(os.environ.get("BINCRAFT_MIN_INTERVAL_SEC", "120"))
         self._bincraft_max_interval = int(os.environ.get("BINCRAFT_MAX_INTERVAL_SEC", "200"))
@@ -508,7 +508,7 @@ class AdsbCollector(BaseCollector):
         self._bincraft_user_agent = os.environ.get(
             "BINCRAFT_USER_AGENT", _default_ua
         ).strip() or _default_ua
-        self._bincraft_sec_ch_ua = os.environ.get(
+        self._bincraft_sec_ch_ua = read_env_text(
             "BINCRAFT_SEC_CH_UA", _default_ch_ua
         ).strip() or _default_ch_ua
         self._bincraft_sec_ch_ua_platform = os.environ.get(
