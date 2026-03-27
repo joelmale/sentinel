@@ -120,7 +120,7 @@ const queryClient = new QueryClient({
   },
 })
 
-const APP_VERSION = '0.02'
+const APP_VERSION = `1.1.${__APP_COMMIT_HASH__}`
 const DISCLAIMER_STORAGE_KEY = 'sentinel.evaluationDisclaimerAccepted'
 type WorkspaceView = 'overview' | 'map' | 'table'
 
@@ -181,6 +181,7 @@ function LandingPage({
           </div>
         </section>
       </div>
+      <div style={landingVersionStyle}>{APP_VERSION}</div>
     </div>
   )
 }
@@ -1700,6 +1701,22 @@ const landingPanelStyle: React.CSSProperties = {
   backdropFilter: 'blur(14px)',
   display: 'grid',
   gap: 14,
+}
+
+const landingVersionStyle: React.CSSProperties = {
+  position: 'fixed',
+  right: 24,
+  bottom: 20,
+  zIndex: 2,
+  padding: '7px 10px',
+  borderRadius: 999,
+  border: '1px solid rgba(148,163,184,0.18)',
+  background: 'rgba(2,6,23,0.68)',
+  color: '#94a3b8',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  fontSize: 11,
+  letterSpacing: '0.08em',
+  backdropFilter: 'blur(10px)',
 }
 
 const landingPanelEyebrowStyle: React.CSSProperties = {

@@ -1,8 +1,22 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { execSync } from 'node:child_process';
 import path from 'path';
+
+function resolveGitCommitHash() {
+    try {
+        return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim() || 'dev';
+    }
+    catch {
+        return 'dev';
+    }
+}
+
 export default defineConfig({
     plugins: [react()],
+    define: {
+        __APP_COMMIT_HASH__: JSON.stringify(resolveGitCommitHash()),
+    },
     // Force Vite/esbuild to pre-bundle maplibre-gl during the dep-optimisation
     // pass.  @vis.gl/react-maplibre loads it via a runtime dynamic import
     // (import('maplibre-gl')), which Vite's static scanner may not discover.
