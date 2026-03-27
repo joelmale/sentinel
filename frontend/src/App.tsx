@@ -124,6 +124,67 @@ const APP_VERSION = '0.02'
 const DISCLAIMER_STORAGE_KEY = 'sentinel.evaluationDisclaimerAccepted'
 type WorkspaceView = 'overview' | 'map' | 'table'
 
+function LandingPage({
+  warmReady,
+  onEnterOverview,
+  onEnterMap,
+  onEnterTable,
+}: {
+  warmReady: boolean
+  onEnterOverview: () => void
+  onEnterMap: () => void
+  onEnterTable: () => void
+}) {
+  return (
+    <div style={landingShellStyle}>
+      <div style={landingBackdropStyle} />
+      <div style={landingGridStyle}>
+        <section style={landingHeroStyle}>
+          <div style={landingEyebrowStyle}>OpenSentinel</div>
+          <h1 style={landingTitleStyle}>Operational OSINT tracking across air, maritime, space, GPS, and infrastructure.</h1>
+          <p style={landingBodyStyle}>
+            Start with a concise operational picture, then pivot into the live map or analyst browser when you need detail.
+            This landing screen intentionally gives the overview queries a few seconds to prewarm before you enter the workspace.
+          </p>
+          <div style={landingActionsStyle}>
+            <button type="button" style={landingPrimaryActionStyle} onClick={onEnterOverview}>
+              Enter Overview
+            </button>
+            <button type="button" style={landingSecondaryActionStyle} onClick={onEnterMap}>
+              Open Map
+            </button>
+            <button type="button" style={landingSecondaryActionStyle} onClick={onEnterTable}>
+              Open Table
+            </button>
+          </div>
+          <div style={landingWarmupStyle(warmReady)}>
+            <span style={landingWarmDotStyle(warmReady)} />
+            {warmReady ? 'Operational snapshot warmed' : 'Warming overview data in background'}
+          </div>
+        </section>
+
+        <section style={landingPanelStyle}>
+          <div style={landingPanelEyebrowStyle}>What You Get</div>
+          <div style={landingFeatureListStyle}>
+            <article style={landingFeatureCardStyle}>
+              <div style={landingFeatureTitleStyle}>Overview</div>
+              <div style={landingFeatureBodyStyle}>Mission landing page with domain health, alert pressure, and fast pivots.</div>
+            </article>
+            <article style={landingFeatureCardStyle}>
+              <div style={landingFeatureTitleStyle}>Map</div>
+              <div style={landingFeatureBodyStyle}>Live geospatial workspace for confirmation, decluttered tracks, and focused investigation.</div>
+            </article>
+            <article style={landingFeatureCardStyle}>
+              <div style={landingFeatureTitleStyle}>Table + Correlation</div>
+              <div style={landingFeatureBodyStyle}>Server-driven browser with filterable result sets and a right-side correlation summary.</div>
+            </article>
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}
+
 function SentinelApp() {
   const {
     playback,
@@ -200,6 +261,8 @@ function SentinelApp() {
   const [browserInitialDomain, setBrowserInitialDomain] = useState<SourceDomain | 'All'>('All')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [disclaimerOpen, setDisclaimerOpen] = useState(false)
+  const [landingVisible, setLandingVisible] = useState(true)
+  const [landingWarmReady, setLandingWarmReady] = useState(false)
   const [spaceDashboardOpen, setSpaceDashboardOpen] = useState(false)
   const [priorityPrefetchEnabled, setPriorityPrefetchEnabled] = useState(false)
   const [overviewPivotsEnabled, setOverviewPivotsEnabled] = useState(false)
@@ -239,6 +302,11 @@ function SentinelApp() {
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000)
     return () => clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    const id = window.setTimeout(() => setLandingWarmReady(true), 5_000)
+    return () => window.clearTimeout(id)
   }, [])
 
   useEffect(() => () => {
@@ -361,7 +429,7 @@ function SentinelApp() {
 
   const healthQuery = useQuery({
     queryKey: ['health-capabilities'],
-    enabled: workspaceView === 'overview',
+    enabled: workspaceView === 'overview' || landingWarmReady,
     queryFn: async (): Promise<HealthResponse> => {
       return trackedFetchJson<HealthResponse>('health-capabilities', '/health')
     },
@@ -534,7 +602,7 @@ function SentinelApp() {
 
   const overviewCoreQuery = useQuery({
     queryKey: ['overview-core'],
-    enabled: workspaceView === 'overview' && overviewCapability,
+    enabled: (workspaceView === 'overview' || landingWarmReady) && overviewCapability,
     queryFn: async (): Promise<OverviewCoreResponse> => {
       return trackedFetchJson<OverviewCoreResponse>('overview-core', '/api/overview/core')
     },
@@ -996,6 +1064,11 @@ function SentinelApp() {
     transitionWorkspaceView('table')
   }, [transitionWorkspaceView])
 
+  const enterWorkspace = useCallback((nextView: WorkspaceView) => {
+    setLandingVisible(false)
+    transitionWorkspaceView(nextView)
+  }, [transitionWorkspaceView])
+
   const investigateOverviewAlert = useCallback((alert: OverviewAlertItem) => {
     if (alert.track_id) {
       openInvestigation({
@@ -1015,6 +1088,15 @@ function SentinelApp() {
 
   return (
     <div className="relative w-screen h-screen bg-slate-950">
+      {landingVisible ? (
+        <LandingPage
+          warmReady={landingWarmReady}
+          onEnterOverview={() => enterWorkspace('overview')}
+          onEnterMap={() => enterWorkspace('map')}
+          onEnterTable={() => enterWorkspace('table')}
+        />
+      ) : (
+        <>
       <div
         style={{
           position: 'fixed',
@@ -1058,35 +1140,6 @@ function SentinelApp() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'stretch', gap: 8, justifyContent: 'center', overflow: 'hidden' }}>
-            <button
-              type="button"
-              onClick={() => {
-                const nextView = workspaceView === 'overview'
-                  ? 'map'
-                  : workspaceView === 'map'
-                    ? 'table'
-                    : 'overview'
-                transitionWorkspaceView(nextView)
-              }}
-              style={{
-                ...headerCardStyle,
-                minWidth: 92,
-                cursor: 'pointer',
-                borderColor: workspaceView !== 'map' ? 'rgba(94,234,212,0.4)' : 'rgba(255,255,255,0.08)',
-              }}
-            >
-              <span style={headerLabelStyle}>View</span>
-              <span style={{ ...headerValueStyle, color: workspaceView !== 'map' ? '#5eead4' : '#e2e8f0', fontSize: 22 }}>
-                {workspaceView === 'overview' ? 'Overview' : workspaceView === 'table' ? 'Table' : 'Map'}
-              </span>
-              <span style={headerMetaStyle}>
-                {workspaceView === 'overview'
-                  ? 'Mission landing'
-                  : workspaceView === 'table'
-                    ? 'Analyst browser'
-                    : 'Geospatial workspace'}
-              </span>
-            </button>
             <div style={headerCardStyle}>
               <span style={headerLabelStyle}>Tracked</span>
               <span style={headerValueStyle}>{headerTotalTracked.toLocaleString()}</span>
@@ -1139,6 +1192,22 @@ function SentinelApp() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, justifySelf: 'end' }}>
+            <div style={viewSwitcherStyle}>
+              {([
+                ['overview', 'Overview'],
+                ['map', 'Map'],
+                ['table', 'Table'],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => transitionWorkspaceView(value)}
+                  style={viewSwitcherButtonStyle(workspaceView === value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
               <span style={{ fontSize: 10, letterSpacing: '0.16em', textTransform: 'uppercase', color: '#64748b' }}>Mode</span>
               <span style={{ fontSize: 12, color: '#cbd5e1' }}>{playback.mode === 'live' ? 'Live monitoring' : 'Replay analysis'}</span>
@@ -1331,6 +1400,8 @@ function SentinelApp() {
           </div>
         </div>
       )}
+        </>
+      )}
     </div>
   )
 }
@@ -1380,6 +1451,28 @@ const settingsButtonStyle: React.CSSProperties = {
   fontSize: '12px',
   cursor: 'pointer',
 }
+
+const viewSwitcherStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: 4,
+  borderRadius: 12,
+  border: '1px solid rgba(148,163,184,0.22)',
+  background: 'rgba(15,23,42,0.72)',
+}
+
+const viewSwitcherButtonStyle = (active: boolean): React.CSSProperties => ({
+  border: 'none',
+  borderRadius: 8,
+  padding: '8px 10px',
+  background: active ? 'rgba(20,184,166,0.18)' : 'transparent',
+  color: active ? '#99f6e4' : '#cbd5e1',
+  fontSize: 12,
+  fontWeight: 700,
+  cursor: 'pointer',
+  minWidth: 74,
+})
 
 const settingsMenuStyle: React.CSSProperties = {
   position: 'absolute',
@@ -1486,6 +1579,161 @@ const disclaimerButtonStyle: React.CSSProperties = {
   fontWeight: 700,
   cursor: 'pointer',
   flexShrink: 0,
+}
+
+const landingShellStyle: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  overflow: 'auto',
+  background: '#020617',
+}
+
+const landingBackdropStyle: React.CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  background: 'radial-gradient(circle at 18% 20%, rgba(14,165,233,0.18), transparent 34%), radial-gradient(circle at 82% 18%, rgba(34,197,94,0.12), transparent 30%), linear-gradient(180deg, rgba(15,23,42,0.92), rgba(2,6,23,1) 62%)',
+}
+
+const landingGridStyle: React.CSSProperties = {
+  position: 'relative',
+  zIndex: 1,
+  minHeight: '100%',
+  display: 'grid',
+  gridTemplateColumns: 'minmax(0, 1.2fr) minmax(320px, 420px)',
+  gap: 24,
+  alignItems: 'center',
+  maxWidth: 1280,
+  margin: '0 auto',
+  padding: '48px 24px',
+  boxSizing: 'border-box',
+}
+
+const landingHeroStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 18,
+  padding: '16px 8px',
+}
+
+const landingEyebrowStyle: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 800,
+  letterSpacing: '0.2em',
+  textTransform: 'uppercase',
+  color: '#5eead4',
+}
+
+const landingTitleStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: 'clamp(34px, 5vw, 64px)',
+  lineHeight: 1.02,
+  fontWeight: 800,
+  color: '#f8fafc',
+  maxWidth: 760,
+}
+
+const landingBodyStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: 16,
+  lineHeight: 1.7,
+  color: '#cbd5e1',
+  maxWidth: 720,
+}
+
+const landingActionsStyle: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 12,
+  alignItems: 'center',
+}
+
+const landingPrimaryActionStyle: React.CSSProperties = {
+  border: '1px solid rgba(45,212,191,0.38)',
+  background: 'linear-gradient(135deg, rgba(20,184,166,0.28), rgba(14,165,233,0.2))',
+  color: '#ecfeff',
+  borderRadius: 12,
+  padding: '12px 16px',
+  fontSize: 13,
+  fontWeight: 800,
+  letterSpacing: '0.04em',
+  cursor: 'pointer',
+}
+
+const landingSecondaryActionStyle: React.CSSProperties = {
+  border: '1px solid rgba(148,163,184,0.24)',
+  background: 'rgba(15,23,42,0.72)',
+  color: '#cbd5e1',
+  borderRadius: 12,
+  padding: '12px 16px',
+  fontSize: 13,
+  fontWeight: 700,
+  cursor: 'pointer',
+}
+
+const landingWarmupStyle = (ready: boolean): React.CSSProperties => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 10,
+  width: 'fit-content',
+  padding: '8px 12px',
+  borderRadius: 999,
+  border: ready ? '1px solid rgba(34,197,94,0.3)' : '1px solid rgba(59,130,246,0.26)',
+  background: ready ? 'rgba(34,197,94,0.1)' : 'rgba(30,64,175,0.12)',
+  color: ready ? '#bbf7d0' : '#bfdbfe',
+  fontSize: 12,
+  fontWeight: 700,
+})
+
+const landingWarmDotStyle = (ready: boolean): React.CSSProperties => ({
+  width: 8,
+  height: 8,
+  borderRadius: 999,
+  background: ready ? '#22c55e' : '#60a5fa',
+  boxShadow: ready ? '0 0 18px rgba(34,197,94,0.55)' : '0 0 16px rgba(96,165,250,0.5)',
+})
+
+const landingPanelStyle: React.CSSProperties = {
+  border: '1px solid rgba(148,163,184,0.16)',
+  borderRadius: 24,
+  padding: 22,
+  background: 'rgba(15,23,42,0.72)',
+  boxShadow: '0 28px 80px rgba(0,0,0,0.38)',
+  backdropFilter: 'blur(14px)',
+  display: 'grid',
+  gap: 14,
+}
+
+const landingPanelEyebrowStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 800,
+  letterSpacing: '0.16em',
+  textTransform: 'uppercase',
+  color: '#94a3b8',
+}
+
+const landingFeatureListStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 12,
+}
+
+const landingFeatureCardStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 6,
+  padding: '14px 14px 12px',
+  borderRadius: 16,
+  border: '1px solid rgba(148,163,184,0.12)',
+  background: 'rgba(2,6,23,0.52)',
+}
+
+const landingFeatureTitleStyle: React.CSSProperties = {
+  fontSize: 15,
+  fontWeight: 700,
+  color: '#f8fafc',
+}
+
+const landingFeatureBodyStyle: React.CSSProperties = {
+  fontSize: 13,
+  lineHeight: 1.6,
+  color: '#94a3b8',
 }
 
 const mapModeButtonStyle = (active: boolean): React.CSSProperties => ({
