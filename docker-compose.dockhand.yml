@@ -20,7 +20,7 @@ services:
 
   # ── Frontend (served as static by Caddy) ────────────────────────
   frontend:
-    image: ${FRONTEND_IMAGE:-ghcr.io/joelmale/sentinel-frontend:main}
+    image: ${FRONTEND_IMAGE:-ghcr.io/joelmale/sentinel-frontend}:${SENTINEL_IMAGE_TAG:-main}
     container_name: ${FRONTEND_CONTAINER_NAME:-sentinel-frontend}
     environment:
       - VITE_API_BASE_URL=${VITE_API_BASE_URL:-/api}
@@ -29,10 +29,10 @@ services:
 
   # ── Backend API ──────────────────────────────────────────────────
   api:
-    image: ${API_IMAGE:-ghcr.io/joelmale/sentinel-api:main}
+    image: ${API_IMAGE:-ghcr.io/joelmale/sentinel-api}:${SENTINEL_IMAGE_TAG:-main}
     container_name: ${API_CONTAINER_NAME:-sentinel-api}
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-sentinel}
       - REDIS_URL=redis://redis:6379
       - SECRET_KEY=${SECRET_KEY}
       - ENVIRONMENT=${ENVIRONMENT:-development}
@@ -103,10 +103,10 @@ services:
 
   # ── Collectors ───────────────────────────────────────────────────
   collector-adsb:
-    image: ${COLLECTOR_ADSB_IMAGE:-ghcr.io/joelmale/sentinel-collector-adsb:main}
+    image: ${COLLECTOR_ADSB_IMAGE:-ghcr.io/joelmale/sentinel-collector-adsb}:${SENTINEL_IMAGE_TAG:-main}
     container_name: ${COLLECTOR_ADSB_CONTAINER_NAME:-sentinel-collector-adsb}
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-sentinel}
       - REDIS_URL=redis://redis:6379
       - OPENSKY_CLIENT_ID=${OPENSKY_CLIENT_ID:-}
       - OPENSKY_CLIENT_SECRET=${OPENSKY_CLIENT_SECRET:-}
@@ -139,10 +139,10 @@ services:
     restart: unless-stopped
 
   collector-ais:
-    image: ${COLLECTOR_AIS_IMAGE:-ghcr.io/joelmale/sentinel-collector-ais:main}
+    image: ${COLLECTOR_AIS_IMAGE:-ghcr.io/joelmale/sentinel-collector-ais}:${SENTINEL_IMAGE_TAG:-main}
     container_name: ${COLLECTOR_AIS_CONTAINER_NAME:-sentinel-collector-ais}
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-sentinel}
       - REDIS_URL=redis://redis:6379
       - AIS_MODE=${AIS_MODE:-aisstream}
       - AISSTREAM_API_KEY=${AISSTREAM_API_KEY:-}
@@ -186,11 +186,11 @@ services:
     restart: unless-stopped
 
   collector-ais-history:
-    image: ${COLLECTOR_AIS_IMAGE:-ghcr.io/joelmale/sentinel-collector-ais:main}
+    image: ${COLLECTOR_AIS_IMAGE:-ghcr.io/joelmale/sentinel-collector-ais}:${SENTINEL_IMAGE_TAG:-main}
     container_name: ${COLLECTOR_AIS_HISTORY_CONTAINER_NAME:-sentinel-collector-ais-history}
     profiles: ["historical"]
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-sentinel}
       - REDIS_URL=redis://redis:6379
       - AIS_MODE=accessais
       - ACCESSAIS_IMPORT_PATH=${ACCESSAIS_IMPORT_PATH:-}
@@ -203,10 +203,10 @@ services:
     restart: "no"
 
   collector-space:
-    image: ${COLLECTOR_SPACE_IMAGE:-ghcr.io/joelmale/sentinel-collector-space:main}
+    image: ${COLLECTOR_SPACE_IMAGE:-ghcr.io/joelmale/sentinel-collector-space}:${SENTINEL_IMAGE_TAG:-main}
     container_name: ${COLLECTOR_SPACE_CONTAINER_NAME:-sentinel-collector-space}
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-sentinel}
       - REDIS_URL=redis://redis:6379
       - TLE_REFRESH_INTERVAL_SEC=${TLE_REFRESH_INTERVAL:-7200}
       - POSITION_INTERVAL_SEC=${SPACE_POSITION_INTERVAL:-30}
@@ -225,11 +225,11 @@ services:
     restart: unless-stopped
 
   collector-gpsjam:
-    image: ${COLLECTOR_GPSJAM_IMAGE:-ghcr.io/joelmale/sentinel-collector-gpsjam:main}
+    image: ${COLLECTOR_GPSJAM_IMAGE:-ghcr.io/joelmale/sentinel-collector-gpsjam}:${SENTINEL_IMAGE_TAG:-main}
     container_name: ${COLLECTOR_GPSJAM_CONTAINER_NAME:-sentinel-collector-gpsjam}
     profiles: ["disruptions"]
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-sentinel}
       - REDIS_URL=redis://redis:6379
       - POLL_INTERVAL_SEC=${GPSJAM_POLL_INTERVAL:-3600}
       - GPSJAM_ENABLED=${GPSJAM_ENABLED:-true}
@@ -250,11 +250,11 @@ services:
     restart: unless-stopped
 
   collector-infra:
-    image: ${COLLECTOR_INFRA_IMAGE:-ghcr.io/joelmale/sentinel-collector-infra:main}
+    image: ${COLLECTOR_INFRA_IMAGE:-ghcr.io/joelmale/sentinel-collector-infra}:${SENTINEL_IMAGE_TAG:-main}
     container_name: ${COLLECTOR_INFRA_CONTAINER_NAME:-sentinel-collector-infra}
     profiles: ["disruptions"]
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-sentinel}
       - REDIS_URL=redis://redis:6379
       - POLL_INTERVAL_SEC=${INFRA_POLL_INTERVAL:-300}
       - INFRA_TIMEOUT_SEC=${INFRA_TIMEOUT_SEC:-30}
@@ -281,11 +281,11 @@ services:
     restart: unless-stopped
 
   collector-acled:
-    image: ${COLLECTOR_ACLED_IMAGE:-ghcr.io/joelmale/sentinel-collector-acled:main}
+    image: ${COLLECTOR_ACLED_IMAGE:-ghcr.io/joelmale/sentinel-collector-acled}:${SENTINEL_IMAGE_TAG:-main}
     container_name: ${ACLED_COLLECTOR_CONTAINER_NAME:-sentinel-collector-acled}
     profiles: ["disruptions"]
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-sentinel}
       - REDIS_URL=redis://redis:6379
       - POLL_INTERVAL_SEC=${ACLED_POLL_INTERVAL:-1800}
       - ACLED_ENABLED=${ACLED_ENABLED:-false}

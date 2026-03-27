@@ -68,6 +68,7 @@ ENVIRONMENT=production
 COMPOSE_PROJECT_NAME=sentinel
 INTERNAL_DOCKER_NETWORK=sentinel-net
 EXTERNAL_PROXY_NETWORK=homelab-net
+SENTINEL_IMAGE_TAG=main
 
 VITE_API_BASE_URL=/api
 VITE_WS_URL=/ws
@@ -85,6 +86,7 @@ Optional deployment overrides you can also set in Dockhand:
 COMPOSE_PROJECT_NAME=sentinel
 INTERNAL_DOCKER_NETWORK=sentinel-net
 EXTERNAL_PROXY_NETWORK=homelab-net
+SENTINEL_IMAGE_TAG=main
 CADDY_IMAGE=caddy:2-alpine
 TIMESCALE_IMAGE=timescale/timescaledb-ha:pg16-ts2.24
 REDIS_IMAGE=redis:7-alpine
@@ -99,6 +101,7 @@ Notes:
 
 - do not put backticks or shell quotes around values
 - if a collector source is not ready yet, leave the credential blank
+- set `SENTINEL_IMAGE_TAG` to a short commit hash if you want Dockhand to pull the exact GHCR images built for that commit; leave it as `main` to follow the moving branch tag
 - optional disruption collectors are behind the `disruptions` compose profile in the Dockhand stack
 - set `COMPOSE_PROFILES=disruptions` only if you want `collector-gpsjam`, `collector-infra`, and `collector-acled`
 - Redis and Timescale data persist in Docker volumes
