@@ -9,30 +9,28 @@ This runbook assumes:
 The recommended topology is:
 
 - NPM handles public `80/443`
-- Sentinel keeps its internal Caddy router for `/`, `/api`, and `/ws`
-- Sentinel Caddy joins the shared Docker network `${EXTERNAL_PROXY_NETWORK:-homelab-net}`
-- NPM proxies `opensentinel.net` to the `caddy` service by container/network name
+- Sentinel exposes `frontend` and `api` to the shared Docker network `${EXTERNAL_PROXY_NETWORK:-homelab-net}`
+- NPM proxies `/` to `frontend:80`
+- NPM proxies `/api` and `/ws` to `api:8000`
 
-This avoids fighting the existing app routing model.
+This avoids running two reverse proxies in series.
 
 ## Architecture
 
-Sentinel already expects one front door that serves:
+Sentinel expects:
 
 - frontend at `/`
 - API at `/api/*`
 - websocket at `/ws/*`
 
-That front door is the repo's `caddy` service.
-
-Do not expose Sentinel's Caddy directly on `80/443` if NPM is already using those ports.
+Do not expose Sentinel directly on host `80/443` if NPM is already using those ports.
 
 Instead:
 
 - NPM remains internet-facing
-- Sentinel Caddy is not published on any host port
-- Sentinel Caddy joins `${EXTERNAL_PROXY_NETWORK:-homelab-net}`
-- NPM reverse proxies to `http://caddy:80` across the shared Docker network
+- Sentinel frontend and API are not published on any host port
+- Sentinel `frontend` and `api` join `${EXTERNAL_PROXY_NETWORK:-homelab-net}`
+- NPM reverse proxies to those service names across the shared Docker network
 
 ## DNS
 
@@ -87,7 +85,6 @@ COMPOSE_PROJECT_NAME=sentinel
 INTERNAL_DOCKER_NETWORK=sentinel-net
 EXTERNAL_PROXY_NETWORK=homelab-net
 SENTINEL_IMAGE_TAG=main
-CADDY_IMAGE=caddy:2-alpine
 TIMESCALE_IMAGE=timescale/timescaledb-ha:pg16-ts2.24
 REDIS_IMAGE=redis:7-alpine
 KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:24.0
@@ -125,7 +122,7 @@ This will:
 
 - pull the API/frontend/collectors from GHCR
 - start TimescaleDB and Redis
-- start Sentinel Caddy attached to `${EXTERNAL_PROXY_NETWORK:-homelab-net}`
+- attach Sentinel `frontend` and `api` to `${EXTERNAL_PROXY_NETWORK:-homelab-net}`
 
 Verify:
 
@@ -133,7 +130,7 @@ Use Dockhand logs and container status, or equivalent host commands if needed.
 
 Expected:
 
-- the Caddy container is attached to both `${INTERNAL_DOCKER_NETWORK}` and `${EXTERNAL_PROXY_NETWORK}`
+- the `frontend` and `api` containers are attached to both `${INTERNAL_DOCKER_NETWORK}` and `${EXTERNAL_PROXY_NETWORK}`
 - the API and frontend are healthy in the compose logs
 
 ## Step 3: Configure Nginx Proxy Manager
@@ -146,11 +143,9 @@ In NPM, create a Proxy Host:
 - Scheme:
   - `http`
 - Forward Hostname / IP:
-  - `caddy`
+  - `frontend`
 - Forward Port:
   - `80`
-
-If you change `CADDY_CONTAINER_NAME`, NPM should still target the service/DNS name `caddy`, not the container name.
 
 Recommended NPM options:
 
@@ -165,7 +160,20 @@ SSL tab:
 - enable `HTTP/2 Support`
 - enable `HSTS` if you already know the site is stable on HTTPS
 
-Because Sentinel's internal Caddy already routes `/api` and `/ws`, you do not need separate custom locations in NPM.
+Then add custom locations on the same Proxy Host:
+
+- Location:
+  - `/api`
+  - Scheme: `http`
+  - Forward Hostname / IP: `api`
+  - Forward Port: `8000`
+  - Enable `Websockets Support`
+- Location:
+  - `/ws`
+  - Scheme: `http`
+  - Forward Hostname / IP: `api`
+  - Forward Port: `8000`
+  - Enable `Websockets Support`
 
 ## Step 4: Firewall / Router
 
@@ -209,12 +217,12 @@ Your data persists in Docker volumes unless you explicitly remove them with some
 - `docker compose down -v`
 - deleting the Timescale volume
 
-### Caddy And NPM
+### Reverse Proxying
 
-Do not run both on public `80/443` on the same host.
+Do not publish Sentinel frontend or API on public `80/443` on the host.
 
-This runbook avoids that by not publishing Sentinel's Caddy at all.
-NPM reaches it over `${EXTERNAL_PROXY_NETWORK}`.
+This runbook keeps NPM as the only public reverse proxy.
+NPM reaches `frontend` and `api` over `${EXTERNAL_PROXY_NETWORK}`.
 
 ### Websockets
 
@@ -223,7 +231,8 @@ Sentinel uses websocket live updates at `/ws`.
 If live data works inside the stack but not through NPM:
 
 - re-check `Websockets Support` in NPM
-- make sure NPM points to the `caddy` service on `${EXTERNAL_PROXY_NETWORK}`, not directly to the frontend container
+- make sure the root host points to `frontend:80`
+- make sure both `/api` and `/ws` custom locations point to `api:8000`
 
 ### Keycloak
 

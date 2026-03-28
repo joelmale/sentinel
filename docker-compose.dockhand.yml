@@ -2,23 +2,7 @@ name: ${COMPOSE_PROJECT_NAME:-sentinel}
 
 services:
 
-  # ── Reverse proxy (internal only; NPM proxies to this over homelab-net) ──
-  caddy:
-    image: ${CADDY_IMAGE:-caddy:2-alpine}
-    container_name: ${CADDY_CONTAINER_NAME:-sentinel-caddy}
-    volumes:
-      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - api
-      - frontend
-    restart: unless-stopped
-    networks:
-      - default
-      - homelab-net
-
-  # ── Frontend (served as static by Caddy) ────────────────────────
+  # ── Frontend (served directly by NPM via nginx in the image) ───
   frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/joelmale/sentinel-frontend}:${SENTINEL_IMAGE_TAG:-main}
     container_name: ${FRONTEND_CONTAINER_NAME:-sentinel-frontend}
@@ -26,6 +10,9 @@ services:
       - VITE_API_BASE_URL=${VITE_API_BASE_URL:-/api}
       - VITE_WS_URL=${VITE_WS_URL:-/ws}
     restart: unless-stopped
+    networks:
+      - default
+      - homelab-net
 
   # ── Backend API ──────────────────────────────────────────────────
   api:
@@ -54,6 +41,9 @@ services:
       interval: ${API_HEALTHCHECK_INTERVAL:-30s}
       timeout: ${API_HEALTHCHECK_TIMEOUT:-10s}
       retries: ${API_HEALTHCHECK_RETRIES:-3}
+    networks:
+      - default
+      - homelab-net
 
   # ── Database ─────────────────────────────────────────────────────
   timescaledb:
@@ -329,8 +319,6 @@ services:
 volumes:
   timescale_data:
   redis_data:
-  caddy_data:
-  caddy_config:
   keycloak_data:
   grafana_data:
 
