@@ -119,6 +119,16 @@ def _text_or_none(value: object) -> str | None:
     return text or None
 
 
+def _metadata_text(metadata: dict | None, *keys: str) -> str | None:
+    if not isinstance(metadata, dict):
+        return None
+    for key in keys:
+        text = _text_or_none(metadata.get(key))
+        if text:
+            return text
+    return None
+
+
 def read_env_text(name: str, default: str = "") -> str:
     file_var = f"{name}_FILE"
     file_path = _text_or_none(os.environ.get(file_var))
@@ -604,6 +614,32 @@ class BaseCollector(ABC):
             return resolved
         return self._asset_entity_id(event["source_domain"], str(event["track_id"]))
 
+    def _display_name_for_event(self, event: dict, *, fallback_to_track_id: bool = True) -> str | None:
+        metadata = _public_metadata(event.get("metadata"))
+
+        if event["source_domain"] == "Maritime":
+            vessel_name = _metadata_text(metadata, "vessel_name", "ship_name", "name")
+            if vessel_name:
+                return vessel_name
+
+            for section in ("marinetraffic_summary", "marinetraffic_general", "marinetraffic_latest_ais"):
+                section_metadata = metadata.get(section)
+                nested_name = _metadata_text(section_metadata, "vessel_name", "ship_name", "shipname", "name")
+                if nested_name:
+                    return nested_name
+
+            callsign = _text_or_none(event.get("callsign")) or _metadata_text(metadata, "callsign", "radio_callsign")
+            track_id = str(event["track_id"]).strip()
+            if callsign and not callsign.isdigit() and callsign != track_id:
+                return callsign
+
+            return track_id if fallback_to_track_id else None
+
+        label = _text_or_none(event.get("callsign"))
+        if label:
+            return label
+        return str(event["track_id"]) if fallback_to_track_id else None
+
     def _candidate_identifier_rows_for_asset(
         self,
         event: dict,
@@ -691,7 +727,7 @@ class BaseCollector(ABC):
         """,
             resolved_entity_id,
             event["source_domain"],
-            event.get("callsign") or str(event["track_id"]),
+            self._display_name_for_event(event, fallback_to_track_id=False),
             json.dumps({"source_feed": event["source_feed"]}),
         )
 
@@ -726,7 +762,7 @@ class BaseCollector(ABC):
                 entity_id,
                 "asset",
                 event["source_domain"],
-                event.get("callsign") or str(event["track_id"]),
+                self._display_name_for_event(event, fallback_to_track_id=False),
                 "active",
                 json.dumps({"source_feed": event["source_feed"]}),
             )

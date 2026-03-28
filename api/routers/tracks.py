@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.connection import get_db
 from models.track_event import SourceDomain
 from services.marinetraffic import MarineTrafficConfig, fetch_marinetraffic_payload, normalize_text
+from services.maritime_identity import resolve_maritime_identity
 
 router = APIRouter(tags=["Tracks"])
 logger = logging.getLogger(__name__)
@@ -243,12 +244,14 @@ def _build_browser_filter_conditions(
     )
 
     if search:
+        maritime_name_sql = _maritime_search_name_sql()
         conditions.append("""
             (
                 LOWER(COALESCE(acs.track_id, '')) LIKE :search
                 OR LOWER(COALESCE(acs.callsign, '')) LIKE :search
                 OR LOWER(COALESCE(acs.classification, '')) LIKE :search
                 OR LOWER(COALESCE(""" + source_feed_column + """, '')) LIKE :search
+                OR """ + maritime_name_sql + """ LIKE :search
             )
         """)
         params["search"] = f"%{search.strip().lower()}%"
@@ -298,6 +301,73 @@ def _live_metadata_subset(domain: str, metadata: dict[str, Any]) -> dict[str, An
         }
 
     return {key: safe[key] for key in common_keys if key in safe}
+
+
+def _domain_identity_payload(domain: str | None, track_id: object, callsign: object, metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if domain == SourceDomain.MARITIME.value:
+        maritime_identity = resolve_maritime_identity(track_id, callsign, metadata)
+        flattened = {
+            key: maritime_identity[key]
+            for key in (
+                "mmsi",
+                "imo",
+                "ship_id",
+                "vessel_name",
+                "radio_callsign",
+                "ship_type",
+                "flag",
+                "destination",
+                "operator",
+                "owner",
+                "country_code",
+            )
+            if maritime_identity.get(key) is not None
+        }
+        return {
+            "display_name": maritime_identity["display_name"],
+            "callsign": maritime_identity["display_name"],
+            "maritime_identity": maritime_identity,
+            **flattened,
+        }
+    return {
+        "display_name": normalize_text(callsign) or normalize_text(track_id),
+        "callsign": normalize_text(callsign),
+    }
+
+
+def _maritime_search_name_sql(
+    metadata_column: str = "acs.metadata",
+    enrichment_metadata_column: str = "ee.metadata",
+) -> str:
+    return f"""
+        LOWER(COALESCE(
+            {metadata_column}->>'vessel_name',
+            {metadata_column}->>'ship_name',
+            {metadata_column}->>'name',
+            {metadata_column}->'marinetraffic_summary'->>'vessel_name',
+            {metadata_column}->'marinetraffic_summary'->>'shipname',
+            {metadata_column}->'marinetraffic_summary'->>'name',
+            {metadata_column}->'marinetraffic_general'->>'vessel_name',
+            {metadata_column}->'marinetraffic_general'->>'shipname',
+            {metadata_column}->'marinetraffic_general'->>'name',
+            {metadata_column}->'marinetraffic_latest_ais'->>'vessel_name',
+            {metadata_column}->'marinetraffic_latest_ais'->>'shipname',
+            {metadata_column}->'marinetraffic_latest_ais'->>'name',
+            {enrichment_metadata_column}->>'vessel_name',
+            {enrichment_metadata_column}->>'ship_name',
+            {enrichment_metadata_column}->>'name',
+            {enrichment_metadata_column}->'marinetraffic_summary'->>'vessel_name',
+            {enrichment_metadata_column}->'marinetraffic_summary'->>'shipname',
+            {enrichment_metadata_column}->'marinetraffic_summary'->>'name',
+            {enrichment_metadata_column}->'marinetraffic_general'->>'vessel_name',
+            {enrichment_metadata_column}->'marinetraffic_general'->>'shipname',
+            {enrichment_metadata_column}->'marinetraffic_general'->>'name',
+            {enrichment_metadata_column}->'marinetraffic_latest_ais'->>'vessel_name',
+            {enrichment_metadata_column}->'marinetraffic_latest_ais'->>'shipname',
+            {enrichment_metadata_column}->'marinetraffic_latest_ais'->>'name',
+            ''
+        ))
+    """
 
 
 def _space_constellation(name: str | None, object_type: str | None = None) -> str:
@@ -678,12 +748,12 @@ def _serialize_live_row(row: Any) -> dict[str, Any]:
 
     metadata = row["metadata"] or {}
     altitude_m = _resolve_altitude_m(row["altitude_m"], metadata)
+    identity_payload = _domain_identity_payload(row["source_domain"], row["track_id"], row["callsign"], metadata)
     properties = {
         "entity_id": str(row["entity_id"]) if row.get("entity_id") else None,
         "source_domain": row["source_domain"],
         "source_feed": row["source_feed"],
         "track_id": row["track_id"],
-        "callsign": row["callsign"],
         "altitude_m": _sanitize_json_value(altitude_m),
         "heading_deg": _sanitize_json_value(row["heading_deg"]),
         "speed_mps": _sanitize_json_value(row["speed_mps"]),
@@ -697,6 +767,7 @@ def _serialize_live_row(row: Any) -> dict[str, Any]:
         "winning_event_id": str(row["winning_event_id"]) if row.get("winning_event_id") else None,
         "provenance": _sanitize_json_value(row.get("provenance") or {}),
         **_live_metadata_subset(row["source_domain"], metadata),
+        **identity_payload,
     }
     return {
         "type": "Feature",
@@ -1213,6 +1284,7 @@ async def get_live_assets(
             acs.first_seen, acs.source_trust_score, acs.identity_confidence, acs.state_confidence,
             acs.winning_event_id, acs.provenance,
             COALESCE(acs.metadata, '{{}}'::jsonb)
+                || COALESCE(ee.metadata, '{{}}'::jsonb)
                 || jsonb_strip_nulls(jsonb_build_object(
                     'operator', ee.operator,
                     'purpose', ee.purpose,
@@ -1323,6 +1395,7 @@ async def get_track_browser(
             acs.first_seen, acs.source_trust_score, acs.identity_confidence, acs.state_confidence,
             acs.winning_event_id, acs.provenance,
             COALESCE(acs.metadata, '{{}}'::jsonb)
+                || COALESCE(ee.metadata, '{{}}'::jsonb)
                 || jsonb_strip_nulls(jsonb_build_object(
                     'operator', ee.operator,
                     'purpose', ee.purpose,
@@ -1540,10 +1613,10 @@ async def get_asset_detail(
         source_last_seen = _ensure_tz(source_row["last_seen"])
         source_metadata = source_row["metadata"] or {}
         source_altitude_m = _resolve_altitude_m(source_row["altitude_m"], source_metadata)
+        source_identity = _domain_identity_payload(row["source_domain"], source_row["track_id"], source_row["callsign"], source_metadata)
         source_states.append({
             "source_feed": source_row["source_feed"],
             "track_id": source_row["track_id"],
-            "callsign": source_row["callsign"],
             "lon": _sanitize_json_value(source_row["lon"]),
             "lat": _sanitize_json_value(source_row["lat"]),
             "altitude_m": _sanitize_json_value(source_altitude_m),
@@ -1558,6 +1631,7 @@ async def get_asset_detail(
             "classification": source_row["classification"],
             "provenance": _sanitize_json_value(source_row.get("provenance") or {}),
             "metadata": _sanitize_json_value(source_metadata),
+            **source_identity,
         })
 
     lon = row["lon"]
@@ -1569,6 +1643,7 @@ async def get_asset_detail(
         geometry = {"type": "Point", "coordinates": [lon, lat]}
     row_metadata = row["metadata"] or {}
     row_altitude_m = _resolve_altitude_m(row["altitude_m"], row_metadata)
+    identity_payload = _domain_identity_payload(row["source_domain"], row["track_id"], row["callsign"], row_metadata)
 
     return {
         "type": "Feature",
@@ -1578,7 +1653,6 @@ async def get_asset_detail(
             "source_domain": row["source_domain"],
             "source_feed": row["source_feed"],
             "track_id": row["track_id"],
-            "callsign": row["callsign"],
             "altitude_m": _sanitize_json_value(row_altitude_m),
             "heading_deg": _sanitize_json_value(row["heading_deg"]),
             "speed_mps": _sanitize_json_value(row["speed_mps"]),
@@ -1592,6 +1666,7 @@ async def get_asset_detail(
             "winning_event_id": str(row["winning_event_id"]) if row.get("winning_event_id") else None,
             "provenance": _sanitize_json_value(row.get("provenance") or {}),
             "source_states": source_states,
+            **identity_payload,
             **_sanitize_json_value(row_metadata),
         },
     }
@@ -1738,6 +1813,7 @@ async def get_maritime_enrichment(
         "entity_id": row["entity_id"],
         "track_id": row["track_id"],
         "source_domain": row["source_domain"],
+        "identity": resolve_maritime_identity(row["track_id"], row["callsign"], merged_metadata),
         "status": status,
         "url": normalize_text(merged_metadata.get("marinetraffic_url")),
         "fetched_at": normalize_text(merged_metadata.get("marinetraffic_fetched_at")),
